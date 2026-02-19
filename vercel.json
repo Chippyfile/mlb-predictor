@@ -1,0 +1,17 @@
+{
+  "rewrites": [
+    {
+      "source": "/mlb/:path*",
+      "destination": "https://statsapi.mlb.com/api/v1/:path*"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/mlb/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, OPTIONS" }
+      ]
+    }
+  ]
+}
