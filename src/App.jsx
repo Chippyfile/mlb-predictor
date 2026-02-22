@@ -16,11 +16,11 @@ import {
 const C = {
   bg:'#060a06', card:'#0d140d', border:'#182418', green:'#39d353',
   dkGreen:'#14532d', gold:'#f59e0b', red:'#ef4444', blue:'#60a5fa',
-  muted:'#4a5568', text:'#d1fae5', dim:'#1e2e1e',
+  muted:'#8b9eb0', text:'#e8f8f0', dim:'#1e2e1e',
   bannerGreen:   {bg:'#0d2a0d',border:'#1a5a1a',accent:'#39d353',label:'MODEL EDGE'},
   bannerRed:     {bg:'#2a0d0d',border:'#5a1a1a',accent:'#ef4444',label:'FADE'},
   bannerYellow:  {bg:'#2a220a',border:'#5a4a1a',accent:'#f59e0b',label:'DATA INCOMPLETE'},
-  bannerNeutral: {bg:'#0d140d',border:'#1a2a1a',accent:'#4a5568',label:'NEAR MARKET'},
+  bannerNeutral: {bg:'#0d140d',border:'#1a2a1a',accent:'#8b9eb0',label:'NEAR MARKET'},
 };
 
 // ─── Tiny UI components ───────────────────────────────────────
@@ -38,9 +38,9 @@ const StatRow = ({ label, home, away, higherIsBetter=true, highlight=false }) =>
   const hB = !isNaN(h)&&!isNaN(a) ? (higherIsBetter?h>=a:h<=a) : null;
   return (
     <div style={{display:'flex',alignItems:'center',padding:'5px 0',borderBottom:`1px solid ${C.dim}`,background:highlight?'#0d1f0d':'transparent'}}>
-      <span style={{minWidth:80,textAlign:'right',fontWeight:700,color:hB===true?C.green:hB===false?C.muted:'#94a3b8',fontVariantNumeric:'tabular-nums',fontSize:12}}>{home}</span>
+      <span style={{minWidth:80,textAlign:'right',fontWeight:700,color:hB===true?C.green:hB===false?C.muted:'#c8d8e8',fontVariantNumeric:'tabular-nums',fontSize:12}}>{home}</span>
       <span style={{flex:1,textAlign:'center',color:C.muted,fontSize:10,letterSpacing:1,fontFamily:'monospace',padding:'0 8px'}}>{label}</span>
-      <span style={{minWidth:80,fontWeight:700,color:hB===false?C.green:hB===true?C.muted:'#94a3b8',fontVariantNumeric:'tabular-nums',fontSize:12}}>{away}</span>
+      <span style={{minWidth:80,fontWeight:700,color:hB===false?C.green:hB===true?C.muted:'#c8d8e8',fontVariantNumeric:'tabular-nums',fontSize:12}}>{away}</span>
     </div>
   );
 };
@@ -73,7 +73,7 @@ function GameBanner({ game, onSelect, isSelected }) {
       {/* Teams + score */}
       <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
         <div style={{textAlign:'center',minWidth:46}}>
-          <div style={{fontSize:16,fontWeight:900,color:prediction&&prediction.awayRuns>prediction.homeRuns?C.green:'#94a3b8'}}>{awayTeam?.abbr||'???'}</div>
+          <div style={{fontSize:16,fontWeight:900,color:prediction&&prediction.awayRuns>prediction.homeRuns?C.green:'#c8d8e8'}}>{awayTeam?.abbr||'???'}</div>
           <div style={{fontSize:9,color:C.muted}}>AWAY</div>
         </div>
         <div style={{flex:1,textAlign:'center'}}>
@@ -96,7 +96,7 @@ function GameBanner({ game, onSelect, isSelected }) {
           )}
         </div>
         <div style={{textAlign:'center',minWidth:46}}>
-          <div style={{fontSize:16,fontWeight:900,color:prediction&&prediction.homeRuns>=prediction.awayRuns?C.green:'#94a3b8'}}>{homeTeam?.abbr||'???'}</div>
+          <div style={{fontSize:16,fontWeight:900,color:prediction&&prediction.homeRuns>=prediction.awayRuns?C.green:'#c8d8e8'}}>{homeTeam?.abbr||'???'}</div>
           <div style={{fontSize:9,color:C.muted}}>HOME</div>
         </div>
       </div>
@@ -274,7 +274,7 @@ function CalendarTab({ onSelectGame }) {
       </Panel>}
 
       {!loading && !error && games.length === 0 && (
-        <Panel><div style={{textAlign:'center',color:C.muted,padding:20}}>No games found for this date.</div></Panel>
+        <Panel><div style={{textAlign:'center',color:'#a0b8c8',padding:20}}>No games found for this date.</div></Panel>
       )}
 
       {games.map(game => (
@@ -295,7 +295,7 @@ function CalendarTab({ onSelectGame }) {
                   ].map(([lbl,away,home])=>(
                     <div key={lbl} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:`1px solid ${C.dim}`,fontSize:11}}>
                       <span style={{color:C.muted,minWidth:90,fontSize:10}}>{lbl}</span>
-                      <span style={{color:'#94a3b8',fontFamily:'monospace'}}>{away}</span>
+                      <span style={{color:'#c8d8e8',fontFamily:'monospace'}}>{away}</span>
                       <span style={{color:C.green,fontFamily:'monospace'}}>{home}</span>
                     </div>
                   ))}
@@ -316,7 +316,7 @@ function CalendarTab({ onSelectGame }) {
                             </div>
                           ))}
                         </div>
-                      ):<div style={{color:C.muted,fontSize:10}}>Stats not available (early season / ST)</div>}
+                      ):<div style={{color:'#a0b8c8',fontSize:10}}>Stats not available (early season / ST)</div>}
                     </div>
                   ))}
                 </div>
@@ -354,8 +354,8 @@ function CalendarTab({ onSelectGame }) {
 }
 
 // ─── Shared style helpers ─────────────────────────────────────
-const btnStyle = {background:C.dim,border:`1px solid #1e2e1e`,color:'#d1fae5',borderRadius:5,padding:'7px 12px',cursor:'pointer',fontFamily:'monospace',fontSize:11};
-const inputStyle = {background:'#0a120a',color:'#d1fae5',border:`1px solid #182418`,borderRadius:6,padding:'8px 10px',fontSize:12,fontFamily:'monospace',outline:'none'};
+const btnStyle = {background:C.dim,border:`1px solid #1e2e1e`,color:'#e8f8f0',borderRadius:5,padding:'7px 12px',cursor:'pointer',fontFamily:'monospace',fontSize:11};
+const inputStyle = {background:'#0a120a',color:'#e8f8f0',border:`1px solid #182418`,borderRadius:6,padding:'8px 10px',fontSize:12,fontFamily:'monospace',outline:'none'};
 const selectStyle = {...inputStyle,cursor:'pointer'};
 
 // ─── Matchup Tab ──────────────────────────────────────────────
@@ -491,7 +491,7 @@ function MatchupTab({ prefillHome, prefillAway, prefillDate }) {
           <div style={{display:'flex',gap:6,justifyContent:'center',marginBottom:10}}>
             {[0,1,2,3].map(i=><div key={i} style={{width:8,height:8,background:C.green,borderRadius:'50%',animation:`pulse 1s ${i*0.2}s ease infinite`}}/>)}
           </div>
-          {log.map((m,i)=><div key={i} style={{fontFamily:'monospace',fontSize:11,padding:'2px 0',color:i===log.length-1?C.green:'#2a4a2a'}}>{m}</div>)}
+          {log.map((m,i)=><div key={i} style={{fontFamily:'monospace',fontSize:11,padding:'2px 0',color:i===log.length-1?C.green:'#4a8a5a'}}>{m}</div>)}
         </Panel>
       )}
 
@@ -509,7 +509,7 @@ function MatchupTab({ prefillHome, prefillAway, prefillDate }) {
                   <div key={i} style={{textAlign:'center'}}>
                     <div style={{fontSize:9,color:C.muted,letterSpacing:2}}>{tag}</div>
                     <div style={{fontSize:13,fontWeight:800,color:C.muted}}>{team.name}</div>
-                    <div style={{fontSize:52,fontWeight:900,lineHeight:1,color:win?C.green:'#4a5568',fontVariantNumeric:'tabular-nums'}}>{runs.toFixed(1)}</div>
+                    <div style={{fontSize:52,fontWeight:900,lineHeight:1,color:win?C.green:'#8b9eb0',fontVariantNumeric:'tabular-nums'}}>{runs.toFixed(1)}</div>
                   </div>
                 ))}
               </div>
@@ -561,7 +561,7 @@ function MatchupTab({ prefillHome, prefillAway, prefillDate }) {
                       </div>
                     ))}
                   </div>
-                ):<div style={{color:C.muted,fontSize:10}}>Stats unavailable</div>}
+                ):<div style={{color:'#a0b8c8',fontSize:10}}>Stats unavailable</div>}
               </Panel>
             ))}
           </div>
@@ -592,7 +592,7 @@ function MatchupTab({ prefillHome, prefillAway, prefillDate }) {
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:8,fontSize:11,fontWeight:800}}>
               <span style={{color:C.green,minWidth:80,textAlign:'right'}}>{homeTeam.abbr}</span>
               <span style={{color:C.muted,flex:1,textAlign:'center'}}>STAT</span>
-              <span style={{color:'#94a3b8',minWidth:80}}>{awayTeam.abbr}</span>
+              <span style={{color:'#c8d8e8',minWidth:80}}>{awayTeam.abbr}</span>
             </div>
             <StatRow label="AVG"       home={result.homeHit?.avg?.toFixed(3)}  away={result.awayHit?.avg?.toFixed(3)}/>
             <StatRow label="OBP"       home={result.homeHit?.obp?.toFixed(3)}  away={result.awayHit?.obp?.toFixed(3)}/>
@@ -633,7 +633,7 @@ function MatchupTab({ prefillHome, prefillAway, prefillDate }) {
                         <span>RA/G {form.avgRA?.toFixed(1)}</span>
                       </div>
                     </>
-                  ):<div style={{color:C.muted,fontSize:11}}>No form data (early season)</div>}
+                  ):<div style={{color:'#a0b8c8',fontSize:11}}>No form data (early season)</div>}
                 </div>
               ))}
             </Panel>
@@ -685,7 +685,7 @@ function ParkTab() {
             <span style={{color:C.text,minWidth:50,fontWeight:700}}>{TEAMS.find(t=>t.id===+id)?.abbr||id}</span>
             <span style={{color:C.muted,flex:1,fontSize:10}}>{p.name}</span>
             <span style={{color:p.runFactor>1.04?C.gold:p.runFactor<0.95?C.blue:C.green,fontFamily:'monospace',fontWeight:800,minWidth:36}}>{p.runFactor}</span>
-            <span style={{color:C.muted,fontSize:9,minWidth:90,textAlign:'right'}}>{p.notes}</span>
+            <span style={{color:'#a0b8c8',fontSize:9,minWidth:90,textAlign:'right'}}>{p.notes}</span>
           </div>
         ))}
       </Panel>
@@ -699,13 +699,13 @@ function DeployTab() {
     <div style={{display:'flex',flexDirection:'column',gap:12}}>
       <Panel style={{background:'#09090f',borderColor:'#1a1a3a'}}>
         <SLabel>🚀 You Are Deployed!</SLabel>
-        <div style={{fontSize:12,color:'#94a3b8',lineHeight:1.9}}>
+        <div style={{fontSize:12,color:'#c8d8e8',lineHeight:1.9}}>
           Since you're reading this on Vercel, the MLB API proxy is live. All schedule, stats, and pitcher data flows through <code style={{color:'#a5b4fc'}}>/mlb/*</code> → <code style={{color:'#a5b4fc'}}>statsapi.mlb.com/api/v1/*</code> via Vercel's edge network — no CORS, no CSP issues.
         </div>
       </Panel>
       <Panel style={{background:'#09090f',borderColor:'#1a1a3a'}}>
         <SLabel>Live Odds API (Optional)</SLabel>
-        <div style={{fontSize:12,color:'#94a3b8',lineHeight:1.9,marginBottom:10}}>
+        <div style={{fontSize:12,color:'#c8d8e8',lineHeight:1.9,marginBottom:10}}>
           Get a free key at <span style={{color:'#a5b4fc'}}>the-odds-api.com</span> (500 req/month free). Add it as a Vercel environment variable:
         </div>
         <div style={{background:'#06060c',borderRadius:8,padding:12,fontFamily:'monospace',fontSize:11,color:'#a5b4fc',lineHeight:2}}>
@@ -788,7 +788,7 @@ export default function App() {
         <div style={{fontSize:9,letterSpacing:5,color:'#1a4a1a',marginBottom:3}}>⚾ ADVANCED ANALYTICS</div>
         <h1 style={{margin:0,fontSize:24,fontWeight:900,letterSpacing:-1}}>
           <span style={{color:C.green}}>MLB PREDICTOR</span>{' '}
-          <span style={{color:'#2a4a2a',fontSize:14}}>v5</span>
+          <span style={{color:'#4a8a5a',fontSize:14}}>v5</span>
         </h1>
         <div style={{color:C.muted,fontSize:9,marginTop:4,letterSpacing:3}}>
           LIVE DATA · PARK FACTORS · STARTERS · FORM · BULLPEN · vsTeam SPLITS
@@ -807,7 +807,7 @@ export default function App() {
       {activeTab==='🏟️ Parks'    && <ParkTab/>}
       {activeTab==='🚀 Deploy'   && <DeployTab/>}
 
-      <div style={{textAlign:'center',marginTop:18,color:'#0d1a0d',fontSize:9,letterSpacing:2,fontFamily:'monospace'}}>
+      <div style={{textAlign:'center',marginTop:18,color:'#2a4a3a',fontSize:9,letterSpacing:2,fontFamily:'monospace'}}>
         MLB PREDICTOR v5 · {new Date().getFullYear()} · Vercel Edge Proxy · statsapi.mlb.com
       </div>
     </div>
