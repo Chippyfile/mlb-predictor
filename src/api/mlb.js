@@ -1,6 +1,11 @@
 // All MLB API calls go through /mlb which Vercel rewrites to statsapi.mlb.com/api/v1
 // This bypasses CORS and CSP entirely — the request is server-side on Vercel's edge
-const BASE = '/mlb';
+// All calls go to /api/mlb?path=<endpoint>&<params>
+// Vercel serverless function proxies to statsapi.mlb.com server-side
+function mlbUrl(path, params = {}) {
+  const p = new URLSearchParams({ path, ...params });
+  return `/api/mlb?${p.toString()}`;
+}
 const SEASON = new Date().getFullYear();
 
 function gameTypeLabel(dateStr) {
@@ -14,7 +19,7 @@ function gameTypeLabel(dateStr) {
 export async function fetchSchedule(dateStr) {
   // No gameType filter — let API return all types, label client-side
   const season = new Date(dateStr).getFullYear();
-  const url = `${BASE}/schedule?sportId=1&date=${dateStr}&season=${season}&hydrate=probablePitcher,teams,venue,linescore`;
+  const url = mlbUrl("schedule", { sportId:1, date:dateStr, season, hydrate:"probablePitcher,teams,venue,linescore" });
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Schedule API ${res.status}`);
   const data = await res.json();
@@ -48,7 +53,7 @@ export async function fetchSchedule(dateStr) {
 }
 
 export async function fetchTeamHitting(teamId) {
-  const url = `${BASE}/teams/${teamId}/stats?stats=season&group=hitting&season=${SEASON}&sportId=1`;
+  const url = mlbUrl(`teams/${teamId}/stats`, { stats:"season", group:"hitting", season:SEASON, sportId:1 });
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -65,7 +70,7 @@ export async function fetchTeamHitting(teamId) {
 }
 
 export async function fetchTeamPitching(teamId) {
-  const url = `${BASE}/teams/${teamId}/stats?stats=season&group=pitching&season=${SEASON}&sportId=1`;
+  const url = mlbUrl(`teams/${teamId}/stats`, { stats:"season", group:"pitching", season:SEASON, sportId:1 });
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -81,7 +86,7 @@ export async function fetchTeamPitching(teamId) {
 
 export async function fetchStarterStats(pitcherId) {
   if (!pitcherId) return null;
-  const url = `${BASE}/people/${pitcherId}/stats?stats=season&group=pitching&season=${SEASON}&sportId=1`;
+  const url = mlbUrl(`people/${pitcherId}/stats`, { stats:"season", group:"pitching", season:SEASON, sportId:1 });
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -97,7 +102,7 @@ export async function fetchStarterStats(pitcherId) {
 }
 
 export async function fetchVsTeamSplits(teamId, oppId) {
-  const url = `${BASE}/teams/${teamId}/stats?stats=vsTeam&group=hitting&season=${SEASON}&opposingTeamId=${oppId}&sportId=1`;
+  const url = mlbUrl(`teams/${teamId}/stats`, { stats:"vsTeam", group:"hitting", season:SEASON, opposingTeamId:oppId, sportId:1 });
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -117,7 +122,7 @@ export async function fetchVsTeamSplits(teamId, oppId) {
 
 export async function fetchRecentGames(teamId, n = 15) {
   const today = new Date().toISOString().split('T')[0];
-  const url = `${BASE}/schedule?teamId=${teamId}&season=${SEASON}&startDate=${SEASON}-01-01&endDate=${today}&hydrate=linescore`;
+  const url = mlbUrl("schedule", { teamId, season:SEASON, startDate:`${SEASON}-01-01`, endDate:today, hydrate:"linescore", sportId:1 });
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -155,7 +160,7 @@ export async function fetchBullpenFatigue(teamId) {
   const y = new Date(today); y.setDate(today.getDate() - 1);
   const t = new Date(today); t.setDate(today.getDate() - 2);
   const fmt = d => d.toISOString().split('T')[0];
-  const url = `${BASE}/schedule?teamId=${teamId}&season=${SEASON}&startDate=${fmt(t)}&endDate=${fmt(y)}&sportId=1`;
+  const url = mlbUrl("schedule", { teamId, season:SEASON, startDate:fmt(t), endDate:fmt(y), sportId:1 });
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -174,7 +179,7 @@ export async function fetchBullpenFatigue(teamId) {
 }
 
 export async function fetchLikelyRelievers(teamId) {
-  const url = `${BASE}/teams/${teamId}/roster?rosterType=active&season=${SEASON}&hydrate=person(stats(type=season,group=pitching))`;
+  const url = mlbUrl(`teams/${teamId}/roster`, { rosterType:"active", season:SEASON, hydrate:"person(stats(type=season,group=pitching))" });
   try {
     const res = await fetch(url);
     const data = await res.json();
