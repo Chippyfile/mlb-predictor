@@ -7,7 +7,7 @@ import {
 import {
   TEAMS, PARK_FACTORS, UMPIRE_PROFILES,
   teamById, estimateWOBA, estimateWRCPlus, estimateFIP,
-  predictGame, getBannerColor,
+  predictGame, getBannerColor, applySTDeflator, evaluateBets,
   modelWinToMoneyline, moneylineToImplied, impliedToMoneyline,
   runDiffToSpread, runLineOdds
 } from './data/constants.js';
@@ -54,6 +54,7 @@ function GameBanner({ game, onSelect, isSelected }) {
   const timeStr = gameTime ? gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}) : 'TBD';
   const isLive = game.status === 'Live';
   const isFinal = game.status === 'Final';
+  const hasScore = game.homeScore !== null && game.awayScore !== null;
 
   return (
     <div onClick={() => onSelect(game)} style={{
@@ -77,21 +78,22 @@ function GameBanner({ game, onSelect, isSelected }) {
           <div style={{fontSize:9,color:C.muted}}>AWAY</div>
         </div>
         <div style={{flex:1,textAlign:'center'}}>
-          {isFinal ? (
-            <div style={{fontSize:20,fontWeight:900,color:C.text}}>{game.awayScore} – {game.homeScore}</div>
-          ) : isLive ? (
+          {(isFinal || isLive) && hasScore ? (
             <div>
-              <div style={{fontSize:20,fontWeight:900,color:C.red}}>{game.awayScore} – {game.homeScore}</div>
-              <div style={{fontSize:9,color:C.muted}}>{game.inningHalf?.charAt(0)} {game.inning}</div>
+              <div style={{fontSize:20,fontWeight:900,color:isLive?C.red:C.text,fontVariantNumeric:'tabular-nums'}}>
+                {game.awayScore} – {game.homeScore}
+              </div>
+              {isLive && game.inning && <div style={{fontSize:9,color:C.muted}}>{game.inningHalf?.charAt(0)} {game.inning}</div>}
+              {prediction && <div style={{fontSize:9,color:C.muted,marginTop:2}}>proj: {prediction.awayRuns.toFixed(1)} – {prediction.homeRuns.toFixed(1)}</div>}
             </div>
           ) : !prediction ? (
-            <div style={{color:C.muted,fontSize:11}}>Loading…</div>
+            <div style={{color:'#8b9eb0',fontSize:11}}>Loading…</div>
           ) : (
             <div>
               <div style={{fontSize:18,fontWeight:900,color:C.text,fontVariantNumeric:'tabular-nums'}}>
                 {prediction.awayRuns.toFixed(1)} – {prediction.homeRuns.toFixed(1)}
               </div>
-              <div style={{fontSize:9,color:C.muted}}>projected</div>
+              <div style={{fontSize:9,color:'#8b9eb0'}}>projected</div>
             </div>
           )}
         </div>
@@ -135,6 +137,72 @@ function GameBanner({ game, onSelect, isSelected }) {
   );
 }
 
+// ─── Bet Card ──────────────────────────────────────────────────
+function BetCard({ bet }) {
+  const isStrong = bet.strong;
+  const isValue = bet.value && !isStrong;
+  const bg = isStrong ? '#0a2a0a' : isValue ? '#0d1f0d' : '#0d140d';
+  const border = isStrong ? '#1a5a1a' : isValue ? '#1a3a1a' : '#182418';
+  const accent = isStrong ? '#39d353' : isValue ? '#4a9a5a' : '#8b9eb0';
+  return (
+    <div style={{background:bg,border:`1px solid ${border}`,borderLeft:`3px solid ${accent}`,borderRadius:6,padding:'10px 12px',marginBottom:6}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          <span style={{color:accent,fontSize:10,fontWeight:800,letterSpacing:1,textTransform:'uppercase'}}>{bet.type}</span>
+          {isStrong && <span style={{background:'#1a4a1a',color:'#39d353',fontSize:8,fontWeight:800,padding:'1px 5px',borderRadius:2,letterSpacing:1.5}}>STAR STRONG</span>}
+          {isValue && <span style={{background:'#1a3a1a',color:'#4a9a5a',fontSize:8,fontWeight:800,padding:'1px 5px',borderRadius:2,letterSpacing:1.5}}>VALUE</span>}
+          {!isStrong && !isValue && <span style={{background:'#1a1a1a',color:'#8b9eb0',fontSize:8,fontWeight:800,padding:'1px 5px',borderRadius:2,letterSpacing:1.5}}>NEUTRAL</span>}
+        </div>
+        <span style={{color:accent,fontSize:14,fontWeight:900,fontFamily:'monospace'}}>{bet.side}</span>
+      </div>
+      <div style={{display:'flex',justifyContent:'space-between',fontSize:10,marginBottom:3}}>
+        {bet.type === 'Over/Under' ? (
+          <>
+            <span style={{color:'#8b9eb0'}}>Model: <span style={{color:accent,fontWeight:700}}>{bet.modelTotal}</span></span>
+            <span style={{color:'#8b9eb0'}}>Vegas: <span style={{color:'#c8d8e8',fontWeight:700}}>{bet.vegasOU}</span></span>
+            <span style={{color:bet.rawEdge>0?'#39d353':'#60a5fa',fontWeight:700,fontFamily:'monospace'}}>{bet.rawEdge>0?'+':''}{bet.rawEdge.toFixed(1)} runs</span>
+          </>
+        ) : (
+          <>
+            <span style={{color:'#8b9eb0'}}>Model: <span style={{color:accent,fontWeight:700,fontFamily:'monospace'}}>{bet.modelLine}</span></span>
+            <span style={{color:'#8b9eb0'}}>Vegas: <span style={{color:'#c8d8e8',fontWeight:700,fontFamily:'monospace'}}>{bet.vegasLine}</span></span>
+            <span style={{color:accent,fontWeight:700}}>{bet.modelPct ? bet.modelPct+'% win' : (bet.edge*100).toFixed(1)+'% edge'}</span>
+          </>
+        )}
+      </div>
+      <div style={{color:'#8b9eb0',fontSize:9}}>{bet.description}</div>
+    </div>
+  );
+}
+
+function VegasInput({ gameId, onSubmit }) {
+  const [mlHome, setMLHome] = useState('');
+  const [mlAway, setMLAway] = useState('');
+  const [ou, setOU] = useState('');
+  const [rlHome, setRLHome] = useState('');
+  const handleSubmit = () => {
+    onSubmit(gameId, {
+      vegasML: { home: mlHome ? parseInt(mlHome) : null, away: mlAway ? parseInt(mlAway) : null },
+      vegasOU: ou ? parseFloat(ou) : null,
+      vegasRL: { home: rlHome ? parseInt(rlHome) : null },
+    });
+  };
+  const iS = {background:'#060a06',color:'#e8f8f0',border:'1px solid #182418',borderRadius:4,padding:'5px 8px',fontSize:11,fontFamily:'monospace',width:'100%',outline:'none',textAlign:'center'};
+  return (
+    <div style={{background:'#0a0f0a',border:'1px solid #182418',borderRadius:8,padding:12,marginBottom:10}}>
+      <div style={{color:'#8b9eb0',fontSize:9,fontWeight:800,letterSpacing:2,textTransform:'uppercase',marginBottom:8}}>Enter Vegas Odds to Analyze Bets</div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr auto',gap:6,alignItems:'flex-end'}}>
+        <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>HOME ML</div><input value={mlHome} onChange={e=>setMLHome(e.target.value)} placeholder="-148" style={iS}/></div>
+        <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>AWAY ML</div><input value={mlAway} onChange={e=>setMLAway(e.target.value)} placeholder="+124" style={iS}/></div>
+        <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>O/U</div><input value={ou} onChange={e=>setOU(e.target.value)} placeholder="8.5" style={iS}/></div>
+        <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>HOME RL -1.5</div><input value={rlHome} onChange={e=>setRLHome(e.target.value)} placeholder="+136" style={iS}/></div>
+        <button onClick={handleSubmit} style={{background:'#14532d',color:'#39d353',border:'1px solid #1a5a1a',borderRadius:4,padding:'7px 10px',fontSize:10,fontWeight:800,cursor:'pointer',fontFamily:'monospace',whiteSpace:'nowrap'}}>ANALYZE</button>
+      </div>
+      <div style={{color:'#4a5568',fontSize:9,marginTop:6}}>Source: Vegas Insider, DraftKings closing lines. Fill in what you have.</div>
+    </div>
+  );
+}
+
 // ─── Calendar Tab ─────────────────────────────────────────────
 function CalendarTab({ onSelectGame }) {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -143,6 +211,8 @@ function CalendarTab({ onSelectGame }) {
   const [error, setError] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [relievers, setRelievers] = useState({});
+  const [vegasOdds, setVegasOdds] = useState({});
+  const [betResults, setBetResults] = useState({});
   const cacheRef = useRef({});
 
   const loadGames = useCallback(async (dateStr) => {
@@ -205,6 +275,21 @@ function CalendarTab({ onSelectGame }) {
     }, 300000);
     return () => clearInterval(iv);
   }, [games, selectedDate, loadGames]);
+
+  const handleVegasSubmit = (gameId, odds) => {
+    setVegasOdds(p => ({...p, [gameId]: odds}));
+    const game = games.find(g => g.gameId === gameId);
+    if (!game?.prediction) return;
+    const adj = applySTDeflator(game.prediction, game.gameType === 'S');
+    const bets = evaluateBets({
+      prediction: adj,
+      vegasML: odds.vegasML,
+      vegasOU: odds.vegasOU,
+      vegasRL: odds.vegasRL,
+      gameType: game.gameType,
+    });
+    setBetResults(p => ({...p, [gameId]: bets}));
+  };
 
   const changeDate = d => {
     const dt = new Date(selectedDate); dt.setDate(dt.getDate() + d);
@@ -338,6 +423,16 @@ function CalendarTab({ onSelectGame }) {
                       </div>
                     ))}
                   </div>
+                </div>
+              )}
+              <VegasInput gameId={game.gameId} onSubmit={handleVegasSubmit} />
+              {betResults[game.gameId]?.length > 0 && (
+                <div style={{marginBottom:10}}>
+                  <div style={{color:'#8b9eb0',fontSize:9,fontWeight:800,letterSpacing:2,textTransform:'uppercase',marginBottom:8}}>
+                    Bet Analysis
+                    {game.gameType==='S' && <span style={{color:'#f59e0b',marginLeft:8,fontWeight:400,letterSpacing:0}}>Spring Training: 0.82x run deflator applied</span>}
+                  </div>
+                  {betResults[game.gameId].map((bet,i) => <BetCard key={i} bet={bet}/>)}
                 </div>
               )}
               <div style={{marginTop:10,textAlign:'right'}}>

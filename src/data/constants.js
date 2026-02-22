@@ -185,6 +185,98 @@ export function predictGame({ homeTeam, awayTeam, homeHit, awayHit, homePitch, a
   return { homeRuns: hr, awayRuns: ar, homeWinPct: hwp, confidence, park, ump };
 }
 
+// ─── Spring Training deflator ────────────────────────────────
+// ST games average ~15% fewer runs: pitch counts, split squads, rusty relievers
+export const ST_RUN_DEFLATOR = 0.82;
+export const ST_TOTAL_DEFLATOR = 0.80; // O/U deflator slightly more aggressive
+
+export function applySTDeflator(prediction, isSpringTraining) {
+  if (!isSpringTraining) return prediction;
+  return {
+    ...prediction,
+    homeRuns: prediction.homeRuns * ST_RUN_DEFLATOR,
+    awayRuns: prediction.awayRuns * ST_RUN_DEFLATOR,
+    // win% stays same — relative team quality unchanged
+    homeWinPct: prediction.homeWinPct,
+    stAdjusted: true,
+  };
+}
+
+// ─── Bet evaluator ────────────────────────────────────────────
+// Returns array of bets with edge analysis and confidence flag
+export function evaluateBets({ prediction, vegasML, vegasOU, vegasRL, gameType }) {
+  const isST = gameType === 'S';
+  const adj = applySTDeflator(prediction, isST);
+  const modelTotal = adj.homeRuns + adj.awayRuns;
+  const modelHomeWin = adj.homeWinPct;
+  const modelAwayWin = 1 - modelHomeWin;
+
+  const bets = [];
+
+  // ── Moneyline ──────────────────────────────────────────────
+  if (vegasML?.home && vegasML?.away) {
+    const vegasHomeImplied = moneylineToImplied(vegasML.home);
+    const vegasAwayImplied = moneylineToImplied(vegasML.away);
+    // Remove vig
+    const total = vegasHomeImplied + vegasAwayImplied;
+    const trueHome = vegasHomeImplied / total;
+    const trueAway = vegasAwayImplied / total;
+    const homeEdge = modelHomeWin - trueHome;
+    const awayEdge = modelAwayWin - trueAway;
+
+    bets.push({
+      type: 'Moneyline',
+      side: homeEdge > awayEdge ? 'HOME' : 'AWAY',
+      modelPct: homeEdge > awayEdge ? (modelHomeWin*100).toFixed(1) : (modelAwayWin*100).toFixed(1),
+      vegasLine: homeEdge > awayEdge ? (vegasML.home > 0 ? `+${vegasML.home}` : vegasML.home) : (vegasML.away > 0 ? `+${vegasML.away}` : vegasML.away),
+      modelLine: homeEdge > awayEdge ? modelWinToMoneyline(modelHomeWin) : modelWinToMoneyline(modelAwayWin),
+      edge: Math.max(homeEdge, awayEdge),
+      value: Math.max(homeEdge, awayEdge) >= 0.05,   // 5%+ edge = value
+      strong: Math.max(homeEdge, awayEdge) >= 0.08,  // 8%+ = strong
+      description: `Model: ${(modelHomeWin*100).toFixed(0)}% vs market: ${(trueHome*100).toFixed(0)}%`,
+    });
+  }
+
+  // ── Over/Under ─────────────────────────────────────────────
+  if (vegasOU) {
+    const ouNum = parseFloat(vegasOU);
+    const totalEdge = modelTotal - ouNum;
+    const isOver = totalEdge > 0;
+    const edgeMagnitude = Math.abs(totalEdge);
+    bets.push({
+      type: 'Over/Under',
+      side: isOver ? `OVER ${ouNum}` : `UNDER ${ouNum}`,
+      modelTotal: modelTotal.toFixed(1),
+      vegasOU: ouNum,
+      edge: edgeMagnitude / ouNum, // as fraction
+      rawEdge: totalEdge,
+      value: edgeMagnitude >= 1.0,   // 1+ run edge
+      strong: edgeMagnitude >= 2.0,  // 2+ run edge = strong
+      description: `Model total ${modelTotal.toFixed(1)} vs O/U ${ouNum} (${totalEdge > 0 ? '+' : ''}${totalEdge.toFixed(1)} runs)`,
+    });
+  }
+
+  // ── Run Line ───────────────────────────────────────────────
+  if (vegasRL?.home) {
+    const rl = runLineOdds(modelHomeWin, adj.homeRuns, adj.awayRuns);
+    const vegasRLImplied = moneylineToImplied(vegasRL.home);
+    const modelRLImplied = rl.homeWin;
+    const rlEdge = modelRLImplied - vegasRLImplied;
+    bets.push({
+      type: 'Run Line',
+      side: rlEdge > 0 ? 'HOME -1.5' : 'AWAY +1.5',
+      modelLine: rl.homeML,
+      vegasLine: vegasRL.home > 0 ? `+${vegasRL.home}` : `${vegasRL.home}`,
+      edge: Math.abs(rlEdge),
+      value: Math.abs(rlEdge) >= 0.05,
+      strong: Math.abs(rlEdge) >= 0.08,
+      description: `Model RL win: ${(modelRLImplied*100).toFixed(0)}% vs market: ${(vegasRLImplied*100).toFixed(0)}%`,
+    });
+  }
+
+  return bets.sort((a, b) => b.edge - a.edge);
+}
+
 // ─── Banner color logic ───────────────────────────────────────
 export function getBannerColor(game) {
   if (!game.prediction) return 'yellow';
