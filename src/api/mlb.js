@@ -27,7 +27,9 @@ export async function fetchSchedule(dateStr) {
       games.push({
         gameId:      g.gamePk,
         gameTime:    g.gameDate,
-        status:      g.status?.abstractGameState || 'Preview',
+        status:      (g.status?.abstractGameState === 'Final' || g.status?.detailedState === 'Game Over') ? 'Final'
+                       : g.status?.abstractGameState === 'Live' ? 'Live'
+                       : 'Preview',
         detailedState: g.status?.detailedState || '',
         gameType:    g.gameType || label,
         homeTeam:    { id: homeData?.team?.id, name: homeData?.team?.name, abbr: homeData?.team?.abbreviation || homeData?.team?.name?.slice(0,3).toUpperCase() },
@@ -122,7 +124,7 @@ export async function fetchRecentGames(teamId, n = 15) {
     const games = [];
     for (const d of (data?.dates || [])) {
       for (const g of (d.games || [])) {
-        if (g.status?.abstractGameState === 'Final') {
+        if (g.status?.abstractGameState === 'Final' || g.status?.detailedState === 'Game Over') {
           const isHome = g.teams?.home?.team?.id === teamId;
           const my = isHome ? g.teams?.home : g.teams?.away;
           const op = isHome ? g.teams?.away : g.teams?.home;
@@ -186,4 +188,32 @@ export async function fetchLikelyRelievers(teamId) {
       .sort((a, b) => a.era - b.era)
       .slice(0, 5);
   } catch { return []; }
+}
+
+// ─── Fetch live odds via Vercel serverless function ──────────
+// Matches games by fuzzy team name comparison
+export async function fetchLiveOdds() {
+  try {
+    const res = await fetch('/api/odds');
+    if (!res.ok) return { games: [], error: `HTTP ${res.status}` };
+    const data = await res.json();
+    return data;
+  } catch (e) {
+    return { games: [], error: e.message };
+  }
+}
+
+// Match an MLB Stats API team name to an odds API team name
+// e.g. "Detroit Tigers" → matches "Detroit Tigers" or "Tigers"
+export function matchOddsToGame(oddsGames, homeTeamName, awayTeamName) {
+  if (!oddsGames?.length) return null;
+  const normalize = s => s?.toLowerCase().replace(/[^a-z]/g, '') || '';
+  const hN = normalize(homeTeamName);
+  const aN = normalize(awayTeamName);
+  return oddsGames.find(og => {
+    const ogH = normalize(og.homeTeam);
+    const ogA = normalize(og.awayTeam);
+    return (ogH.includes(hN.slice(-6)) || hN.includes(ogH.slice(-6))) &&
+           (ogA.includes(aN.slice(-6)) || aN.includes(ogA.slice(-6)));
+  }) || null;
 }

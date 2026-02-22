@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import {
   fetchSchedule, fetchTeamHitting, fetchTeamPitching, fetchStarterStats,
-  fetchVsTeamSplits, fetchRecentGames, fetchBullpenFatigue, fetchLikelyRelievers
+  fetchVsTeamSplits, fetchRecentGames, fetchBullpenFatigue, fetchLikelyRelievers,
+  fetchLiveOdds, matchOddsToGame,
 } from './api/mlb.js';
 import {
   TEAMS, PARK_FACTORS, UMPIRE_PROFILES,
@@ -175,11 +176,19 @@ function BetCard({ bet }) {
   );
 }
 
-function VegasInput({ gameId, onSubmit }) {
-  const [mlHome, setMLHome] = useState('');
-  const [mlAway, setMLAway] = useState('');
-  const [ou, setOU] = useState('');
-  const [rlHome, setRLHome] = useState('');
+function VegasInput({ gameId, onSubmit, prefill, oddsStatus }) {
+  const [mlHome, setMLHome] = useState(prefill?.vegasML?.home?.toString() || '');
+  const [mlAway, setMLAway] = useState(prefill?.vegasML?.away?.toString() || '');
+  const [ou, setOU] = useState(prefill?.vegasOU?.toString() || '');
+  const [rlHome, setRLHome] = useState(prefill?.vegasRL?.home?.toString() || '');
+
+  // Update fields if prefill changes (e.g. odds loaded after expand)
+  useEffect(() => {
+    if (prefill?.vegasML?.home) setMLHome(prefill.vegasML.home.toString());
+    if (prefill?.vegasML?.away) setMLAway(prefill.vegasML.away.toString());
+    if (prefill?.vegasOU)       setOU(prefill.vegasOU.toString());
+    if (prefill?.vegasRL?.home) setRLHome(prefill.vegasRL.home.toString());
+  }, [prefill]);
   const handleSubmit = () => {
     onSubmit(gameId, {
       vegasML: { home: mlHome ? parseInt(mlHome) : null, away: mlAway ? parseInt(mlAway) : null },
@@ -188,6 +197,13 @@ function VegasInput({ gameId, onSubmit }) {
     });
   };
   const iS = {background:'#060a06',color:'#e8f8f0',border:'1px solid #182418',borderRadius:4,padding:'5px 8px',fontSize:11,fontFamily:'monospace',width:'100%',outline:'none',textAlign:'center'};
+  const statusBadge = {
+    loading: <span style={{color:'#f59e0b',fontSize:9}}>⏳ Loading odds…</span>,
+    loaded:  <span style={{color:'#39d353',fontSize:9}}>✓ Auto-filled from DraftKings — edit if lines have moved</span>,
+    no_key:  <span style={{color:'#f59e0b',fontSize:9}}>⚠️ No odds API key — enter manually or add ODDS_API_KEY to Vercel</span>,
+    error:   <span style={{color:'#ef4444',fontSize:9}}>✗ Odds fetch failed — enter manually</span>,
+    idle:    null,
+  }[oddsStatus] || null;
   return (
     <div style={{background:'#0a0f0a',border:'1px solid #182418',borderRadius:8,padding:12,marginBottom:10}}>
       <div style={{color:'#8b9eb0',fontSize:9,fontWeight:800,letterSpacing:2,textTransform:'uppercase',marginBottom:8}}>Enter Vegas Odds to Analyze Bets</div>
@@ -198,7 +214,7 @@ function VegasInput({ gameId, onSubmit }) {
         <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>HOME RL -1.5</div><input value={rlHome} onChange={e=>setRLHome(e.target.value)} placeholder="+136" style={iS}/></div>
         <button onClick={handleSubmit} style={{background:'#14532d',color:'#39d353',border:'1px solid #1a5a1a',borderRadius:4,padding:'7px 10px',fontSize:10,fontWeight:800,cursor:'pointer',fontFamily:'monospace',whiteSpace:'nowrap'}}>ANALYZE</button>
       </div>
-      <div style={{color:'#4a5568',fontSize:9,marginTop:6}}>Source: Vegas Insider, DraftKings closing lines. Fill in what you have.</div>
+      <div style={{marginTop:6}}>{statusBadge || <span style={{color:'#4a5568',fontSize:9}}>Source: DraftKings / Vegas Insider. Edit any field if lines have moved.</span>}</div>
     </div>
   );
 }
@@ -213,7 +229,36 @@ function CalendarTab({ onSelectGame }) {
   const [relievers, setRelievers] = useState({});
   const [vegasOdds, setVegasOdds] = useState({});
   const [betResults, setBetResults] = useState({});
+  const [oddsData, setOddsData] = useState([]);
+  const [oddsStatus, setOddsStatus] = useState('idle'); // idle | loading | loaded | error | no_key
   const cacheRef = useRef({});
+
+  // Fetch live odds once on mount (and after date changes)
+  useEffect(() => {
+    setOddsStatus('loading');
+    fetchLiveOdds().then(data => {
+      if (data.error === 'NO_API_KEY') {
+        setOddsStatus('no_key');
+      } else if (data.error) {
+        setOddsStatus('error');
+      } else {
+        setOddsData(data.games || []);
+        setOddsStatus('loaded');
+      }
+    });
+  }, [selectedDate]);
+
+  // Auto-populate Vegas odds for a game from the live odds data
+  const autoPopulateOdds = (game) => {
+    if (!oddsData.length) return null;
+    const match = matchOddsToGame(oddsData, game.homeTeam?.name, game.awayTeam?.name);
+    if (!match) return null;
+    return {
+      vegasML: { home: match.homeML, away: match.awayML },
+      vegasOU: match.overUnder,
+      vegasRL: { home: match.homeRL },
+    };
+  };
 
   const loadGames = useCallback(async (dateStr) => {
     if (cacheRef.current[dateStr]) { setGames(cacheRef.current[dateStr]); return; }
@@ -301,9 +346,31 @@ function CalendarTab({ onSelectGame }) {
     const newId = expandedId === game.gameId ? null : game.gameId;
     setExpandedId(newId);
     onSelectGame(game);
-    if (newId && !relievers[game.homeTeam.id]) {
-      const [hr, ar] = await Promise.all([fetchLikelyRelievers(game.homeTeam.id), fetchLikelyRelievers(game.awayTeam.id)]);
-      setRelievers(p => ({...p, [game.homeTeam.id]:hr, [game.awayTeam.id]:ar}));
+    if (newId) {
+      // Auto-populate odds if we have live data and haven't manually set odds yet
+      if (!vegasOdds[game.gameId]) {
+        const auto = autoPopulateOdds(game);
+        if (auto) {
+          setVegasOdds(p => ({...p, [game.gameId]: auto}));
+          // Also auto-run bet analysis
+          if (game.prediction) {
+            const adj = applySTDeflator(game.prediction, game.gameType === 'S');
+            const bets = evaluateBets({
+              prediction: adj,
+              vegasML: auto.vegasML,
+              vegasOU: auto.vegasOU,
+              vegasRL: auto.vegasRL,
+              gameType: game.gameType,
+            });
+            setBetResults(p => ({...p, [game.gameId]: bets}));
+          }
+        }
+      }
+      // Fetch relievers
+      if (!relievers[game.homeTeam.id]) {
+        const [hr, ar] = await Promise.all([fetchLikelyRelievers(game.homeTeam.id), fetchLikelyRelievers(game.awayTeam.id)]);
+        setRelievers(p => ({...p, [game.homeTeam.id]:hr, [game.awayTeam.id]:ar}));
+      }
     }
   };
 
@@ -425,7 +492,7 @@ function CalendarTab({ onSelectGame }) {
                   </div>
                 </div>
               )}
-              <VegasInput gameId={game.gameId} onSubmit={handleVegasSubmit} />
+              <VegasInput gameId={game.gameId} onSubmit={handleVegasSubmit} prefill={vegasOdds[game.gameId]} oddsStatus={oddsStatus} />
               {betResults[game.gameId]?.length > 0 && (
                 <div style={{marginBottom:10}}>
                   <div style={{color:'#8b9eb0',fontSize:9,fontWeight:800,letterSpacing:2,textTransform:'uppercase',marginBottom:8}}>
