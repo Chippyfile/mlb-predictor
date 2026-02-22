@@ -155,7 +155,7 @@ export async function fetchBullpenFatigue(teamId) {
   const y = new Date(today); y.setDate(today.getDate() - 1);
   const t = new Date(today); t.setDate(today.getDate() - 2);
   const fmt = d => d.toISOString().split('T')[0];
-  const url = `${BASE}/schedule?teamId=${teamId}&season=${SEASON}&startDate=${fmt(t)}&endDate=${fmt(y)}&hydrate=boxscore`;
+  const url = `${BASE}/schedule?teamId=${teamId}&season=${SEASON}&startDate=${fmt(t)}&endDate=${fmt(y)}&sportId=1`;
   try {
     const res = await fetch(url);
     const data = await res.json();
