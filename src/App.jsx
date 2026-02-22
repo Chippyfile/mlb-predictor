@@ -557,7 +557,7 @@ function MatchupTab({ prefillHome, prefillAway, prefillDate }) {
 
       addLog('⚾ Fetching probable starters…');
       const fetchSP = async (teamId) => {
-        const url = `/mlb/schedule?teamId=${teamId}&season=${new Date(gameDate).getFullYear()}&gameType=S,R&startDate=${gameDate}&endDate=${gameDate}&hydrate=probablePitcher`;
+        const url = `/mlb/schedule?teamId=${teamId}&season=${new Date(gameDate).getFullYear()}&gameType=S%2CR&startDate=${gameDate}&endDate=${gameDate}&hydrate=probablePitcher`;
         try { const r=await fetch(url); const d=await r.json();
           const g=d?.dates?.[0]?.games?.[0]; if(!g) return null;
           const isHome=g.teams?.home?.team?.id===teamId;

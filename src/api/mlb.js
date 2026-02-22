@@ -117,7 +117,7 @@ export async function fetchVsTeamSplits(teamId, oppId) {
 
 export async function fetchRecentGames(teamId, n = 15) {
   const today = new Date().toISOString().split('T')[0];
-  const url = `${BASE}/schedule?teamId=${teamId}&season=${SEASON}&gameType=S,R&startDate=${SEASON}-01-01&endDate=${today}&hydrate=linescore`;
+  const url = `${BASE}/schedule?teamId=${teamId}&season=${SEASON}&gameType=S%2CR&startDate=${SEASON}-01-01&endDate=${today}&hydrate=linescore`;
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -155,7 +155,7 @@ export async function fetchBullpenFatigue(teamId) {
   const y = new Date(today); y.setDate(today.getDate() - 1);
   const t = new Date(today); t.setDate(today.getDate() - 2);
   const fmt = d => d.toISOString().split('T')[0];
-  const url = `${BASE}/schedule?teamId=${teamId}&season=${SEASON}&gameType=S,R&startDate=${fmt(t)}&endDate=${fmt(y)}&hydrate=boxscore`;
+  const url = `${BASE}/schedule?teamId=${teamId}&season=${SEASON}&gameType=S%2CR&startDate=${fmt(t)}&endDate=${fmt(y)}&hydrate=boxscore`;
   try {
     const res = await fetch(url);
     const data = await res.json();
