@@ -244,7 +244,9 @@ function predictGame({
     if (!hit) return 0.320;
     const { obp = 0.320, slg = 0.420, avg = 0.250 } = hit;
     const iso = Math.max(0, slg - avg);
-    return Math.max(0.250, Math.min(0.430, obp * 1.15 + iso * 0.20));
+    // Better linear weight approximation: wOBA ≈ 0.9*OBP + 0.25*ISO
+    // Avg team: OBP=.320, ISO=.170 → .288+.043 = .331 (slightly above .315 avg, reasonable)
+    return Math.max(0.250, Math.min(0.420, obp * 0.90 + iso * 0.25));
   };
 
   // Barrel rate bonus: every 1% above league avg (7%) → +0.04 runs/game
@@ -260,10 +262,13 @@ function predictGame({
   const homeWOBA = calcOffenseWOBA(homeHit, homeLineup, homeStatcast);
   const awayWOBA = calcOffenseWOBA(awayHit, awayLineup, awayStatcast);
 
-  const BASE_RUNS = 4.35;
-  const wOBA_SCALE = 12.5;
-  let hr = BASE_RUNS + (homeWOBA - 0.320) * wOBA_SCALE;
-  let ar = BASE_RUNS + (awayWOBA - 0.320) * wOBA_SCALE;
+  // MLB avg 2024: ~4.55 R/G (higher than prior years due to deadball rule changes)
+  // wOBA scale: 1 wOBA point = ~0.155 runs per PA, ~4 PA/inn, ~9 inn = ~13.95 runs per game per wOBA unit
+  const BASE_RUNS = 4.55;
+  const wOBA_SCALE = 14.0;
+  // League avg wOBA ~0.315 (2024 MLB)
+  let hr = BASE_RUNS + (homeWOBA - 0.315) * wOBA_SCALE;
+  let ar = BASE_RUNS + (awayWOBA - 0.315) * wOBA_SCALE;
 
   // Statcast bonuses on top of wOBA
   hr += barrelBonus(homeStatcast) + hardHitBonus(homeStatcast);
@@ -513,7 +518,7 @@ async function fetchLineup(gamePk, teamId, isHome) {
       const obp = parseFloat(s.obp) || 0.320;
       const slg = parseFloat(s.slg) || 0.420;
       const iso = Math.max(0, slg - avg);
-      const woba = Math.max(0.250, Math.min(0.430, obp * 1.15 + iso * 0.20));
+      const woba = Math.max(0.250, Math.min(0.420, obp * 0.90 + iso * 0.25));
 
       // Weight top of order more (hitters 1-4 see more PAs)
       const positionWeight = battingOrder.indexOf(playerId) < 4 ? 1.2 : 1.0;
@@ -864,10 +869,18 @@ async function fillFinalScores(pendingRows) {
         if (!hAbbr||!aAbbr) continue;
         const matchedRow = rows.find(row => (row.game_pk&&row.game_pk===g.gamePk)||(normAbbr(row.home_team)===hAbbr&&normAbbr(row.away_team)===aAbbr));
         if (!matchedRow) continue;
-        const ml_correct = homeScore>awayScore;
-        const rl_correct = (homeScore-awayScore)>1.5?true:(awayScore-homeScore)>1.5?false:null;
-        const total = homeScore+awayScore;
-        const ou_correct = matchedRow.ou_total ? (total>matchedRow.ou_total?"OVER":total<matchedRow.ou_total?"UNDER":"PUSH") : null;
+        // ml_correct = did the model's pick win?
+        // Model picks home if win_pct_home >= 0.5, away otherwise
+        const modelPickedHome = (matchedRow.win_pct_home ?? 0.5) >= 0.5;
+        const homeWon = homeScore > awayScore;
+        const ml_correct = modelPickedHome ? homeWon : !homeWon;
+        // rl_correct: model's side covers -1.5?
+        const spread = homeScore - awayScore;
+        const rl_correct = modelPickedHome
+          ? (spread > 1.5 ? true : spread < -1.5 ? false : null)
+          : (spread < -1.5 ? true : spread > 1.5 ? false : null);
+        const total = homeScore + awayScore;
+        const ou_correct = matchedRow.ou_total ? (total > matchedRow.ou_total ? "OVER" : total < matchedRow.ou_total ? "UNDER" : "PUSH") : null;
         await supabaseQuery(`/mlb_predictions?id=eq.${matchedRow.id}`, "PATCH", {
           actual_home_runs:homeScore, actual_away_runs:awayScore, result_entered:true,
           ml_correct, rl_correct, ou_correct, game_pk:g.gamePk, home_team:hAbbr, away_team:aAbbr, actual_spread:homeScore-awayScore,
