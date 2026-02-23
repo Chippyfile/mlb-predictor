@@ -61,6 +61,13 @@ const _now = new Date();
 const STAT_SEASON = (_now.getMonth() < 3) ? SEASON - 1 : SEASON;
 const FULL_SEASON_THRESHOLD = 100;
 const SEASON_START = `${SEASON}-02-01`;
+// Regular season typically starts last week of March
+// Spring Training: Feb 1 – ~Mar 26. Regular Season: ~Mar 27 onward.
+const REG_SEASON_START = `${SEASON}-03-27`;
+function getGameType(dateStr) {
+  if (!dateStr) return "R";
+  return dateStr < REG_SEASON_START ? "S" : "R";
+}
 
 // ── TEAMS ────────────────────────────────────────────────────
 const TEAMS = [
@@ -851,6 +858,7 @@ async function buildPredictionRow(game, dateStr) {
     home_team: game.homeAbbr||(home?.abbr||String(game.homeTeamId)).replace(/\d+$/,''),
     away_team: game.awayAbbr||(away?.abbr||String(game.awayTeamId)).replace(/\d+$/,''),
     game_pk: game.gamePk,
+    game_type: getGameType(dateStr),
     model_ml_home: pred.modelML_home, model_ml_away: pred.modelML_away,
     run_line_home: pred.runLineHome, run_line_away: -pred.runLineHome,
     ou_total: pred.ouTotal, win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)),
@@ -1003,6 +1011,18 @@ async function refreshPredictions(rows, onProgress) {
 
 async function autoSync(onProgress) {
   onProgress?.("🔄 Checking for unrecorded games…");
+  // One-time migration: backfill game_type on any rows missing it
+  try {
+    const missing = await supabaseQuery("/mlb_predictions?game_type=is.null&select=id,game_date&limit=500");
+    if (missing?.length) {
+      onProgress?.(`🔧 Backfilling game_type on ${missing.length} rows…`);
+      for (const row of missing) {
+        await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
+          game_type: getGameType(row.game_date),
+        });
+      }
+    }
+  } catch(e) { console.warn("game_type migration:", e); }
   const today=new Date().toISOString().split("T")[0];
   const allDates=[]; const cur=new Date(SEASON_START);
   while (cur.toISOString().split("T")[0]<=today) { allDates.push(cur.toISOString().split("T")[0]); cur.setDate(cur.getDate()+1); }
@@ -1120,7 +1140,7 @@ export default function App() {
 function SeasonAccuracyBanner({refreshKey}) {
   const [acc,setAcc]=useState(null);
   const [loading,setLoading]=useState(true);
-  useEffect(()=>{(async()=>{setLoading(true);const data=await supabaseQuery(`/mlb_predictions?result_entered=eq.true&select=ml_correct,rl_correct,ou_correct,confidence`);setAcc(data?.length?computeAccuracy(data):null);setLoading(false);})();},[refreshKey]);
+  useEffect(()=>{(async()=>{setLoading(true);const data=await supabaseQuery(`/mlb_predictions?result_entered=eq.true&game_type=eq.R&select=ml_correct,rl_correct,ou_correct,confidence`);setAcc(data?.length?computeAccuracy(data):null);setLoading(false);})();},[refreshKey]);
   if (loading||!acc) return <div style={{background:"#0d1117",border:"1px solid #161b22",borderRadius:8,padding:"8px 14px",fontSize:11,color:"#484f58"}}>{loading?"Loading…":"📈 Season accuracy will appear once games are graded"}</div>;
   return (
     <div style={{background:"linear-gradient(90deg,#0d1117,#0d1a24,#0d1117)",border:"1px solid #1e3448",borderRadius:8,padding:"8px 16px",display:"flex",alignItems:"center",gap:20,flexWrap:"wrap"}}>
@@ -1149,8 +1169,15 @@ function AccuracyDashboard({refreshKey, onCalibrationChange}) {
   const [records,setRecords]=useState([]);
   const [loading,setLoading]=useState(true);
   const [activeSection, setActiveSection]=useState("overview");
+  const [gameTypeFilter, setGameTypeFilter]=useState("R"); // "R"=Regular, "S"=Spring, "ALL"=Both
 
-  useEffect(()=>{(async()=>{setLoading(true);const data=await supabaseQuery(`/mlb_predictions?result_entered=eq.true&order=game_date.asc&limit=2000`);setRecords(data||[]);setLoading(false);})();},[refreshKey]);
+  useEffect(()=>{(async()=>{
+    setLoading(true);
+    const typeFilter = gameTypeFilter==="ALL" ? "" : `&game_type=eq.${gameTypeFilter}`;
+    const data=await supabaseQuery(`/mlb_predictions?result_entered=eq.true${typeFilter}&order=game_date.asc&limit=2000`);
+    setRecords(data||[]);
+    setLoading(false);
+  })();},[refreshKey, gameTypeFilter]);
 
   const acc=useMemo(()=>records.length?computeAccuracy(records):null,[records]);
   const calib=acc?.calibration;
@@ -1170,12 +1197,20 @@ function AccuracyDashboard({refreshKey, onCalibrationChange}) {
     <div style={{maxWidth:900}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:8}}>
         <h2 style={{margin:0,fontSize:16,color:C.blue,letterSpacing:2,textTransform:"uppercase"}}>📊 Accuracy Dashboard</h2>
-        <div style={{display:"flex",gap:6}}>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:3,background:"#0d1117",border:"1px solid #21262d",borderRadius:6,padding:3}}>
+            {[["R","⚾ Regular"],["S","🌸 Spring"],["ALL","All"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setGameTypeFilter(v)} style={{padding:"3px 10px",borderRadius:4,border:"none",cursor:"pointer",fontSize:10,fontWeight:700,background:gameTypeFilter===v?"#58a6ff":"transparent",color:gameTypeFilter===v?"#0d1117":C.dim}}>{l}</button>
+            ))}
+          </div>
           {["overview","calibration","monthly"].map(s=>(
             <button key={s} onClick={()=>setActiveSection(s)} style={{padding:"4px 12px",borderRadius:6,border:`1px solid ${activeSection===s?"#30363d":"transparent"}`,background:activeSection===s?"#161b22":"transparent",color:activeSection===s?C.blue:C.dim,cursor:"pointer",fontSize:10,fontWeight:700,letterSpacing:1,textTransform:"uppercase"}}>{s}</button>
           ))}
         </div>
       </div>
+      {gameTypeFilter==="S"&&<div style={{background:"#1a1200",border:"1px solid #3a2a00",borderRadius:8,padding:"8px 14px",marginBottom:12,fontSize:11,color:"#e3b341"}}>
+        ⚠️ Spring Training: accuracy stats are expected to be lower — rosters are experimental and home advantage is disabled in the model.
+      </div>}
 
       {/* Top stats */}
       <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
@@ -1508,7 +1543,16 @@ function CalendarTab({calibrationFactor}) {
 // ─── HISTORY TAB ──────────────────────────────────────────────
 function HistoryTab({refreshKey}) {
   const [records,setRecords]=useState([]); const [loading,setLoading]=useState(true); const [filterDate,setFilterDate]=useState("");
-  const load=useCallback(async()=>{setLoading(true);let path=`/mlb_predictions?order=game_date.desc&limit=200`;if(filterDate)path+=`&game_date=eq.${filterDate}`;const data=await supabaseQuery(path);setRecords(data||[]);setLoading(false);},[filterDate]);
+  const [gameTypeFilter,setGameTypeFilter]=useState("ALL");
+  const load=useCallback(async()=>{
+    setLoading(true);
+    let path=`/mlb_predictions?order=game_date.desc&limit=200`;
+    if(filterDate) path+=`&game_date=eq.${filterDate}`;
+    if(gameTypeFilter!=="ALL") path+=`&game_type=eq.${gameTypeFilter}`;
+    const data=await supabaseQuery(path);
+    setRecords(data||[]);
+    setLoading(false);
+  },[filterDate, gameTypeFilter]);
   useEffect(()=>{load();},[load,refreshKey]);
   const deleteRecord=async(id)=>{if(!window.confirm("Delete?"))return;await supabaseQuery(`/mlb_predictions?id=eq.${id}`,"DELETE");load();};
   const grouped=records.reduce((acc,r)=>{if(!acc[r.game_date])acc[r.game_date]=[];acc[r.game_date].push(r);return acc;},{});
@@ -1521,6 +1565,11 @@ function HistoryTab({refreshKey}) {
         <input type="date" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={{background:"#0d1117",color:"#e2e8f0",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",fontSize:11,fontFamily:"inherit"}}/>
         {filterDate&&<button onClick={()=>setFilterDate("")} style={{background:"#0d1117",color:"#8b949e",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>Clear</button>}
         <button onClick={load} style={{background:"#0d1117",color:"#58a6ff",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>↻ Refresh</button>
+        <div style={{display:"flex",gap:2,background:"#0d1117",border:"1px solid #21262d",borderRadius:6,padding:2}}>
+          {[["ALL","All"],["R","⚾ RS"],["S","🌸 ST"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setGameTypeFilter(v)} style={{padding:"3px 9px",borderRadius:4,border:"none",cursor:"pointer",fontSize:10,fontWeight:700,background:gameTypeFilter===v?"#58a6ff":"transparent",color:gameTypeFilter===v?"#0d1117":"#484f58"}}>{l}</button>
+          ))}
+        </div>
         <button onClick={async()=>{const p=records.filter(r=>!r.result_entered);if(!p.length)return alert("No pending games");const n=await fillFinalScores(p);load();if(!n)alert("No matched games yet");}} style={{background:"#0d1117",color:"#e3b341",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>⚡ Sync Results</button>
         <button onClick={async()=>{if(!records.length)return alert("No records");const n=await refreshPredictions(records,m=>console.log(m));load();alert(`Refreshed ${n} with v9 formula`);}} style={{background:"#0d1117",color:"#58a6ff",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>🔁 Refresh v9</button>
         <button onClick={async()=>{if(!window.confirm("Regrade all results with corrected pick logic?"))return;const n=await regradeAllResults(m=>console.log(m));load();alert(`Regraded ${n} records`);}} style={{background:"#1a0a2e",color:"#d2a8ff",border:"1px solid #3d1f6e",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>🔧 Regrade Results</button>
@@ -1535,13 +1584,7 @@ function HistoryTab({refreshKey}) {
           load();
           alert(`✅ Done! Refreshed ${refreshed} predictions, regraded ${regraded} results.`);
         }} style={{background:"#0d2010",color:"#3fb950",border:"1px solid #2ea043",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>⚡ Full Reset & Regrade</button>
-        <button onClick={async()=>{
-          if(!window.confirm("⚠️ DELETE all spring training records (games before 2026-03-20)? This clears noisy pre-season data so accuracy stats reflect regular season only. Cannot be undone."))return;
-          // Spring training ends ~March 20. Delete everything before regular season.
-          const deleted=await supabaseQuery("/mlb_predictions?game_date=lt.2026-03-20","DELETE");
-          load();
-          alert("✅ Spring training records deleted. Accuracy stats now reflect regular season only.");
-        }} style={{background:"#2a0a0a",color:"#f85149",border:"1px solid #6e1f1f",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>🗑 Delete Spring Training</button>
+
       </div>
       {loading&&<div style={{color:"#484f58",textAlign:"center",marginTop:40}}>Loading…</div>}
       {!loading&&records.length===0&&<div style={{color:"#484f58",textAlign:"center",marginTop:40}}>No predictions yet</div>}
@@ -1555,7 +1598,7 @@ function HistoryTab({refreshKey}) {
                 {recs.map(r=>{
                   const bg=r.result_entered?(r.ml_correct?"rgba(63,185,80,0.06)":"rgba(248,81,73,0.06)"):"transparent";
                   return <tr key={r.id} style={{borderBottom:"1px solid #0d1117",background:bg}}>
-                    <td style={{padding:"7px 8px",fontWeight:700,whiteSpace:"nowrap",color:"#e2e8f0"}}>{r.away_team} @ {r.home_team}</td>
+                    <td style={{padding:"7px 8px",fontWeight:700,whiteSpace:"nowrap",color:"#e2e8f0"}}>{r.away_team} @ {r.home_team} {r.game_type==="S"&&<span style={{fontSize:8,color:"#e3b341",marginLeft:4}}>ST</span>}</td>
                     <td style={{padding:"7px 8px",whiteSpace:"nowrap"}}><span style={{color:"#58a6ff"}}>H:{mlSign(r.model_ml_home)}</span><span style={{color:"#484f58",margin:"0 3px"}}>|</span><span style={{color:"#484f58"}}>A:{mlSign(r.model_ml_away)}</span></td>
                     <td style={{padding:"7px 8px",color:"#e3b341"}}>{r.ou_total}</td>
                     <td style={{padding:"7px 8px",color:"#58a6ff"}}>{r.win_pct_home!=null?`${Math.round(r.win_pct_home*100)}%`:"—"}</td>
