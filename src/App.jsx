@@ -898,11 +898,12 @@ async function fillFinalScores(pendingRows) {
 }
 
 // Regrade all already-recorded results using corrected ml_correct/rl_correct logic.
-// Needed when the grading formula changes (e.g. v9.1 fix: grade model's pick, not always home).
+// Uses stored pred_home_runs/pred_away_runs to recompute win_pct_home via Pythagorean,
+// so we don't need to re-fetch old game data from the API.
 async function regradeAllResults(onProgress) {
   onProgress?.("⏳ Loading all graded records…");
   const allGraded = await supabaseQuery(
-    `/mlb_predictions?result_entered=eq.true&select=id,win_pct_home,actual_home_runs,actual_away_runs,ou_total&limit=2000`
+    `/mlb_predictions?result_entered=eq.true&select=id,win_pct_home,pred_home_runs,pred_away_runs,actual_home_runs,actual_away_runs,ou_total&limit=2000`
   );
   if (!allGraded?.length) { onProgress?.("No graded records found"); return 0; }
 
@@ -912,8 +913,22 @@ async function regradeAllResults(onProgress) {
     const awayScore = row.actual_away_runs;
     if (homeScore === null || awayScore === null) continue;
 
-    // Correct logic: grade from model's pick perspective
-    const modelPickedHome = (row.win_pct_home ?? 0.5) >= 0.5;
+    // Recompute win_pct_home from stored run projections using Pythagorean expectation.
+    // This ensures we use the corrected formula even if the stored win_pct_home is stale.
+    let winPctHome = row.win_pct_home ?? 0.5;
+    if (row.pred_home_runs && row.pred_away_runs) {
+      const hr = parseFloat(row.pred_home_runs);
+      const ar = parseFloat(row.pred_away_runs);
+      if (hr > 0 && ar > 0) {
+        const hrExp = Math.pow(hr, 1.83);
+        const arExp = Math.pow(ar, 1.83);
+        winPctHome = hrExp / (hrExp + arExp) + 0.038; // add home advantage
+        winPctHome = Math.min(0.88, Math.max(0.12, winPctHome));
+      }
+    }
+
+    // Grade from model's pick perspective
+    const modelPickedHome = winPctHome >= 0.5;
     const homeWon = homeScore > awayScore;
     const ml_correct = modelPickedHome ? homeWon : !homeWon;
 
@@ -923,12 +938,19 @@ async function regradeAllResults(onProgress) {
       : (spread < -1.5 ? true : spread > 1.5 ? false : null);
 
     const total = homeScore + awayScore;
-    const ou_correct = row.ou_total
-      ? (total > row.ou_total ? "OVER" : total < row.ou_total ? "UNDER" : "PUSH")
+    // Recompute ou_total from stored run projections if available — old values were under-projected
+    let ouTotal = row.ou_total;
+    if (row.pred_home_runs && row.pred_away_runs) {
+      ouTotal = parseFloat((parseFloat(row.pred_home_runs) + parseFloat(row.pred_away_runs)).toFixed(1));
+    }
+    const ou_correct = ouTotal
+      ? (total > ouTotal ? "OVER" : total < ouTotal ? "UNDER" : "PUSH")
       : null;
 
     await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
       ml_correct, rl_correct, ou_correct,
+      win_pct_home: parseFloat(winPctHome.toFixed(4)),
+      ou_total: ouTotal,
     });
     fixed++;
   }
@@ -1493,7 +1515,18 @@ function HistoryTab({refreshKey}) {
         <button onClick={load} style={{background:"#0d1117",color:"#58a6ff",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>↻ Refresh</button>
         <button onClick={async()=>{const p=records.filter(r=>!r.result_entered);if(!p.length)return alert("No pending games");const n=await fillFinalScores(p);load();if(!n)alert("No matched games yet");}} style={{background:"#0d1117",color:"#e3b341",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>⚡ Sync Results</button>
         <button onClick={async()=>{if(!records.length)return alert("No records");const n=await refreshPredictions(records,m=>console.log(m));load();alert(`Refreshed ${n} with v9 formula`);}} style={{background:"#0d1117",color:"#58a6ff",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>🔁 Refresh v9</button>
-        <button onClick={async()=>{if(!window.confirm("Regrade all results with corrected pick logic? This fixes ml_correct/rl_correct for all existing records."))return;const n=await regradeAllResults(m=>console.log(m));load();alert(`Regraded ${n} records`);}} style={{background:"#1a0a2e",color:"#d2a8ff",border:"1px solid #3d1f6e",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>🔧 Regrade All Results</button>
+        <button onClick={async()=>{if(!window.confirm("Regrade all results with corrected pick logic?"))return;const n=await regradeAllResults(m=>console.log(m));load();alert(`Regraded ${n} records`);}} style={{background:"#1a0a2e",color:"#d2a8ff",border:"1px solid #3d1f6e",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>🔧 Regrade Results</button>
+        <button onClick={async()=>{
+          if(!window.confirm("Full reset: refresh all predictions with v9 formula, then regrade all results. This takes ~2 min for 37 records. Continue?"))return;
+          const allRecs=await supabaseQuery("/mlb_predictions?select=id,game_date,home_team,away_team,result_entered,ou_total,game_pk,model_ml_home,win_pct_home,actual_home_runs,actual_away_runs&limit=2000");
+          if(!allRecs?.length)return alert("No records found");
+          console.log(`Step 1/2: Refreshing ${allRecs.length} predictions with v9 formula…`);
+          const refreshed=await refreshPredictions(allRecs,m=>console.log(m));
+          console.log(`Step 2/2: Regrading all results…`);
+          const regraded=await regradeAllResults(m=>console.log(m));
+          load();
+          alert(`✅ Done! Refreshed ${refreshed} predictions, regraded ${regraded} results.`);
+        }} style={{background:"#0d2010",color:"#3fb950",border:"1px solid #2ea043",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>⚡ Full Reset & Regrade</button>
       </div>
       {loading&&<div style={{color:"#484f58",textAlign:"center",marginTop:40}}>Loading…</div>}
       {!loading&&records.length===0&&<div style={{color:"#484f58",textAlign:"center",marginTop:40}}>No predictions yet</div>}
