@@ -1,7 +1,7 @@
 {
-  "name": "mlb-predictor",
+  "name": "multi-sport-predictor-v10",
   "private": true,
-  "version": "1.0.0",
+  "version": "10.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,8 +14,6 @@
     "recharts": "^2.12.7"
   },
   "devDependencies": {
-    "@types/react": "^18.3.1",
-    "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.1",
     "vite": "^5.4.2"
   }

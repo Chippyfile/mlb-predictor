@@ -1,23 +1,6 @@
 {
-  "rewrites": [
-    { "source": "/mlb/:path*", "destination": "https://statsapi.mlb.com/api/v1/:path*" }
-  ],
   "functions": {
-    "api/mlb.js": {
-      "maxDuration": 15
-    },
-    "api/odds.js": {
-      "maxDuration": 15
-    }
-  },
-  "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET, OPTIONS" }
-      ]
-    }
-  ]
+    "api/mlb.js": { "maxDuration": 30 },
+    "api/odds.js": { "maxDuration": 10 }
+  }
 }
-
