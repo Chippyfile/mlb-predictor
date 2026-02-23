@@ -257,8 +257,9 @@ async function autoSync(onProgress) {
     const unsaved = schedule.filter(g => {
       const ha = normA(g.homeAbbr || teamById(g.homeTeamId).abbr);
       const aa = normA(g.awayAbbr || teamById(g.awayTeamId).abbr);
-      // Only skip if both teams resolved to something meaningful
-      if (!ha || !aa) return true;
+      // Skip games where team abbr is purely numeric — can't make valid prediction
+      const isNumeric = s => /^\d+$/.test(s);
+      if (isNumeric(ha) || isNumeric(aa) || !ha || !aa) return false;
       return !savedKeys.has(`${dateStr}|${aa}@${ha}`);
     });
     if (!unsaved.length) continue;
@@ -1207,12 +1208,60 @@ function HistoryTab({ refreshKey }) {
         <button onClick={async () => {
           // Re-run prediction model on all visible rows and overwrite stale model values
           if (!records.length) return alert("No records to refresh");
-          const msg = document.createElement("div");
           const n = await refreshPredictions(records, (m) => console.log(m));
           load();
           alert(`Refreshed ${n} prediction(s) with current model`);
         }} style={{ background: "#21262d", color: "#58a6ff", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
           🔁 Refresh Predictions
+        </button>
+        <button onClick={async () => {
+          // 1. Find junk rows: team name is purely numeric or "UNK"
+          const isJunk = s => !s || /^\d+$/.test(s.trim()) || s.trim().toUpperCase() === "UNK";
+          const junkRows = records.filter(r => isJunk(r.home_team) || isJunk(r.away_team));
+
+          // 2. Find duplicate matchups on the same date — keep the one with result_entered=true,
+          //    or if neither has a result, keep the most recently created one
+          const seen = {};
+          const dupRows = [];
+          const allRows = await supabaseQuery("/mlb_predictions?order=game_date.desc,created_at.desc&limit=5000") || [];
+          for (const r of allRows) {
+            const key = `${r.game_date}|${r.away_team}@${r.home_team}`;
+            if (seen[key]) {
+              // Keep whichever has result; if tie, keep first seen (newest by created_at)
+              const existing = seen[key];
+              if (!existing.result_entered && r.result_entered) {
+                dupRows.push(existing.id);
+                seen[key] = r;
+              } else {
+                dupRows.push(r.id);
+              }
+            } else {
+              seen[key] = r;
+            }
+          }
+
+          const toDelete = [
+            ...new Set([...junkRows.map(r => r.id), ...dupRows])
+          ];
+
+          if (!toDelete.length) return alert("No junk or duplicate rows found — history looks clean!");
+
+          if (!window.confirm(`Delete ${toDelete.length} row(s)?
+
+• ${junkRows.length} junk team name(s) (UNK/numeric)
+• ${dupRows.length} duplicate matchup(s)
+
+This cannot be undone.`)) return;
+
+          let deleted = 0;
+          for (const id of toDelete) {
+            await supabaseQuery(`/mlb_predictions?id=eq.${id}`, "DELETE");
+            deleted++;
+          }
+          load();
+          alert(`Cleaned up ${deleted} row(s)`);
+        }} style={{ background: "#21262d", color: "#f85149", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
+          🧹 Clean Up Junk
         </button>
       </div>
 
