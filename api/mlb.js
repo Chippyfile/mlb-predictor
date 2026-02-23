@@ -1,19 +1,17 @@
-// Vercel serverless function — proxies ALL MLB API calls server-side
-// This completely bypasses CORS/CSP. No more proxy rewrite needed.
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
-  // req.url will be like /api/mlb?path=teams/116/stats&stats=season&group=hitting&season=2026&sportId=1
-  const { path, ...params } = req.query;
+  const { path: rawPath, ...params } = req.query;
 
-  if (!path) {
+  if (!rawPath) {
     return res.status(400).json({ error: 'Missing path parameter' });
   }
 
-  // Build the MLB API URL
+  // Decode path in case slashes were URL-encoded as %2F
+  const path = decodeURIComponent(rawPath);
+
   const qs = new URLSearchParams(params).toString();
   const mlbUrl = `https://statsapi.mlb.com/api/v1/${path}${qs ? '?' + qs : ''}`;
 
