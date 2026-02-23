@@ -1258,6 +1258,18 @@ function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10 }}>
             <Kv k="Brier Score" v={calib.brierScore} /><Kv k="Skill vs Coin" v={`${(calib.brierSkill * 100).toFixed(1)}%`} /><Kv k="Mean Cal. Error" v={`${calib.meanCalibrationError}%`} /><Kv k="Overall Bias" v={`${calib.overallBias > 0 ? "+" : ""}${calib.overallBias}%`} /><Kv k="Sample Size" v={`${calib.n} games`} />
           </div>
+          {/* Show current applied factor when it differs from 1.0 */}
+          {onCalibrationChange && (() => {
+            // Read current factor from localStorage to display it
+            let curFactor = 1.0;
+            try { curFactor = parseFloat(localStorage.getItem(table === "mlb_predictions" ? "cal_mlb" : "cal_ncaa")) || 1.0; } catch {}
+            return curFactor !== 1.0 ? (
+              <div style={{ background: "#0d1a10", border: "1px solid #1a4a1a", borderRadius: 8, padding: "10px 14px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: 11, color: C.green }}>✅ Calibration factor ×{curFactor} is active — win probabilities on Calendar tab are adjusted</div>
+                <button onClick={() => onCalibrationChange?.(1.0)} style={{ background: "#21262d", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 10 }}>Reset</button>
+              </div>
+            ) : null;
+          })()}
           {calib.suggestedFactor !== 1.0 && <div style={{ background: "#1a1400", border: "1px solid #3a2a00", borderRadius: 8, padding: "10px 14px", marginBottom: 10 }}>
             <div style={{ fontSize: 11, color: C.yellow, marginBottom: 6 }}>💡 Model is {calib.overallBias < 0 ? "over-confident" : "under-confident"} by ~{Math.abs(calib.overallBias).toFixed(1)}%. Suggested factor: ×{calib.suggestedFactor}</div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -1865,8 +1877,16 @@ export default function App() {
   const [sport, setSport] = useState("MLB");
   const [mlbGames, setMlbGames] = useState([]);
   const [ncaaGames, setNcaaGames] = useState([]);
-  const [calibrationMLB, setCalibrationMLB] = useState(1.0);
-  const [calibrationNCAA, setCalibrationNCAA] = useState(1.0);
+  const [calibrationMLB, setCalibrationMLB] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem("cal_mlb")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
+  });
+  const [calibrationNCAA, setCalibrationNCAA] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem("cal_ncaa")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
+  });
+
+  // Persist calibration factors across reloads
+  useEffect(() => { try { localStorage.setItem("cal_mlb", calibrationMLB); } catch {} }, [calibrationMLB]);
+  useEffect(() => { try { localStorage.setItem("cal_ncaa", calibrationNCAA); } catch {} }, [calibrationNCAA]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncMsg, setSyncMsg] = useState("");
 
