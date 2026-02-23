@@ -720,7 +720,7 @@ function ncaaPredictGame({ homeStats, awayStats, neutralSite = false, calibratio
     hasData * 5
   );
   // Thresholds tuned so roughly: HIGH ~top 20%, MEDIUM ~middle 60%, LOW ~bottom 20%
-  const confidence = confScore >= 55 ? "HIGH" : confScore >= 30 ? "MEDIUM" : "LOW";
+  const confidence = confScore >= 62 ? "HIGH" : confScore >= 35 ? "MEDIUM" : "LOW";
   return {
     homeScore: parseFloat(homeScore.toFixed(1)),
     awayScore: parseFloat(awayScore.toFixed(1)),
@@ -742,18 +742,12 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
   if (!homeStats || !awayStats) return null;
   const pred = ncaaPredictGame({ homeStats, awayStats, neutralSite: game.neutralSite });
   if (!pred) return null;
-  // Store market spread when available so ATS grading is accurate
-  // market_spread_home: negative means home is favorite (e.g. -6.5)
-  // Derived from moneyline odds as an approximation when no direct spread line
-  let market_spread_home = null;
-  if (marketOdds?.homeML && marketOdds?.awayML) {
-    const imp = trueImplied(marketOdds.homeML, marketOdds.awayML);
-    // Convert implied prob to spread using log5 inverse: spread = -ln((p/(1-p))) * 11 / ln(10)
-    const homeFavProb = imp.home;
-    if (homeFavProb > 0.01 && homeFavProb < 0.99) {
-      market_spread_home = parseFloat((-Math.log(homeFavProb / (1 - homeFavProb)) / Math.log(10) * 11).toFixed(1));
-    }
-  }
+  // Store market lines when available — used for accurate ATS and O/U grading
+  // marketOdds.marketSpreadHome: actual Vegas spread (e.g. -6.5 = home favored by 6.5)
+  // marketOdds.marketTotal: actual Vegas O/U total (e.g. 145.5)
+  const market_spread_home = marketOdds?.marketSpreadHome ?? null;
+  const market_ou_total    = marketOdds?.marketTotal ?? null;
+
   return {
     game_date: dateStr, home_team: game.homeAbbr || game.homeTeamName, away_team: game.awayAbbr || game.awayTeamName,
     home_team_name: game.homeTeamName, away_team_name: game.awayTeamName, game_id: game.gameId,
@@ -763,6 +757,7 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     pred_home_score: parseFloat(pred.homeScore.toFixed(1)), pred_away_score: parseFloat(pred.awayScore.toFixed(1)),
     home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM, neutral_site: game.neutralSite || false,
     ...(market_spread_home !== null && { market_spread_home }),
+    ...(market_ou_total    !== null && { market_ou_total }),
   };
 }
 
@@ -809,7 +804,12 @@ async function ncaaFillFinalScores(pendingRows) {
           else rl_correct = false;
         }
         const total = homeScore + awayScore;
-        const ou_correct = matchedRow.ou_total ? (total > matchedRow.ou_total ? "OVER" : total < matchedRow.ou_total ? "UNDER" : "PUSH") : null;
+        // Grade O/U against market total when available, otherwise skip (null)
+        // Never grade O/U against model's own projected total — that's circular
+        const ouLine = matchedRow.market_ou_total ?? null;
+        const ou_correct = ouLine !== null
+          ? (total > ouLine ? "OVER" : total < ouLine ? "UNDER" : "PUSH")
+          : null;
         await supabaseQuery(`/ncaa_predictions?id=eq.${matchedRow.id}`, "PATCH", { actual_home_score: homeScore, actual_away_score: awayScore, result_entered: true, ml_correct, rl_correct, ou_correct });
         filled++;
       }
@@ -825,7 +825,7 @@ async function ncaaFillFinalScores(pendingRows) {
 async function ncaaRegradeAllResults(onProgress) {
   onProgress?.("⏳ Loading all graded NCAA records…");
   const allGraded = await supabaseQuery(
-    `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,actual_home_score,actual_away_score,ou_total,home_team_id,away_team_id,home_adj_em,away_adj_em&limit=5000`
+    `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,home_team_id,away_team_id,home_adj_em,away_adj_em&limit=5000`
   );
   if (!allGraded?.length) { onProgress?.("No graded records found"); return 0; }
   onProgress?.(`⏳ Regrading ${allGraded.length} records…`);
@@ -856,10 +856,11 @@ async function ncaaRegradeAllResults(onProgress) {
       else rl_correct = false;
     }
 
-    // O/U
+    // O/U — only grade against market total, not model total (circular)
     const total = homeScore + awayScore;
-    const ou_correct = row.ou_total
-      ? (total > row.ou_total ? "OVER" : total < row.ou_total ? "UNDER" : "PUSH")
+    const ouLine = row.market_ou_total ?? null;
+    const ou_correct = ouLine !== null
+      ? (total > ouLine ? "OVER" : total < ouLine ? "UNDER" : "PUSH")
       : null;
 
     // Recalculate confidence from stored EM values using new formula
@@ -873,7 +874,7 @@ async function ncaaRegradeAllResults(onProgress) {
         20 + // assume full sample (historical games)
         5    // assume data available
       );
-      confidence = confScore >= 55 ? "HIGH" : confScore >= 30 ? "MEDIUM" : "LOW";
+      confidence = confScore >= 62 ? "HIGH" : confScore >= 35 ? "MEDIUM" : "LOW";
     }
 
     await supabaseQuery(`/ncaa_predictions?id=eq.${row.id}`, "PATCH",
@@ -923,6 +924,10 @@ async function ncaaAutoSync(onProgress) {
     cur.setDate(cur.getDate() + 1);
   }
 
+  // Fetch live odds once for today — used to store market spread/total on new predictions
+  const todayOdds = await fetchOdds("basketball_ncaab");
+  const todayOddsGames = todayOdds?.games || [];
+
   let newPred = 0;
   let datesChecked = 0;
 
@@ -945,15 +950,21 @@ async function ncaaAutoSync(onProgress) {
     );
     if (!unsaved.length) { await _sleep(80); continue; }
 
-    // Build prediction rows (fetches ESPN team stats per game)
-    const rows = (await Promise.all(unsaved.map(g => ncaaBuildPredictionRow(g, dateStr)))).filter(Boolean);
+    // For today's games, attach live odds so market spread/total get stored
+    const isToday = dateStr === today;
+    const rows = (await Promise.all(unsaved.map(g => {
+      const gameOdds = isToday
+        ? (todayOddsGames.find(o => matchNCAAOddsToGame(o, g)) || null)
+        : null;
+      return ncaaBuildPredictionRow(g, dateStr, gameOdds);
+    }))).filter(Boolean);
 
     if (rows.length) {
       await supabaseQuery("/ncaa_predictions", "UPSERT", rows, "game_id");
       newPred += rows.length;
       // Immediately try to fill final scores for this date
       const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,result_entered,game_date,win_pct_home,spread_home`
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home`
       );
       if (ns?.length) await ncaaFillFinalScores(ns);
       // Update savedKeys so subsequent iterations skip these
@@ -977,6 +988,9 @@ async function ncaaFullBackfill(onProgress, signal) {
     `/ncaa_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=10000`
   );
   const savedKeys = new Set((existing || []).map(r => r.game_id || `${r.game_date}|${r.home_team_id}|${r.away_team_id}`));
+
+  // Fetch today's live odds once for attaching to today's new predictions
+  const backfillTodayOdds = (await fetchOdds("basketball_ncaab"))?.games || [];
 
   // Fill pending results first
   const pendingResults = (existing || []).filter(r => !r.result_entered);
@@ -1021,7 +1035,13 @@ async function ncaaFullBackfill(onProgress, signal) {
 
     let rows;
     try {
-      rows = (await Promise.all(unsaved.map(g => ncaaBuildPredictionRow(g, dateStr)))).filter(Boolean);
+      // Attach live odds for today's games only
+      rows = (await Promise.all(unsaved.map(g => {
+        const gameOdds = (dateStr === today && backfillTodayOdds)
+          ? (backfillTodayOdds.find(o => matchNCAAOddsToGame(o, g)) || null)
+          : null;
+        return ncaaBuildPredictionRow(g, dateStr, gameOdds);
+      }))).filter(Boolean);
     } catch (e) {
       errors++;
       await _sleep(500);
@@ -1032,7 +1052,7 @@ async function ncaaFullBackfill(onProgress, signal) {
       await supabaseQuery("/ncaa_predictions", "UPSERT", rows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,result_entered,game_date,win_pct_home,spread_home`
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home`
       );
       if (ns?.length) await ncaaFillFinalScores(ns);
       rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
