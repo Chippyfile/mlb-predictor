@@ -61,11 +61,13 @@ async function buildPredictionRow(game, dateStr) {
       fetchStarterStats(game.homeStarterId), fetchStarterStats(game.awayStarterId),
       fetchRecentForm(game.homeTeamId), fetchRecentForm(game.awayTeamId),
     ]);
+  const homeGamesPlayed = homeForm?.gamesPlayed || 0;
+  const awayGamesPlayed = awayForm?.gamesPlayed || 0;
   const pred = predictGame({
     homeTeamId: game.homeTeamId, awayTeamId: game.awayTeamId,
     homeHit, awayHit, homePitch, awayPitch,
     homeStarterStats: homeStarter, awayStarterStats: awayStarter,
-    homeForm, awayForm,
+    homeForm, awayForm, homeGamesPlayed, awayGamesPlayed,
   });
   if (!pred) return null;
   const home = teamById(game.homeTeamId);
@@ -91,53 +93,66 @@ async function buildPredictionRow(game, dateStr) {
 async function fillFinalScores(pendingRows) {
   if (!pendingRows.length) return 0;
   let filled = 0;
+
+  // Batch by date — one API call per date instead of one per game
+  const byDate = {};
   for (const row of pendingRows) {
+    if (!byDate[row.game_date]) byDate[row.game_date] = [];
+    byDate[row.game_date].push(row);
+  }
+
+  for (const [dateStr, rows] of Object.entries(byDate)) {
     try {
-      let homeScore = null, awayScore = null, isFinal = false;
-      // Try linescore endpoint directly via game_pk
-      if (row.game_pk) {
-        const r = await fetch(`${MLB_API}/game/${row.game_pk}/linescore`);
-        if (r.ok) {
-          const d = await r.json();
-          isFinal = !!(d?.isGameOver || d?.currentInningOrdinal === "Final");
-          homeScore = d?.teams?.home?.runs ?? null;
-          awayScore = d?.teams?.away?.runs ?? null;
+      // Use Vercel proxy (/api/mlb) to avoid CORS — same path used everywhere else
+      const params = new URLSearchParams({
+        path: "schedule",
+        sportId: 1,
+        date: dateStr,
+        hydrate: "linescore,teams",
+      });
+      const r = await fetch(`/api/mlb?${params}`);
+      if (!r.ok) continue;
+      const data = await r.json();
+
+      for (const dt of (data?.dates || [])) {
+        for (const g of (dt.games || [])) {
+          const hA = g.teams?.home?.team?.abbreviation;
+          const aA = g.teams?.away?.team?.abbreviation;
+          const state  = g.status?.abstractGameState || "";
+          const detail = g.status?.detailedState || "";
+          // Accept any Final/Game Over variant from the MLB API
+          const isFinal = state === "Final"
+            || detail === "Game Over"
+            || detail.startsWith("Final")
+            || g.status?.codedGameState === "F";
+
+          if (!isFinal) continue;
+
+          const homeScore = g.teams?.home?.score ?? null;
+          const awayScore = g.teams?.away?.score ?? null;
+          if (homeScore === null || awayScore === null) continue;
+
+          const matchedRow = rows.find(row => row.home_team === hA && row.away_team === aA);
+          if (!matchedRow) continue;
+
+          const ml_correct = homeScore > awayScore;
+          const rl_correct = (homeScore - awayScore) > 1.5 ? true
+                           : (awayScore - homeScore) > 1.5 ? false : null;
+          const ou_correct = (homeScore + awayScore) > matchedRow.ou_total ? "OVER"
+                           : (homeScore + awayScore) < matchedRow.ou_total ? "UNDER" : "PUSH";
+
+          await supabaseQuery(`/mlb_predictions?id=eq.${matchedRow.id}`, "PATCH", {
+            actual_home_runs: homeScore,
+            actual_away_runs: awayScore,
+            result_entered: true,
+            ml_correct,
+            rl_correct,
+            ou_correct,
+          });
+          filled++;
         }
       }
-      // Fallback: schedule lookup
-      if (!isFinal) {
-        const r = await fetch(`${MLB_API}/schedule?sportId=1&date=${row.game_date}&hydrate=linescore,teams`);
-        if (r.ok) {
-          const d = await r.json();
-          for (const dt of (d?.dates || [])) {
-            for (const g of (dt.games || [])) {
-              const hA = g.teams?.home?.team?.abbreviation;
-              const aA = g.teams?.away?.team?.abbreviation;
-              if (hA === row.home_team && aA === row.away_team) {
-                const state = g.status?.abstractGameState;
-                if (state === "Final" || g.status?.detailedState === "Game Over") {
-                  homeScore = g.teams?.home?.score ?? null;
-                  awayScore = g.teams?.away?.score ?? null;
-                  isFinal = true;
-                }
-              }
-            }
-          }
-        }
-      }
-      if (isFinal && homeScore !== null && awayScore !== null) {
-        const ml_correct = homeScore > awayScore;
-        const rl_correct = (homeScore - awayScore) > 1.5 ? true
-                         : (awayScore - homeScore) > 1.5 ? false : null;
-        const ou_correct = (homeScore + awayScore) > row.ou_total ? "OVER"
-                         : (homeScore + awayScore) < row.ou_total ? "UNDER" : "PUSH";
-        await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
-          actual_home_runs: homeScore, actual_away_runs: awayScore,
-          result_entered: true, ml_correct, rl_correct, ou_correct,
-        });
-        filled++;
-      }
-    } catch (e) { console.warn("fillFinalScores error:", row.id, e); }
+    } catch (e) { console.warn("fillFinalScores error for date", dateStr, e); }
   }
   return filled;
 }
@@ -299,7 +314,8 @@ const PARK_FACTORS = {
 
 // ── PREDICTION ENGINE ─────────────────────────────────────────
 function predictGame({ homeTeamId, awayTeamId, homeHit, awayHit, homePitch, awayPitch,
-                        homeStarterStats, awayStarterStats, homeForm, awayForm, bullpenData }) {
+                        homeStarterStats, awayStarterStats, homeForm, awayForm, bullpenData,
+                        homeGamesPlayed = 0, awayGamesPlayed = 0 }) {
   const park = PARK_FACTORS[homeTeamId] || { runFactor: 1.0, hrFactor: 1.0 };
   const wOBA = (h) => {
     if (!h) return 0.320;
@@ -336,14 +352,19 @@ function predictGame({ homeTeamId, awayTeamId, homeHit, awayHit, homePitch, away
   const lambda = hr / ar;
   const hwp = Math.min(0.85, Math.max(0.15, 0.5 + (Math.log(lambda) * 0.6) + homeAdv));
 
-  let confScore = 50;
-  if (homeStarterStats) confScore += 12;
-  if (awayStarterStats) confScore += 12;
-  if (homeForm) confScore += 8;
-  if (awayForm) confScore += 8;
-  if (bullpenData) confScore += 10;
+  // Confidence: base data availability score + blending weight factor
+  // When games played is low, data is blended with priors → confidence penalized slightly
+  const avgGP = (homeGamesPlayed + awayGamesPlayed) / 2;
+  const blendWeight = Math.min(1.0, avgGP / FULL_SEASON_THRESHOLD);
+  const dataScore = [homeHit, awayHit, homeStarterStats, awayStarterStats, homeForm, awayForm]
+    .filter(Boolean).length / 6;
 
-  const confidence = confScore >= 85 ? "HIGH" : confScore >= 65 ? "MEDIUM" : "LOW";
+  // confScore: 0-100. Blend weight pushes it up as season matures.
+  // Early season (0 GP): data is reliable but based on priors → MEDIUM at best
+  // Mid season (50 GP): real current data coming in → HIGH possible
+  // Full season (100+ GP): maximum confidence from current season data
+  const confScore = Math.round(40 + (dataScore * 35) + (blendWeight * 25));
+  const confidence = confScore >= 80 ? "HIGH" : confScore >= 60 ? "MEDIUM" : "LOW";
 
   const modelML_home = hwp >= 0.5
     ? -Math.round((hwp / (1 - hwp)) * 100)
@@ -353,12 +374,65 @@ function predictGame({ homeTeamId, awayTeamId, homeHit, awayHit, homePitch, away
     : -Math.round((hwp / (1 - hwp)) * 100);
 
   return { homeRuns: hr, awayRuns: ar, homeWinPct: hwp, awayWinPct: 1 - hwp,
-           confidence, confScore, modelML_home, modelML_away,
+           confidence, confScore, blendWeight, avgGP,
+           modelML_home, modelML_away,
            ouTotal: parseFloat((hr + ar).toFixed(1)),
            runLineHome: -1.5, runLinePct: hwp > 0.65 ? hwp - 0.12 : hwp - 0.18 };
 }
 
 // ── MLB API HELPERS ───────────────────────────────────────────
+// All calls go through Vercel proxy /api/mlb to avoid CORS
+function mlbFetch(path, params = {}) {
+  const p = new URLSearchParams({ path, ...params });
+  return fetch(`/api/mlb?${p}`).then(r => r.ok ? r.json() : null).catch(() => null);
+}
+
+// How many regular season games this team has played so far this season
+// Used to compute blending weight between current and prior seasons
+async function fetchGamesPlayed(teamId) {
+  try {
+    const data = await mlbFetch(`teams/${teamId}/stats`, { stats: "season", group: "hitting", season: SEASON, sportId: 1 });
+    return parseInt(data?.stats?.[0]?.splits?.[0]?.stat?.gamesPlayed) || 0;
+  } catch { return 0; }
+}
+
+// Weighted blend of current + prior season stats
+// weight_current ramps from 0→1 as games played goes from 0→FULL_SEASON (100 games)
+// Below 100 games: blend in prior 2 seasons. Above 100: current season only.
+const FULL_SEASON_THRESHOLD = 100;
+
+function blendStats(current, prior1, prior2, gamesPlayed) {
+  const w = Math.min(1.0, gamesPlayed / FULL_SEASON_THRESHOLD);
+  // Build a weighted average of whichever prior seasons exist
+  const priors = [prior1, prior2].filter(Boolean);
+  if (!priors.length || w >= 1.0) return current; // full season — use current only
+  if (!current) {
+    // No current season data yet — average the priors
+    return priors.reduce((acc, p) => {
+      const keys = Object.keys(p);
+      keys.forEach(k => { acc[k] = (acc[k] || 0) + p[k] / priors.length; });
+      return acc;
+    }, {});
+  }
+  // Blend: current * w + priorAvg * (1-w)
+  const priorAvg = priors.reduce((acc, p) => {
+    const keys = Object.keys(p);
+    keys.forEach(k => { acc[k] = (acc[k] || 0) + p[k] / priors.length; });
+    return acc;
+  }, {});
+  const result = {};
+  Object.keys(current).forEach(k => {
+    const c = current[k] ?? priorAvg[k];
+    const p = priorAvg[k] ?? current[k];
+    if (typeof c === "number" && typeof p === "number") {
+      result[k] = c * w + p * (1 - w);
+    } else {
+      result[k] = current[k];
+    }
+  });
+  return result;
+}
+
 function getGameTypes(dateStr) {
   const d = new Date(dateStr);
   const m = d.getMonth() + 1;
@@ -369,96 +443,131 @@ function getGameTypes(dateStr) {
 
 async function fetchScheduleForDate(dateStr) {
   const gameType = getGameTypes(dateStr);
-  const url = `${MLB_API}/schedule?sportId=1&date=${dateStr}&gameType=${gameType}&hydrate=probablePitcher,teams,venue,broadcasts`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    const games = [];
-    for (const d of (data?.dates || [])) {
-      for (const g of (d.games || [])) {
-        games.push({
-          gamePk: g.gamePk,
-          gameDate: g.gameDate,
-          status: g.status?.abstractGameState,
-          homeTeamId: g.teams?.home?.team?.id,
-          awayTeamId: g.teams?.away?.team?.id,
-          homeScore: g.teams?.home?.score,
-          awayScore: g.teams?.away?.score,
-          homeStarter: g.teams?.home?.probablePitcher?.fullName || null,
-          awayStarter: g.teams?.away?.probablePitcher?.fullName || null,
-          homeStarterId: g.teams?.home?.probablePitcher?.id || null,
-          awayStarterId: g.teams?.away?.probablePitcher?.id || null,
-          venue: g.venue?.name,
-        });
-      }
+  const data = await mlbFetch("schedule", { sportId: 1, date: dateStr, gameType, hydrate: "probablePitcher,teams,venue" });
+  const games = [];
+  for (const d of (data?.dates || [])) {
+    for (const g of (d.games || [])) {
+      games.push({
+        gamePk: g.gamePk,
+        gameDate: g.gameDate,
+        status: g.status?.abstractGameState,
+        homeTeamId: g.teams?.home?.team?.id,
+        awayTeamId: g.teams?.away?.team?.id,
+        homeScore: g.teams?.home?.score,
+        awayScore: g.teams?.away?.score,
+        homeStarter: g.teams?.home?.probablePitcher?.fullName || null,
+        awayStarter: g.teams?.away?.probablePitcher?.fullName || null,
+        homeStarterId: g.teams?.home?.probablePitcher?.id || null,
+        awayStarterId: g.teams?.away?.probablePitcher?.id || null,
+        venue: g.venue?.name,
+      });
     }
-    return games;
-  } catch { return []; }
+  }
+  return games;
 }
 
+async function fetchOneSeasonHitting(teamId, season) {
+  const data = await mlbFetch(`teams/${teamId}/stats`, { stats: "season", group: "hitting", season, sportId: 1 });
+  const s = data?.stats?.[0]?.splits?.[0]?.stat;
+  if (!s) return null;
+  return {
+    avg:  parseFloat(s.avg)  || 0.250,
+    obp:  parseFloat(s.obp)  || 0.320,
+    slg:  parseFloat(s.slg)  || 0.420,
+    ops:  parseFloat(s.ops)  || 0.740,
+    gamesPlayed: parseInt(s.gamesPlayed) || 0,
+  };
+}
+
+async function fetchOneSeasonPitching(teamId, season) {
+  const data = await mlbFetch(`teams/${teamId}/stats`, { stats: "season", group: "pitching", season, sportId: 1 });
+  const s = data?.stats?.[0]?.splits?.[0]?.stat;
+  if (!s) return null;
+  return {
+    era:  parseFloat(s.era)  || 4.00,
+    whip: parseFloat(s.whip) || 1.30,
+    k9:   parseFloat(s.strikeoutsPer9Inn) || 8.5,
+    bb9:  parseFloat(s.walksPer9Inn)      || 3.0,
+  };
+}
+
+// Fetches current + prior 2 seasons and returns blended hitting stats
 async function fetchTeamHitting(teamId) {
-  const url = `${MLB_API}/teams/${teamId}/stats?stats=season&group=hitting&season=${SEASON}&sportId=1`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    const s = data?.stats?.[0]?.splits?.[0]?.stat || {};
-    return { avg: parseFloat(s.avg)||0.250, obp: parseFloat(s.obp)||0.320, slg: parseFloat(s.slg)||0.420, ops: parseFloat(s.ops)||0.740 };
-  } catch { return null; }
+  const [cur, p1, p2] = await Promise.all([
+    fetchOneSeasonHitting(teamId, SEASON),
+    fetchOneSeasonHitting(teamId, SEASON - 1),
+    fetchOneSeasonHitting(teamId, SEASON - 2),
+  ]);
+  const gp = cur?.gamesPlayed || 0;
+  return blendStats(cur, p1, p2, gp);
 }
 
+// Fetches current + prior 2 seasons and returns blended pitching stats
 async function fetchTeamPitching(teamId) {
-  const url = `${MLB_API}/teams/${teamId}/stats?stats=season&group=pitching&season=${SEASON}&sportId=1`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    const s = data?.stats?.[0]?.splits?.[0]?.stat || {};
-    return { era: parseFloat(s.era)||4.00, whip: parseFloat(s.whip)||1.30 };
-  } catch { return null; }
+  const [cur, p1, p2] = await Promise.all([
+    fetchOneSeasonPitching(teamId, SEASON),
+    fetchOneSeasonPitching(teamId, SEASON - 1),
+    fetchOneSeasonPitching(teamId, SEASON - 2),
+  ]);
+  // Use hitting fetch to get gamesPlayed since pitching endpoint may not include it
+  const gp = (await fetchOneSeasonHitting(teamId, SEASON))?.gamesPlayed || 0;
+  return blendStats(cur, p1, p2, gp);
+}
+
+async function fetchOneSeasonStarterStats(pitcherId, season) {
+  if (!pitcherId) return null;
+  const data = await mlbFetch(`people/${pitcherId}/stats`, { stats: "season", group: "pitching", season, sportId: 1 });
+  const s = data?.stats?.[0]?.splits?.[0]?.stat;
+  if (!s) return null;
+  const era  = parseFloat(s.era)  || 4.50;
+  const whip = parseFloat(s.whip) || 1.35;
+  const k9   = parseFloat(s.strikeoutsPer9Inn) || 8.0;
+  const bb9  = parseFloat(s.walksPer9Inn)      || 3.2;
+  const fip  = parseFloat(s.fip)  || (era * 0.82 + whip * 0.4);
+  const ip   = parseFloat(s.inningsPitched) || 0;
+  return { era, whip, k9, bb9, fip, ip };
 }
 
 async function fetchStarterStats(pitcherId) {
   if (!pitcherId) return null;
-  const url = `${MLB_API}/people/${pitcherId}/stats?stats=season&group=pitching&season=${SEASON}&sportId=1`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    const s = data?.stats?.[0]?.splits?.[0]?.stat || {};
-    const era = parseFloat(s.era) || 4.50;
-    const whip = parseFloat(s.whip) || 1.35;
-    const k9 = parseFloat(s.strikeoutsPer9Inn) || 8.0;
-    const bb9 = parseFloat(s.walksPer9Inn) || 3.2;
-    const fip = parseFloat(s.fip) || (era * 0.82 + whip * 0.4);
-    return { era, whip, k9, bb9, fip };
-  } catch { return null; }
+  const [cur, p1, p2] = await Promise.all([
+    fetchOneSeasonStarterStats(pitcherId, SEASON),
+    fetchOneSeasonStarterStats(pitcherId, SEASON - 1),
+    fetchOneSeasonStarterStats(pitcherId, SEASON - 2),
+  ]);
+  // Use IP as the sample-size signal for starters (full season ≈ 150+ IP)
+  const ip = cur?.ip || 0;
+  const w  = Math.min(1.0, ip / 120); // ramp over ~120 IP
+  return blendStats(cur, p1, p2, Math.round(w * FULL_SEASON_THRESHOLD));
 }
 
 async function fetchRecentForm(teamId, numGames = 15) {
   const today = new Date().toISOString().split("T")[0];
-  const url = `${MLB_API}/schedule?teamId=${teamId}&season=${SEASON}&gameType=S,R&startDate=${SEASON}-01-01&endDate=${today}&hydrate=linescore`;
-  try {
-    const res = await fetch(url);
-    const data = await res.json();
-    const games = [];
-    for (const d of (data?.dates || [])) {
-      for (const g of (d.games || [])) {
-        if (g.status?.abstractGameState === "Final") {
-          const isHome = g.teams?.home?.team?.id === teamId;
-          const my = isHome ? g.teams?.home : g.teams?.away;
-          const op = isHome ? g.teams?.away : g.teams?.home;
-          games.push({ win: my?.isWinner || false, rs: my?.score || 0, ra: op?.score || 0 });
-        }
+  const data = await mlbFetch("schedule", {
+    teamId, season: SEASON, startDate: `${SEASON}-01-01`, endDate: today,
+    hydrate: "linescore", sportId: 1,
+  });
+  const games = [];
+  for (const d of (data?.dates || [])) {
+    for (const g of (d.games || [])) {
+      const state = g.status?.abstractGameState;
+      if (state === "Final" || g.status?.detailedState === "Game Over") {
+        const isHome = g.teams?.home?.team?.id === teamId;
+        const my = isHome ? g.teams?.home : g.teams?.away;
+        const op = isHome ? g.teams?.away : g.teams?.home;
+        games.push({ win: my?.isWinner || false, rs: my?.score || 0, ra: op?.score || 0 });
       }
     }
-    const recent = games.slice(-numGames);
-    if (!recent.length) return null;
-    const rf = recent.reduce((s, g) => s + g.rs, 0);
-    const ra = recent.reduce((s, g) => s + g.ra, 0);
-    const wins = recent.filter(g => g.win).length;
-    const pyth = Math.pow(rf, 1.83) / (Math.pow(rf, 1.83) + Math.pow(ra, 1.83));
-    const actualWP = wins / recent.length;
-    const formScore = recent.slice(-5).reduce((s, g, i) => s + (g.win ? 1 : -0.6) * (i + 1), 0) / 15;
-    return { winPct: actualWP, pythWinPct: pyth, luckFactor: actualWP - pyth, formScore };
-  } catch { return null; }
+  }
+  const recent = games.slice(-numGames);
+  if (!recent.length) return null;
+  const rf = recent.reduce((s, g) => s + g.rs, 0);
+  const ra = recent.reduce((s, g) => s + g.ra, 0);
+  const wins = recent.filter(g => g.win).length;
+  const pyth = Math.pow(rf, 1.83) / (Math.pow(rf, 1.83) + Math.pow(ra, 1.83));
+  const actualWP = wins / recent.length;
+  const formScore = recent.slice(-5).reduce((s, g, i) => s + (g.win ? 1 : -0.6) * (i + 1), 0) / 15;
+  return { gamesPlayed: games.length, winPct: actualWP, pythWinPct: pyth, luckFactor: actualWP - pyth, formScore };
 }
 
 // ── BANNER COLOR ──────────────────────────────────────────────
@@ -700,11 +809,13 @@ function CalendarTab() {
           fetchRecentForm(g.homeTeamId),
           fetchRecentForm(g.awayTeamId),
         ]);
+      const homeGamesPlayed = homeForm?.gamesPlayed || 0;
+      const awayGamesPlayed = awayForm?.gamesPlayed || 0;
       const pred = predictGame({
         homeTeamId: g.homeTeamId, awayTeamId: g.awayTeamId,
         homeHit, awayHit, homePitch, awayPitch,
         homeStarterStats: homeStarter, awayStarterStats: awayStarter,
-        homeForm, awayForm,
+        homeForm, awayForm, homeGamesPlayed, awayGamesPlayed,
       });
       return { ...g, homeHit, awayHit, homePitch, awayPitch, homeStarterStats: homeStarter,
                awayStarterStats: awayStarter, homeForm, awayForm, pred, loading: false };
@@ -806,6 +917,8 @@ function CalendarTab() {
                     <Detail label="Model ML (A)" value={game.pred.modelML_away > 0 ? `+${game.pred.modelML_away}` : game.pred.modelML_away} />
                     <Detail label="Confidence" value={game.pred.confidence} />
                     <Detail label="Conf Score" value={`${game.pred.confScore}/100`} />
+                    <Detail label="Season Data" value={`${Math.round((game.pred.blendWeight || 0) * 100)}% current / ${Math.round((1-(game.pred.blendWeight||0))*100)}% prior`} />
+                    <Detail label="Avg GP" value={game.pred.avgGP ? `${Math.round(game.pred.avgGP)} games` : "pre-season"} />
                   </div>
                   {(game.homeStarter || game.awayStarter) && (
                     <div style={{ marginTop: 12, display: "flex", gap: 16 }}>
@@ -830,8 +943,7 @@ function HistoryTab({ refreshKey }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filterDate, setFilterDate] = useState("");
-  const [entering, setEntering] = useState(null);
-  const [resultForm, setResultForm] = useState({ actual_home: "", actual_away: "" });
+
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -845,24 +957,7 @@ function HistoryTab({ refreshKey }) {
   // Refresh when sync completes or filter changes
   useEffect(() => { load(); }, [load, refreshKey]);
 
-  const enterResult = async (id) => {
-    const home = parseInt(resultForm.actual_home);
-    const away = parseInt(resultForm.actual_away);
-    if (isNaN(home) || isNaN(away)) return alert("Enter valid scores");
-    const rec = records.find(r => r.id === id);
-    if (!rec) return;
-    const ml_correct = home > away ? true : false;
-    const rl_correct = (home - away) > 1.5 ? true : (away - home) > 1.5 ? false : null;
-    const ou_correct = (home + away) > rec.ou_total ? "OVER" : (home + away) < rec.ou_total ? "UNDER" : "PUSH";
-    const patch = {
-      actual_home_runs: home, actual_away_runs: away,
-      result_entered: true, ml_correct, rl_correct, ou_correct,
-    };
-    await supabaseQuery(`/mlb_predictions?id=eq.${id}`, "PATCH", patch);
-    setEntering(null);
-    setResultForm({ actual_home: "", actual_away: "" });
-    load();
-  };
+
 
   const deleteRecord = async (id) => {
     if (!window.confirm("Delete this prediction?")) return;
@@ -918,7 +1013,6 @@ function HistoryTab({ refreshKey }) {
               </thead>
               <tbody>
                 {recs.map(r => {
-                  const isEntering = entering === r.id;
                   const resultBg = r.result_entered
                     ? (r.ml_correct ? "rgba(63,185,80,0.08)" : "rgba(248,81,73,0.08)")
                     : "transparent";
@@ -944,21 +1038,10 @@ function HistoryTab({ refreshKey }) {
                       </td>
                       <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
                         {r.result_entered
-                          ? <span style={{ color: "#3fb950" }}>{r.away_team} {r.actual_away_runs} — {r.home_team} {r.actual_home_runs}</span>
-                          : isEntering ? (
-                            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                              <input placeholder="Home" value={resultForm.actual_home}
-                                onChange={e => setResultForm(f => ({ ...f, actual_home: e.target.value }))}
-                                style={{ width: 44, background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 4, padding: "2px 6px", fontSize: 12 }} />
-                              <input placeholder="Away" value={resultForm.actual_away}
-                                onChange={e => setResultForm(f => ({ ...f, actual_away: e.target.value }))}
-                                style={{ width: 44, background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 4, padding: "2px 6px", fontSize: 12 }} />
-                              <button onClick={() => enterResult(r.id)}
-                                style={{ background: "#238636", border: "none", color: "#fff", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontSize: 11 }}>✓</button>
-                              <button onClick={() => setEntering(null)}
-                                style={{ background: "#21262d", border: "1px solid #30363d", color: "#8b949e", borderRadius: 4, padding: "2px 6px", cursor: "pointer", fontSize: 11 }}>✕</button>
-                            </div>
-                          ) : <span style={{ color: "#8b949e", fontSize: 11 }}>Pending</span>
+                          ? <span style={{ color: "#3fb950", fontWeight: 600 }}>
+                              {r.away_team} {r.actual_away_runs} — {r.home_team} {r.actual_home_runs}
+                            </span>
+                          : <span style={{ color: "#e3b341", fontSize: 11 }}>⏳ Awaiting result</span>
                         }
                       </td>
                       <td style={{ padding: "8px 10px", textAlign: "center" }}>
@@ -968,17 +1051,12 @@ function HistoryTab({ refreshKey }) {
                         {r.result_entered ? (r.rl_correct === null ? "🔲" : r.rl_correct ? "✅" : "❌") : "—"}
                       </td>
                       <td style={{ padding: "8px 10px", textAlign: "center" }}>
-                        {r.result_entered ? (
-                          <span style={{ color: r.ou_correct === "PUSH" ? "#e3b341" : "#e6edf3", fontSize: 11 }}>{r.ou_correct}</span>
-                        ) : "—"}
+                        {r.result_entered
+                          ? <span style={{ color: r.ou_correct === "PUSH" ? "#e3b341" : "#e6edf3", fontSize: 11 }}>{r.ou_correct}</span>
+                          : "—"
+                        }
                       </td>
-                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
-                        {!r.result_entered && (
-                          <button onClick={() => { setEntering(r.id); setResultForm({ actual_home: "", actual_away: "" }); }}
-                            style={{ background: "#21262d", border: "1px solid #30363d", color: "#58a6ff", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontSize: 11, marginRight: 4 }}>
-                            Enter Score
-                          </button>
-                        )}
+                      <td style={{ padding: "8px 10px" }}>
                         <button onClick={() => deleteRecord(r.id)}
                           style={{ background: "transparent", border: "none", color: "#8b949e", cursor: "pointer", fontSize: 13 }}>🗑</button>
                       </td>
@@ -1020,11 +1098,13 @@ function ParlayTab() {
           fetchStarterStats(g.homeStarterId), fetchStarterStats(g.awayStarterId),
           fetchRecentForm(g.homeTeamId), fetchRecentForm(g.awayTeamId),
         ]);
+      const homeGamesPlayed = homeForm?.gamesPlayed || 0;
+      const awayGamesPlayed = awayForm?.gamesPlayed || 0;
       const pred = predictGame({
         homeTeamId: g.homeTeamId, awayTeamId: g.awayTeamId,
         homeHit, awayHit, homePitch, awayPitch,
         homeStarterStats: homeStarter, awayStarterStats: awayStarter,
-        homeForm, awayForm,
+        homeForm, awayForm, homeGamesPlayed, awayGamesPlayed,
       });
       return { ...g, pred };
     }));
