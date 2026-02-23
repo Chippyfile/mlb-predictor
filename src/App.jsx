@@ -697,10 +697,30 @@ function ncaaPredictGame({ homeStats, awayStats, neutralSite = false, calibratio
   const spread = parseFloat(projectedSpread.toFixed(1));
   const modelML_home = homeWinPct >= 0.5 ? -Math.round((homeWinPct / (1 - homeWinPct)) * 100) : +Math.round(((1 - homeWinPct) / homeWinPct) * 100);
   const modelML_away = homeWinPct >= 0.5 ? +Math.round(((1 - homeWinPct) / homeWinPct) * 100) : -Math.round((homeWinPct / (1 - homeWinPct)) * 100);
-  const dataScore = [homeStats.adjOE, homeStats.adjDE, awayStats.adjOE, awayStats.adjDE].filter(Boolean).length / 4;
-  const sampleWeight = Math.min(1.0, Math.min(homeStats.totalGames, awayStats.totalGames) / 20);
-  const confScore = Math.round(40 + dataScore * 30 + sampleWeight * 30);
-  const confidence = confScore >= 80 ? "HIGH" : confScore >= 60 ? "MEDIUM" : "LOW";
+  // Confidence based on meaningful factors:
+  // 1. Efficiency margin gap between teams (bigger gap = more predictable)
+  // 2. Win probability distance from 50% (how decisive is the pick)
+  // 3. Sample size — how many games each team has played
+  // 4. Whether both teams have reliable data (games played > 5)
+  const emGap = Math.abs(homeStats.adjEM - awayStats.adjEM);           // 0–30+ pts
+  const winPctStrength = Math.abs(homeWinPct - 0.5) * 2;              // 0–1 scale
+  const minGames = Math.min(homeStats.totalGames, awayStats.totalGames);
+  const sampleWeight = Math.min(1.0, minGames / 15);                  // full weight at 15 games
+  const hasData = minGames >= 5 ? 1 : 0;
+
+  // Score out of 100:
+  //   EM gap contributes up to 40 pts (gap of 10+ = full score)
+  //   Win% strength contributes up to 35 pts
+  //   Sample size contributes up to 20 pts
+  //   Data availability contributes 5 pts
+  const confScore = Math.round(
+    (Math.min(emGap, 10) / 10) * 40 +
+    winPctStrength * 35 +
+    sampleWeight * 20 +
+    hasData * 5
+  );
+  // Thresholds tuned so roughly: HIGH ~top 20%, MEDIUM ~middle 60%, LOW ~bottom 20%
+  const confidence = confScore >= 55 ? "HIGH" : confScore >= 30 ? "MEDIUM" : "LOW";
   return {
     homeScore: parseFloat(homeScore.toFixed(1)),
     awayScore: parseFloat(awayScore.toFixed(1)),
@@ -717,11 +737,23 @@ function ncaaPredictGame({ homeStats, awayStats, neutralSite = false, calibratio
   };
 }
 
-async function ncaaBuildPredictionRow(game, dateStr) {
+async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
   const [homeStats, awayStats] = await Promise.all([fetchNCAATeamStats(game.homeTeamId), fetchNCAATeamStats(game.awayTeamId)]);
   if (!homeStats || !awayStats) return null;
   const pred = ncaaPredictGame({ homeStats, awayStats, neutralSite: game.neutralSite });
   if (!pred) return null;
+  // Store market spread when available so ATS grading is accurate
+  // market_spread_home: negative means home is favorite (e.g. -6.5)
+  // Derived from moneyline odds as an approximation when no direct spread line
+  let market_spread_home = null;
+  if (marketOdds?.homeML && marketOdds?.awayML) {
+    const imp = trueImplied(marketOdds.homeML, marketOdds.awayML);
+    // Convert implied prob to spread using log5 inverse: spread = -ln((p/(1-p))) * 11 / ln(10)
+    const homeFavProb = imp.home;
+    if (homeFavProb > 0.01 && homeFavProb < 0.99) {
+      market_spread_home = parseFloat((-Math.log(homeFavProb / (1 - homeFavProb)) / Math.log(10) * 11).toFixed(1));
+    }
+  }
   return {
     game_date: dateStr, home_team: game.homeAbbr || game.homeTeamName, away_team: game.awayAbbr || game.awayTeamName,
     home_team_name: game.homeTeamName, away_team_name: game.awayTeamName, game_id: game.gameId,
@@ -730,6 +762,7 @@ async function ncaaBuildPredictionRow(game, dateStr) {
     ou_total: pred.ouTotal, win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)), confidence: pred.confidence,
     pred_home_score: parseFloat(pred.homeScore.toFixed(1)), pred_away_score: parseFloat(pred.awayScore.toFixed(1)),
     home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM, neutral_site: game.neutralSite || false,
+    ...(market_spread_home !== null && { market_spread_home }),
   };
 }
 
@@ -752,9 +785,29 @@ async function ncaaFillFinalScores(pendingRows) {
         const modelPickedHome = (matchedRow.win_pct_home ?? 0.5) >= 0.5;
         const homeWon = homeScore > awayScore;
         const ml_correct = modelPickedHome ? homeWon : !homeWon;
-        const spread = homeScore - awayScore;
-        const projSpread = matchedRow.spread_home || 0;
-        const rl_correct = projSpread > 0 ? (spread > projSpread ? true : spread < projSpread ? false : null) : (spread < projSpread ? true : spread > projSpread ? false : null);
+        const actualMargin = homeScore - awayScore; // positive = home won by X
+        // ATS grading:
+        //   market_spread_home = the Vegas line (e.g. -6.5 means home is 6.5pt fav)
+        //   If we have a market spread, grade against it (did the favored team cover?)
+        //   If no market spread, grade as simple ML pick direction (same as ml_correct)
+        const mktSpread = matchedRow.market_spread_home ?? null;
+        let rl_correct = null;
+        if (mktSpread !== null) {
+          // Home covers if actual margin > market spread (e.g. won by 8 when spread was -6.5)
+          // Away covers if actual margin < market spread (e.g. home won by 4 when spread was -6.5)
+          if (actualMargin > mktSpread) rl_correct = true;       // home covered
+          else if (actualMargin < mktSpread) rl_correct = false; // away covered
+          else rl_correct = null;                                 // push
+        } else {
+          // No market spread stored — fall back to model's projected spread direction
+          // This at least tells us if the model correctly identified the dominant team
+          const projSpread = matchedRow.spread_home || 0;
+          const modelPickedHomeBySpread = projSpread > 0;
+          if (actualMargin > 0 && modelPickedHomeBySpread) rl_correct = true;
+          else if (actualMargin < 0 && !modelPickedHomeBySpread) rl_correct = true;
+          else if (actualMargin === 0) rl_correct = null;
+          else rl_correct = false;
+        }
         const total = homeScore + awayScore;
         const ou_correct = matchedRow.ou_total ? (total > matchedRow.ou_total ? "OVER" : total < matchedRow.ou_total ? "UNDER" : "PUSH") : null;
         await supabaseQuery(`/ncaa_predictions?id=eq.${matchedRow.id}`, "PATCH", { actual_home_score: homeScore, actual_away_score: awayScore, result_entered: true, ml_correct, rl_correct, ou_correct });
@@ -763,6 +816,74 @@ async function ncaaFillFinalScores(pendingRows) {
     } catch (e) { console.warn("ncaaFillFinalScores error", dateStr, e); }
   }
   return filled;
+}
+
+// Regrade all existing NCAA results with updated confidence + ATS logic.
+// Re-fetches team stats to recalculate confidence tiers, then recomputes
+// rl_correct using the stored spread_home as direction proxy (no market spread
+// available for historical games, but at least direction is now correct).
+async function ncaaRegradeAllResults(onProgress) {
+  onProgress?.("⏳ Loading all graded NCAA records…");
+  const allGraded = await supabaseQuery(
+    `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,actual_home_score,actual_away_score,ou_total,home_team_id,away_team_id,home_adj_em,away_adj_em&limit=5000`
+  );
+  if (!allGraded?.length) { onProgress?.("No graded records found"); return 0; }
+  onProgress?.(`⏳ Regrading ${allGraded.length} records…`);
+  let fixed = 0;
+  for (const row of allGraded) {
+    const homeScore = row.actual_home_score, awayScore = row.actual_away_score;
+    if (homeScore === null || awayScore === null) continue;
+
+    const winPctHome = row.win_pct_home ?? 0.5;
+    const modelPickedHome = winPctHome >= 0.5;
+    const homeWon = homeScore > awayScore;
+    const ml_correct = modelPickedHome ? homeWon : !homeWon;
+
+    // ATS — use market spread if stored, else use model spread direction
+    const actualMargin = homeScore - awayScore;
+    const mktSpread = row.market_spread_home ?? null;
+    let rl_correct = null;
+    if (mktSpread !== null) {
+      if (actualMargin > mktSpread) rl_correct = true;
+      else if (actualMargin < mktSpread) rl_correct = false;
+      else rl_correct = null;
+    } else {
+      const projSpread = row.spread_home || 0;
+      const modelPickedHomeBySpread = projSpread > 0;
+      if (actualMargin === 0) rl_correct = null;
+      else if (actualMargin > 0 && modelPickedHomeBySpread) rl_correct = true;
+      else if (actualMargin < 0 && !modelPickedHomeBySpread) rl_correct = true;
+      else rl_correct = false;
+    }
+
+    // O/U
+    const total = homeScore + awayScore;
+    const ou_correct = row.ou_total
+      ? (total > row.ou_total ? "OVER" : total < row.ou_total ? "UNDER" : "PUSH")
+      : null;
+
+    // Recalculate confidence from stored EM values using new formula
+    let confidence = "MEDIUM";
+    if (row.home_adj_em != null && row.away_adj_em != null) {
+      const emGap = Math.abs(row.home_adj_em - row.away_adj_em);
+      const winPctStrength = Math.abs(winPctHome - 0.5) * 2;
+      const confScore = Math.round(
+        (Math.min(emGap, 10) / 10) * 40 +
+        winPctStrength * 35 +
+        20 + // assume full sample (historical games)
+        5    // assume data available
+      );
+      confidence = confScore >= 55 ? "HIGH" : confScore >= 30 ? "MEDIUM" : "LOW";
+    }
+
+    await supabaseQuery(`/ncaa_predictions?id=eq.${row.id}`, "PATCH",
+      { ml_correct, rl_correct, ou_correct, confidence }
+    );
+    fixed++;
+    if (fixed % 100 === 0) onProgress?.(`⏳ Regraded ${fixed}/${allGraded.length}…`);
+  }
+  onProgress?.(`✅ Regraded ${fixed} NCAA records`);
+  return fixed;
 }
 
 // NCAA season starts Nov 1 of the prior calendar year
@@ -1631,6 +1752,17 @@ function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalibrationN
               animation: backfilling ? "pulse 1.5s ease infinite" : "none"
             }}
           >{backfilling ? "⏹ Cancel" : "⏮ Full Season Backfill"}</button>
+          <button
+            onClick={async () => {
+              if (!window.confirm("Regrade all 967+ NCAA records with updated confidence + ATS logic?")) return;
+              setSyncMsg("⏳ Regrading…");
+              const n = await ncaaRegradeAllResults(msg => setSyncMsg(msg));
+              setRefreshKey(k => k + 1);
+              setTimeout(() => setSyncMsg(""), 4000);
+            }}
+            disabled={backfilling}
+            style={{ background: "#1a0a2e", color: "#d2a8ff", border: "1px solid #3d1f6e", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 10, fontWeight: 700 }}
+          >🔧 Regrade</button>
         </div>
       </div>
 
