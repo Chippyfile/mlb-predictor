@@ -109,7 +109,7 @@ function getBetSignals({ pred, odds, sport = "ncaa" }) {
   // Compare model projected total vs market O/U line
   let ouSignal = null;
   const projTotal = sport === "mlb" ? (pred.homeRuns + pred.awayRuns) : (pred.homeScore + pred.awayScore);
-  const mktTotal = odds?.ouLine ?? null;
+  const mktTotal = odds?.ouLine ?? odds?.marketTotal ?? null;
   if (mktTotal) {
     const diff = projTotal - mktTotal;
     const diffPct = Math.abs(diff) / mktTotal;
@@ -131,7 +131,7 @@ function getBetSignals({ pred, odds, sport = "ncaa" }) {
   // Compare model spread vs market spread
   let spreadSignal = null;
   const projSpread = sport === "mlb" ? pred.runLineHome : pred.projectedSpread;
-  const mktSpread = odds?.homeSpread ?? null;
+  const mktSpread = odds?.homeSpread ?? odds?.marketSpreadHome ?? null;
   if (mktSpread !== null && mktSpread !== undefined) {
     const spreadDiff = projSpread - mktSpread;
     if (Math.abs(spreadDiff) >= (sport === "mlb" ? 0.5 : 3.0)) {
@@ -1731,7 +1731,7 @@ function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                 </div>
                 {game.loading ? <div style={{ color: C.dim, fontSize: 11 }}>Calculating…</div>
                   : game.pred ? (() => {
-                    const mlbOddsWithSpread = game.odds ? { ...game.odds, ouLine: game.odds.ouLine ?? null, homeSpread: game.odds.homeSpread ?? null } : null;
+                    const mlbOddsWithSpread = game.odds || null;
                     const sigs = getBetSignals({ pred: game.pred, odds: mlbOddsWithSpread, sport: "mlb" });
                     return <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
                       <Pill label="PROJ" value={`${away.abbr} ${game.pred.awayRuns.toFixed(1)} — ${home.abbr} ${game.pred.homeRuns.toFixed(1)}`} />
