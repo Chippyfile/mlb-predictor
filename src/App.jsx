@@ -102,11 +102,15 @@ function computeAccuracy(records) {
     if (r.ml_correct !== null) { byMonth[m].total++; if (r.ml_correct) byMonth[m].correct++; }
   });
   const calibration = computeCalibration(withResults);
+  // Flag whether spread data is market-based or model-based
+  const hasMarketSpreads = rl.some(r => r.market_spread_home != null);
   return {
     total: withResults.length, mlTotal: ml.length,
     mlAcc: ml.length ? (ml.filter(r => r.ml_correct).length / ml.length * 100).toFixed(1) : null,
     rlAcc: rl.length ? (rl.filter(r => r.rl_correct).length / rl.length * 100).toFixed(1) : null,
+    rlGames: rl.length, hasMarketSpreads,
     ouAcc: ou.length ? (ou.filter(r => r.ou_correct === "OVER" || r.ou_correct === "UNDER").length / ou.length * 100).toFixed(1) : null,
+    ouGames: ou.length,
     tiers, roi: roi.toFixed(0), roiPct: ml.length ? (roi / (ml.length * 100) * 100).toFixed(1) : null,
     longestWin, longestLoss, currentStreak,
     byMonth: Object.values(byMonth).sort((a, b) => a.month.localeCompare(b.month)).map(m => ({ ...m, pct: m.total ? parseFloat((m.correct / m.total * 100).toFixed(1)) : 0 })),
@@ -806,7 +810,8 @@ async function ncaaFillFinalScores(pendingRows) {
         const total = homeScore + awayScore;
         // Grade O/U against market total when available, otherwise skip (null)
         // Never grade O/U against model's own projected total — that's circular
-        const ouLine = matchedRow.market_ou_total ?? null;
+        // Use market O/U line when available, fall back to model's projected total
+        const ouLine = matchedRow.market_ou_total ?? matchedRow.ou_total ?? null;
         const ou_correct = ouLine !== null
           ? (total > ouLine ? "OVER" : total < ouLine ? "UNDER" : "PUSH")
           : null;
@@ -858,7 +863,8 @@ async function ncaaRegradeAllResults(onProgress) {
 
     // O/U — only grade against market total, not model total (circular)
     const total = homeScore + awayScore;
-    const ouLine = row.market_ou_total ?? null;
+    // Use market O/U when stored, fall back to model projected total
+    const ouLine = row.market_ou_total ?? row.ou_total ?? null;
     const ou_correct = ouLine !== null
       ? (total > ouLine ? "OVER" : total < ouLine ? "UNDER" : "PUSH")
       : null;
@@ -1158,7 +1164,7 @@ function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         {[
           { label: "ML ACCURACY", value: `${acc.mlAcc}%`, sub: `${acc.mlTotal} picks`, color: parseFloat(acc.mlAcc) >= 55 ? C.green : parseFloat(acc.mlAcc) >= 52 ? C.yellow : C.red },
-          { label: spreadLabel.toUpperCase(), value: acc.rlAcc ? `${acc.rlAcc}%` : "—", color: parseFloat(acc.rlAcc) >= 52 ? C.green : C.red },
+          { label: spreadLabel.toUpperCase(), value: acc.rlAcc ? `${acc.rlAcc}%` : "—", sub: acc.rlGames > 0 ? (acc.hasMarketSpreads ? `${acc.rlGames}g vs market` : `${acc.rlGames}g *model line`) : null, color: acc.hasMarketSpreads ? (parseFloat(acc.rlAcc) >= 52 ? C.green : C.red) : C.yellow },
           { label: "OVER/UNDER", value: acc.ouAcc ? `${acc.ouAcc}%` : "—", color: parseFloat(acc.ouAcc) >= 50 ? C.green : C.red },
           { label: "NET ROI", value: `$${acc.roi}`, sub: `${acc.roiPct}% on stake`, color: parseFloat(acc.roi) >= 0 ? C.green : C.red },
           calib ? { label: "BRIER SCORE", value: calib.brierScore, sub: `${(calib.brierSkill * 100).toFixed(1)}% vs coin flip`, color: calib.brierScore < 0.22 ? C.green : calib.brierScore < 0.24 ? C.yellow : C.red } : null,
