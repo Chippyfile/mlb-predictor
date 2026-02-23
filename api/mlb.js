@@ -1,15 +1,17 @@
 import https from 'https';
 
+// Vercel serverless function — proxies MLB Stats API requests server-side
+// Bypasses browser CORS restrictions entirely
+// Deploy location: /api/mlb.js (at repo root, NOT inside src/)
+// Usage: /api/mlb?path=schedule&sportId=1&date=2026-03-01
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
-  // Vercel pre-decodes query params, so path=teams%2F140%2Fstats arrives as "teams/140/stats"
-  // No need to decodeURIComponent — just use it directly
   const { path, ...params } = req.query;
-
-  if (!path) return res.status(400).json({ error: 'Missing path', query: req.query });
+  if (!path) return res.status(400).json({ error: 'Missing path param', query: req.query });
 
   const qs = new URLSearchParams(params).toString();
   const mlbUrl = `https://statsapi.mlb.com/api/v1/${path}${qs ? '?' + qs : ''}`;
@@ -23,7 +25,7 @@ export default async function handler(req, res) {
         r.on('data', chunk => body += chunk);
         r.on('end', () => {
           try { resolve({ status: r.statusCode, data: JSON.parse(body) }); }
-          catch (e) { reject(new Error(`Parse error: ${body.slice(0,200)}`)); }
+          catch (e) { reject(new Error(`JSON parse error: ${body.slice(0, 200)}`)); }
         });
       }).on('error', reject);
     });
