@@ -14,19 +14,22 @@ import {
 // ============================================================
 
 // ── SUPABASE CONFIG ──────────────────────────────────────────
-// Replace with your project URL and anon key
 const SUPABASE_URL = "https://lxaaqtqvlwjvyuedyauo.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4YWFxdHF2bHdqdnl1ZWR5YXVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4MDYzNTUsImV4cCI6MjA4NzM4MjM1NX0.UItPw2j2oo5F2_zJZmf43gmZnNHVQ5FViQgbd4QEii0";
 
+// method: GET | POST | PATCH | DELETE | UPSERT
 async function supabaseQuery(path, method = "GET", body = null) {
   try {
+    const isUpsert = method === "UPSERT";
     const opts = {
-      method,
+      method: isUpsert ? "POST" : method,
       headers: {
         "Content-Type": "application/json",
         "apikey": SUPABASE_ANON_KEY,
         "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-        "Prefer": method === "POST" ? "return=representation" : "",
+        "Prefer": isUpsert
+          ? "resolution=merge-duplicates,return=representation"
+          : method === "POST" ? "return=representation" : "",
       },
     };
     if (body) opts.body = JSON.stringify(body);
@@ -42,6 +45,158 @@ async function supabaseQuery(path, method = "GET", body = null) {
     console.error("Supabase fetch failed:", e);
     return null;
   }
+}
+
+// ── AUTO-SYNC ENGINE ──────────────────────────────────────────
+// On login + every 15 min:
+//   1. Scans all season dates → saves predictions for any unrecorded games
+//   2. Checks all pending rows → fills final scores when games finish
+const SEASON_START = `${new Date().getFullYear()}-02-01`;
+
+async function buildPredictionRow(game, dateStr) {
+  const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
+    await Promise.all([
+      fetchTeamHitting(game.homeTeamId), fetchTeamHitting(game.awayTeamId),
+      fetchTeamPitching(game.homeTeamId), fetchTeamPitching(game.awayTeamId),
+      fetchStarterStats(game.homeStarterId), fetchStarterStats(game.awayStarterId),
+      fetchRecentForm(game.homeTeamId), fetchRecentForm(game.awayTeamId),
+    ]);
+  const pred = predictGame({
+    homeTeamId: game.homeTeamId, awayTeamId: game.awayTeamId,
+    homeHit, awayHit, homePitch, awayPitch,
+    homeStarterStats: homeStarter, awayStarterStats: awayStarter,
+    homeForm, awayForm,
+  });
+  if (!pred) return null;
+  const home = teamById(game.homeTeamId);
+  const away = teamById(game.awayTeamId);
+  return {
+    game_date: dateStr,
+    home_team: home?.abbr || String(game.homeTeamId),
+    away_team: away?.abbr || String(game.awayTeamId),
+    game_pk:   game.gamePk,
+    model_ml_home: pred.modelML_home,
+    model_ml_away: pred.modelML_away,
+    run_line_home: pred.runLineHome,
+    run_line_away: -pred.runLineHome,
+    ou_total: pred.ouTotal,
+    win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)),
+    confidence: pred.confidence,
+    pred_home_runs: parseFloat(pred.homeRuns.toFixed(2)),
+    pred_away_runs: parseFloat(pred.awayRuns.toFixed(2)),
+    result_entered: false,
+  };
+}
+
+async function fillFinalScores(pendingRows) {
+  if (!pendingRows.length) return 0;
+  let filled = 0;
+  for (const row of pendingRows) {
+    try {
+      let homeScore = null, awayScore = null, isFinal = false;
+      // Try linescore endpoint directly via game_pk
+      if (row.game_pk) {
+        const r = await fetch(`${MLB_API}/game/${row.game_pk}/linescore`);
+        if (r.ok) {
+          const d = await r.json();
+          isFinal = !!(d?.isGameOver || d?.currentInningOrdinal === "Final");
+          homeScore = d?.teams?.home?.runs ?? null;
+          awayScore = d?.teams?.away?.runs ?? null;
+        }
+      }
+      // Fallback: schedule lookup
+      if (!isFinal) {
+        const r = await fetch(`${MLB_API}/schedule?sportId=1&date=${row.game_date}&hydrate=linescore,teams`);
+        if (r.ok) {
+          const d = await r.json();
+          for (const dt of (d?.dates || [])) {
+            for (const g of (dt.games || [])) {
+              const hA = g.teams?.home?.team?.abbreviation;
+              const aA = g.teams?.away?.team?.abbreviation;
+              if (hA === row.home_team && aA === row.away_team) {
+                const state = g.status?.abstractGameState;
+                if (state === "Final" || g.status?.detailedState === "Game Over") {
+                  homeScore = g.teams?.home?.score ?? null;
+                  awayScore = g.teams?.away?.score ?? null;
+                  isFinal = true;
+                }
+              }
+            }
+          }
+        }
+      }
+      if (isFinal && homeScore !== null && awayScore !== null) {
+        const ml_correct = homeScore > awayScore;
+        const rl_correct = (homeScore - awayScore) > 1.5 ? true
+                         : (awayScore - homeScore) > 1.5 ? false : null;
+        const ou_correct = (homeScore + awayScore) > row.ou_total ? "OVER"
+                         : (homeScore + awayScore) < row.ou_total ? "UNDER" : "PUSH";
+        await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
+          actual_home_runs: homeScore, actual_away_runs: awayScore,
+          result_entered: true, ml_correct, rl_correct, ou_correct,
+        });
+        filled++;
+      }
+    } catch (e) { console.warn("fillFinalScores error:", row.id, e); }
+  }
+  return filled;
+}
+
+async function autoSync(onProgress) {
+  onProgress?.("🔄 Checking for unrecorded games…");
+  const today = new Date().toISOString().split("T")[0];
+
+  // Build list of all dates from season start to today
+  const allDates = [];
+  const cur = new Date(SEASON_START);
+  while (cur.toISOString().split("T")[0] <= today) {
+    allDates.push(cur.toISOString().split("T")[0]);
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  // Fetch existing Supabase rows (keys + pending)
+  const existing = await supabaseQuery(
+    `/mlb_predictions?select=id,game_date,home_team,away_team,result_entered,ou_total,game_pk&order=game_date.asc&limit=5000`
+  );
+  const savedKeys = new Set((existing || []).map(r => `${r.game_date}|${r.away_team}@${r.home_team}`));
+  const pendingResults = (existing || []).filter(r => !r.result_entered);
+
+  // Step 1: fill any pending scores
+  if (pendingResults.length) {
+    onProgress?.(`⏳ Updating results for ${pendingResults.length} pending game(s)…`);
+    const filled = await fillFinalScores(pendingResults);
+    if (filled) onProgress?.(`✓ ${filled} result(s) recorded`);
+  }
+
+  // Step 2: save predictions for any unrecorded dates
+  let newPredictions = 0;
+  for (const dateStr of allDates) {
+    const schedule = await fetchScheduleForDate(dateStr);
+    if (!schedule.length) continue;
+    const unsaved = schedule.filter(g => {
+      const home = teamById(g.homeTeamId);
+      const away = teamById(g.awayTeamId);
+      return home && away && !savedKeys.has(`${dateStr}|${away.abbr}@${home.abbr}`);
+    });
+    if (!unsaved.length) continue;
+    onProgress?.(`📝 Saving ${unsaved.length} game(s) for ${dateStr}…`);
+    const rows = (await Promise.all(unsaved.map(g => buildPredictionRow(g, dateStr)))).filter(Boolean);
+    if (rows.length) {
+      await supabaseQuery("/mlb_predictions", "UPSERT", rows);
+      newPredictions += rows.length;
+      // Immediately fill scores for any of these that already finished
+      const newlySaved = await supabaseQuery(
+        `/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`
+      );
+      if (newlySaved?.length) await fillFinalScores(newlySaved);
+    }
+  }
+
+  const msg = newPredictions
+    ? `✅ Sync complete — ${newPredictions} new prediction(s) saved`
+    : "✅ All games up to date";
+  onProgress?.(msg);
+  return { newPredictions };
 }
 
 // Supabase SQL to create the table (run once in Supabase SQL editor):
@@ -357,27 +512,72 @@ function computeAccuracy(records) {
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 export default function App() {
-  const [activeTab, setActiveTab] = useState("calendar");
+  const [activeTab, setActiveTab]   = useState("calendar");
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | done | error
+  const [syncMsg, setSyncMsg]       = useState("");
+  const syncIntervalRef = useRef(null);
+
+  const runSync = useCallback(async () => {
+    setSyncStatus("syncing");
+    try {
+      await autoSync((msg) => setSyncMsg(msg));
+      setSyncStatus("done");
+    } catch (e) {
+      console.error("autoSync error:", e);
+      setSyncStatus("error");
+      setSyncMsg("Sync error — check console");
+    }
+  }, []);
+
+  // On mount: run sync immediately, then every 15 minutes
+  useEffect(() => {
+    runSync();
+    syncIntervalRef.current = setInterval(runSync, 15 * 60 * 1000);
+    return () => clearInterval(syncIntervalRef.current);
+  }, [runSync]);
+
   const tabs = [
-    { id: "calendar",  label: "📅 Calendar" },
-    { id: "history",   label: "📊 History" },
-    { id: "parlay",    label: "🎯 Parlay" },
-    { id: "matchup",   label: "⚾ Matchup" },
+    { id: "calendar", label: "📅 Calendar" },
+    { id: "history",  label: "📊 History"  },
+    { id: "parlay",   label: "🎯 Parlay"   },
+    { id: "matchup",  label: "⚾ Matchup"  },
   ];
+
+  const syncDotColor = syncStatus === "syncing" ? "#e3b341"
+    : syncStatus === "done"    ? "#3fb950"
+    : syncStatus === "error"   ? "#f85149" : "#8b949e";
 
   return (
     <div style={{ fontFamily: "'Inter', sans-serif", background: "#0d1117", minHeight: "100vh", color: "#e6edf3" }}>
       {/* Header */}
       <div style={{ background: "linear-gradient(135deg, #161b22 0%, #1a2332 100%)", borderBottom: "1px solid #30363d", padding: "16px 24px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-          <span style={{ fontSize: 28 }}>⚾</span>
-          <div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "#58a6ff", letterSpacing: 1 }}>MLB PREDICTOR v6</div>
-            <div style={{ fontSize: 11, color: "#8b949e", letterSpacing: 2 }}>HISTORY · PARLAY · SEASON ACCURACY</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontSize: 28 }}>⚾</span>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "#58a6ff", letterSpacing: 1 }}>MLB PREDICTOR v7</div>
+              <div style={{ fontSize: 11, color: "#8b949e", letterSpacing: 2 }}>AUTO-SYNC · HISTORY · PARLAY · ACCURACY</div>
+            </div>
+          </div>
+          {/* Sync status pill */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#161b22", border: "1px solid #30363d", borderRadius: 20, padding: "6px 14px" }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: syncDotColor,
+              boxShadow: syncStatus === "syncing" ? `0 0 6px ${syncDotColor}` : "none",
+              animation: syncStatus === "syncing" ? "pulse 1s infinite" : "none" }} />
+            <span style={{ fontSize: 11, color: syncDotColor, maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {syncStatus === "idle" ? "Waiting…" : syncMsg || "Syncing…"}
+            </span>
+            {syncStatus !== "syncing" && (
+              <button onClick={runSync} title="Force sync now"
+                style={{ background: "none", border: "none", color: "#8b949e", cursor: "pointer", fontSize: 13, padding: 0, marginLeft: 4 }}>↻</button>
+            )}
           </div>
         </div>
+        <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+
         {/* Season Accuracy Banner */}
-        <SeasonAccuracyBanner />
+        <SeasonAccuracyBanner refreshKey={syncStatus} />
+
         {/* Tabs */}
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           {tabs.map(t => (
@@ -396,7 +596,7 @@ export default function App() {
 
       <div style={{ padding: "20px 24px" }}>
         {activeTab === "calendar" && <CalendarTab />}
-        {activeTab === "history"  && <HistoryTab />}
+        {activeTab === "history"  && <HistoryTab refreshKey={syncStatus} />}
         {activeTab === "parlay"   && <ParlayTab />}
         {activeTab === "matchup"  && <MatchupTab />}
       </div>
@@ -407,17 +607,19 @@ export default function App() {
 // ═══════════════════════════════════════════════════════════════
 // SEASON ACCURACY BANNER
 // ═══════════════════════════════════════════════════════════════
-function SeasonAccuracyBanner() {
+function SeasonAccuracyBanner({ refreshKey }) {
   const [acc, setAcc] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
+      setLoading(true);
       const data = await supabaseQuery(`/mlb_predictions?result_entered=eq.true&select=ml_correct,rl_correct,ou_correct,confidence`);
       if (data && data.length) setAcc(computeAccuracy(data));
+      else setAcc(null);
       setLoading(false);
     })();
-  }, []);
+  }, [refreshKey]);
 
   if (loading) return (
     <div style={{ background: "#21262d", borderRadius: 8, padding: "10px 16px", fontSize: 12, color: "#8b949e" }}>
@@ -479,8 +681,6 @@ function CalendarTab() {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(null);
-  const [savedIds, setSavedIds] = useState(new Set());
-
   const loadGames = useCallback(async (d) => {
     setLoading(true);
     setGames([]);
@@ -515,45 +715,7 @@ function CalendarTab() {
 
   useEffect(() => { loadGames(dateStr); }, [dateStr]);
 
-  // Check which games are already saved
-  useEffect(() => {
-    (async () => {
-      const existing = await supabaseQuery(`/mlb_predictions?game_date=eq.${dateStr}&select=home_team,away_team`);
-      if (existing) {
-        setSavedIds(new Set(existing.map(r => `${r.away_team}@${r.home_team}`)));
-      }
-    })();
-  }, [dateStr]);
-
-  const saveGame = async (game) => {
-    if (!game.pred) return;
-    const homeTeam = teamById(game.homeTeamId);
-    const awayTeam = teamById(game.awayTeamId);
-    const key = `${awayTeam.abbr}@${homeTeam.abbr}`;
-    const row = {
-      game_date: dateStr,
-      home_team: homeTeam.abbr,
-      away_team: awayTeam.abbr,
-      model_ml_home: game.pred.modelML_home,
-      model_ml_away: game.pred.modelML_away,
-      run_line_home: game.pred.runLineHome,
-      run_line_away: -game.pred.runLineHome,
-      ou_total: game.pred.ouTotal,
-      win_pct_home: parseFloat(game.pred.homeWinPct.toFixed(4)),
-      confidence: game.pred.confidence,
-      pred_home_runs: parseFloat(game.pred.homeRuns.toFixed(2)),
-      pred_away_runs: parseFloat(game.pred.awayRuns.toFixed(2)),
-    };
-    const result = await supabaseQuery("/mlb_predictions", "POST", row);
-    if (result) setSavedIds(prev => new Set([...prev, key]));
-    else alert("Save failed — check Supabase config");
-  };
-
-  const saveAll = async () => {
-    for (const g of games) {
-      if (!g.loading && g.pred) await saveGame(g);
-    }
-  };
+  // Predictions auto-save via autoSync on login — no manual save needed
 
   return (
     <div>
@@ -564,12 +726,7 @@ function CalendarTab() {
           style={{ background: "#238636", color: "#fff", border: "none", borderRadius: 8, padding: "6px 16px", cursor: "pointer", fontSize: 13 }}>
           🔄 Refresh
         </button>
-        {games.length > 0 && (
-          <button onClick={saveAll}
-            style={{ background: "#1f6feb", color: "#fff", border: "none", borderRadius: 8, padding: "6px 16px", cursor: "pointer", fontSize: 13 }}>
-            💾 Save All to History
-          </button>
-        )}
+
         {loading && <span style={{ color: "#8b949e", fontSize: 13 }}>Loading games...</span>}
       </div>
 
@@ -630,17 +787,9 @@ function CalendarTab() {
                   <div style={{ color: "#8b949e", fontSize: 12 }}>⚠ Prediction unavailable</div>
                 )}
 
-                {/* Save / status */}
+                {/* Auto-saved indicator */}
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {savedIds.has(key)
-                    ? <span style={{ fontSize: 11, color: "#3fb950" }}>✓ Saved</span>
-                    : game.pred && !game.loading && (
-                      <button onClick={e => { e.stopPropagation(); saveGame(game); }}
-                        style={{ background: "#1f6feb", border: "none", color: "#fff", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11 }}>
-                        💾 Save
-                      </button>
-                    )
-                  }
+                  <span style={{ fontSize: 10, color: "#3fb950" }}>● AUTO</span>
                   <span style={{ color: "#8b949e", fontSize: 16 }}>{isOpen ? "▲" : "▼"}</span>
                 </div>
               </div>
@@ -677,11 +826,11 @@ function CalendarTab() {
 // ═══════════════════════════════════════════════════════════════
 // HISTORY TAB
 // ═══════════════════════════════════════════════════════════════
-function HistoryTab() {
+function HistoryTab({ refreshKey }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filterDate, setFilterDate] = useState("");
-  const [entering, setEntering] = useState(null); // id of row being edited
+  const [entering, setEntering] = useState(null);
   const [resultForm, setResultForm] = useState({ actual_home: "", actual_away: "" });
 
   const load = useCallback(async () => {
@@ -693,7 +842,8 @@ function HistoryTab() {
     setLoading(false);
   }, [filterDate]);
 
-  useEffect(() => { load(); }, [load]);
+  // Refresh when sync completes or filter changes
+  useEffect(() => { load(); }, [load, refreshKey]);
 
   const enterResult = async (id) => {
     const home = parseInt(resultForm.actual_home);
