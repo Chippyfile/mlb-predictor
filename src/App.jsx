@@ -904,7 +904,7 @@ async function fillFinalScores(pendingRows) {
         const ou_correct = matchedRow.ou_total ? (total > matchedRow.ou_total ? "OVER" : total < matchedRow.ou_total ? "UNDER" : "PUSH") : null;
         await supabaseQuery(`/mlb_predictions?id=eq.${matchedRow.id}`, "PATCH", {
           actual_home_runs:homeScore, actual_away_runs:awayScore, result_entered:true,
-          ml_correct, rl_correct, ou_correct, game_pk:g.gamePk, home_team:hAbbr, away_team:aAbbr, actual_spread:homeScore-awayScore,
+          ml_correct, rl_correct, ou_correct, game_pk:g.gamePk, home_team:hAbbr, away_team:aAbbr,
         });
         filled++;
       }
