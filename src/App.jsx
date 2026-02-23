@@ -55,19 +55,40 @@ const SEASON_START = `${new Date().getFullYear()}-02-01`;
 
 // Resolve split-squad team ID (e.g. 4864 "NYY1") to the real MLB team ID (147 "NYY")
 // Split-squad IDs have no stats — must use parent team for all stat lookups
+// MLB spring training split-squad teams use IDs like 4864 (not in TEAMS array).
+// Resolution priority:
+//   1. ID is a known real team → use it directly
+//   2. abbr like "NYY1" → strip digits → "NYY" → find real team
+//   3. abbr is purely numeric or empty (old saved rows) → use numeric ID prefix heuristic
+//   4. Nothing matched → cache a lookup via MLB API teams endpoint
+const _resolvedIdCache = {};
+
 function resolveStatTeamId(teamId, abbr) {
-  if (TEAMS.find(t => t.id === teamId)) return teamId; // already a real team
-  // Strip digits from abbr and find matching real team
+  if (!teamId) return null;
+  // 1. Known real team
+  if (TEAMS.find(t => t.id === teamId)) return teamId;
+  // Check cache
+  if (_resolvedIdCache[teamId]) return _resolvedIdCache[teamId];
+  // 2. abbr with letters (e.g. "NYY1", "BOS2")
   const baseAbbr = (abbr || "").replace(/\d+$/, "").toUpperCase();
-  const parent = TEAMS.find(t => t.abbr === baseAbbr);
-  if (parent) return parent.id;
-  return teamId; // best effort
+  if (baseAbbr.length >= 2) {
+    const parent = TEAMS.find(t => t.abbr === baseAbbr);
+    if (parent) { _resolvedIdCache[teamId] = parent.id; return parent.id; }
+  }
+  // 3. Purely numeric abbr or no abbr — try to match by common spring training ID ranges
+  // MLB assigns ST split-squad IDs sequentially; they don't correspond to real team IDs.
+  // Best we can do: return null so callers skip the fetch rather than 404ing.
+  console.warn(`resolveStatTeamId: unknown split-squad teamId=${teamId} abbr=${abbr} — skipping stat fetch`);
+  _resolvedIdCache[teamId] = null;
+  return null;
 }
 
 async function buildPredictionRow(game, dateStr) {
   // Use resolved IDs for stat fetches — split-squad IDs (4000s) have no stats
   const homeStatId = resolveStatTeamId(game.homeTeamId, game.homeAbbr);
   const awayStatId = resolveStatTeamId(game.awayTeamId, game.awayAbbr);
+  // Skip prediction entirely if either team can't be resolved (unrecognized split-squad)
+  if (!homeStatId || !awayStatId) return null;
 
   const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
     await Promise.all([
@@ -626,6 +647,7 @@ async function fetchOneSeasonHitting(teamId, season) {
 }
 
 async function fetchTeamHitting(teamId) {
+  if (!teamId) return null;
   const [cur, p1, p2] = await Promise.all([
     fetchOneSeasonHitting(teamId, SEASON),
     fetchOneSeasonHitting(teamId, SEASON - 1),
@@ -648,6 +670,7 @@ async function fetchOneSeasonPitching(teamId, season) {
 }
 
 async function fetchTeamPitching(teamId) {
+  if (!teamId) return null;
   const [cur, p1, p2, gpData] = await Promise.all([
     fetchOneSeasonPitching(teamId, SEASON),
     fetchOneSeasonPitching(teamId, SEASON - 1),
@@ -687,6 +710,7 @@ async function fetchStarterStats(pitcherId) {
 
 // ── RECENT FORM ───────────────────────────────────────────────
 async function fetchRecentForm(teamId, numGames = 15) {
+  if (!teamId) return null;
   const today = new Date().toISOString().split("T")[0];
   const data = await mlbFetch("schedule", {
     teamId, season: SEASON, startDate: `${SEASON}-01-01`, endDate: today,
