@@ -1,7 +1,1 @@
-{
-  "functions": {
-    "api/mlb.js": { "runtime": "nodejs20.x" },
-    "api/odds.js": { "runtime": "nodejs20.x" }
-  }
-}
-
+{}
