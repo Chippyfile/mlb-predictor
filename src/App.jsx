@@ -138,21 +138,16 @@ async function fillFinalScores(pendingRows) {
   if (!pendingRows.length) return 0;
   let filled = 0;
 
-  // Batch by date — one API call per date instead of one per game
   const byDate = {};
   for (const row of pendingRows) {
     if (!byDate[row.game_date]) byDate[row.game_date] = [];
     byDate[row.game_date].push(row);
   }
 
-  // Normalize abbreviation: strip trailing digits (split-squad "BAL1" → "BAL")
   const normAbbr = s => (s || "").replace(/\d+$/, "").toUpperCase();
 
   for (const [dateStr, rows] of Object.entries(byDate)) {
     try {
-      const mo = new Date(dateStr).getMonth() + 1;
-      // No gameType filter — omitting it returns ALL game types for the date
-      // This is more reliable than guessing S vs R for edge dates
       const params = new URLSearchParams({
         path: "schedule",
         sportId: 1,
@@ -160,10 +155,19 @@ async function fillFinalScores(pendingRows) {
         hydrate: "linescore,teams",
       });
       const r = await fetch(`/api/mlb?${params}`);
-      if (!r.ok) continue;
+      console.log(`[fillFinalScores] ${dateStr} — HTTP ${r.status}`);
+      if (!r.ok) { console.warn(`[fillFinalScores] bad response for ${dateStr}`); continue; }
       const data = await r.json();
 
-      for (const dt of (data?.dates || [])) {
+      const dates = data?.dates || [];
+      console.log(`[fillFinalScores] ${dateStr} — ${dates.length} date(s), ${dates.reduce((n,d)=>n+d.games.length,0)} game(s) total`);
+
+      // Log what our pending rows expect
+      console.log(`[fillFinalScores] pending rows for ${dateStr}:`,
+        rows.map(r => `${r.away_team}@${r.home_team} pk=${r.game_pk}`)
+      );
+
+      for (const dt of dates) {
         for (const g of (dt.games || [])) {
           const state  = g.status?.abstractGameState || "";
           const detail = g.status?.detailedState || "";
@@ -173,30 +177,27 @@ async function fillFinalScores(pendingRows) {
             || detail.startsWith("Final")
             || coded === "F";
 
-          if (!isFinal) continue;
-
+          const hAbbr = normAbbr(g.teams?.home?.team?.abbreviation);
+          const aAbbr = normAbbr(g.teams?.away?.team?.abbreviation);
+          const gamePk = g.gamePk;
           const homeScore = g.teams?.home?.score ?? null;
           const awayScore = g.teams?.away?.score ?? null;
-          if (homeScore === null || awayScore === null) continue;
 
-          const gamePk = g.gamePk;
-          const hAbbr  = normAbbr(g.teams?.home?.team?.abbreviation);
-          const aAbbr  = normAbbr(g.teams?.away?.team?.abbreviation);
+          console.log(`[fillFinalScores]   API game: ${aAbbr}@${hAbbr} pk=${gamePk} state="${state}"/"${detail}" score=${awayScore}-${homeScore} final=${isFinal}`);
 
-          // Match priority:
-          // 1) game_pk exact match (most reliable)
-          // 2) normalized abbreviation (strips split-squad digits like BAL1→BAL)
-          // 3) first 3 chars match (handles edge cases like "ATH"→"OAK")
+          if (!isFinal) continue;
+          if (homeScore === null || awayScore === null) { console.log(`    → no score`); continue; }
+
           const matchedRow = rows.find(row => {
-            if (row.game_pk && row.game_pk === gamePk) return true;
-            const rh = normAbbr(row.home_team);
-            const ra = normAbbr(row.away_team);
-            if (rh === hAbbr && ra === aAbbr) return true;
-            // Fuzzy: check if either stored abbr is a prefix of API abbr or vice versa
-            if (hAbbr.startsWith(rh) && aAbbr.startsWith(ra)) return true;
-            return false;
+            const pkMatch = row.game_pk && row.game_pk === gamePk;
+            const abbrMatch = normAbbr(row.home_team) === hAbbr && normAbbr(row.away_team) === aAbbr;
+            const fuzzyMatch = hAbbr.startsWith(normAbbr(row.home_team)) && aAbbr.startsWith(normAbbr(row.away_team));
+            console.log(`    → vs row ${row.away_team}@${row.home_team} pk=${row.game_pk}: pkMatch=${pkMatch} abbrMatch=${abbrMatch} fuzzy=${fuzzyMatch}`);
+            return pkMatch || abbrMatch || fuzzyMatch;
           });
-          if (!matchedRow) continue;
+
+          if (!matchedRow) { console.log(`    → NO MATCH`); continue; }
+          console.log(`    → MATCHED row id=${matchedRow.id}`);
 
           const ml_correct = homeScore > awayScore;
           const rl_correct = (homeScore - awayScore) > 1.5 ? true
@@ -208,9 +209,7 @@ async function fillFinalScores(pendingRows) {
             actual_home_runs: homeScore,
             actual_away_runs: awayScore,
             result_entered: true,
-            ml_correct,
-            rl_correct,
-            ou_correct,
+            ml_correct, rl_correct, ou_correct,
           });
           filled++;
         }
@@ -349,28 +348,13 @@ async function refreshPredictions(rows, onProgress) {
 
         const homeGamesPlayed = homeForm?.gamesPlayed || 0;
         const awayGamesPlayed = awayForm?.gamesPlayed || 0;
-        const [homeBullpen, awayBullpen] = await Promise.all([
-          fetchBullpenFatigue(homeStatId),
-          fetchBullpenFatigue(awayStatId),
-        ]);
         const pred = predictGame({
           homeTeamId, awayTeamId,
           homeHit, awayHit, homePitch, awayPitch,
           homeStarterStats: homeStarter, awayStarterStats: awayStarter,
           homeForm, awayForm, homeGamesPlayed, awayGamesPlayed,
-          bullpenData: { [homeTeamId]: homeBullpen, [awayTeamId]: awayBullpen },
         });
         if (!pred) continue;
-
-        // Also write game_pk and clean abbrs so fillFinalScores can match by game_pk
-        const gamePk = schedGame?.gamePk || null;
-        const normAbbr = s => (s || "").replace(/\d+$/, "");
-        const cleanHomeAbbr = schedGame
-          ? normAbbr(schedGame.teams?.home?.team?.abbreviation) || row.home_team
-          : row.home_team;
-        const cleanAwayAbbr = schedGame
-          ? normAbbr(schedGame.teams?.away?.team?.abbreviation) || row.away_team
-          : row.away_team;
 
         await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
           model_ml_home:   pred.modelML_home,
@@ -382,9 +366,6 @@ async function refreshPredictions(rows, onProgress) {
           confidence:      pred.confidence,
           pred_home_runs:  parseFloat(pred.homeRuns.toFixed(2)),
           pred_away_runs:  parseFloat(pred.awayRuns.toFixed(2)),
-          ...(gamePk ? { game_pk: gamePk } : {}),
-          home_team: cleanHomeAbbr,
-          away_team: cleanAwayAbbr,
         });
         updated++;
       } catch (e) { console.warn("refreshPredictions error:", row.id, e); }
