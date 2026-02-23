@@ -3,9 +3,6 @@
     { "source": "/mlb/:path*", "destination": "https://statsapi.mlb.com/api/v1/:path*" }
   ],
   "functions": {
-    "api/statcast.py": {
-      "maxDuration": 30
-    },
     "api/mlb.js": {
       "maxDuration": 15
     },
