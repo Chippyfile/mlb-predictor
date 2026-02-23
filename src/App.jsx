@@ -183,11 +183,19 @@ async function fillFinalScores(pendingRows) {
           const hAbbr  = normAbbr(g.teams?.home?.team?.abbreviation);
           const aAbbr  = normAbbr(g.teams?.away?.team?.abbreviation);
 
-          // Match priority: 1) game_pk exact match  2) normalized abbreviation match
-          const matchedRow = rows.find(row =>
-            (row.game_pk && row.game_pk === gamePk) ||
-            (normAbbr(row.home_team) === hAbbr && normAbbr(row.away_team) === aAbbr)
-          );
+          // Match priority:
+          // 1) game_pk exact match (most reliable)
+          // 2) normalized abbreviation (strips split-squad digits like BAL1→BAL)
+          // 3) first 3 chars match (handles edge cases like "ATH"→"OAK")
+          const matchedRow = rows.find(row => {
+            if (row.game_pk && row.game_pk === gamePk) return true;
+            const rh = normAbbr(row.home_team);
+            const ra = normAbbr(row.away_team);
+            if (rh === hAbbr && ra === aAbbr) return true;
+            // Fuzzy: check if either stored abbr is a prefix of API abbr or vice versa
+            if (hAbbr.startsWith(rh) && aAbbr.startsWith(ra)) return true;
+            return false;
+          });
           if (!matchedRow) continue;
 
           const ml_correct = homeScore > awayScore;
@@ -257,9 +265,8 @@ async function autoSync(onProgress) {
     const unsaved = schedule.filter(g => {
       const ha = normA(g.homeAbbr || teamById(g.homeTeamId).abbr);
       const aa = normA(g.awayAbbr || teamById(g.awayTeamId).abbr);
-      // Skip games where team abbr is purely numeric — can't make valid prediction
-      const isNumeric = s => /^\d+$/.test(s);
-      if (isNumeric(ha) || isNumeric(aa) || !ha || !aa) return false;
+      // Only skip if both teams resolved to something meaningful
+      if (!ha || !aa) return true;
       return !savedKeys.has(`${dateStr}|${aa}@${ha}`);
     });
     if (!unsaved.length) continue;
@@ -342,13 +349,28 @@ async function refreshPredictions(rows, onProgress) {
 
         const homeGamesPlayed = homeForm?.gamesPlayed || 0;
         const awayGamesPlayed = awayForm?.gamesPlayed || 0;
+        const [homeBullpen, awayBullpen] = await Promise.all([
+          fetchBullpenFatigue(homeStatId),
+          fetchBullpenFatigue(awayStatId),
+        ]);
         const pred = predictGame({
           homeTeamId, awayTeamId,
           homeHit, awayHit, homePitch, awayPitch,
           homeStarterStats: homeStarter, awayStarterStats: awayStarter,
           homeForm, awayForm, homeGamesPlayed, awayGamesPlayed,
+          bullpenData: { [homeTeamId]: homeBullpen, [awayTeamId]: awayBullpen },
         });
         if (!pred) continue;
+
+        // Also write game_pk and clean abbrs so fillFinalScores can match by game_pk
+        const gamePk = schedGame?.gamePk || null;
+        const normAbbr = s => (s || "").replace(/\d+$/, "");
+        const cleanHomeAbbr = schedGame
+          ? normAbbr(schedGame.teams?.home?.team?.abbreviation) || row.home_team
+          : row.home_team;
+        const cleanAwayAbbr = schedGame
+          ? normAbbr(schedGame.teams?.away?.team?.abbreviation) || row.away_team
+          : row.away_team;
 
         await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
           model_ml_home:   pred.modelML_home,
@@ -360,6 +382,9 @@ async function refreshPredictions(rows, onProgress) {
           confidence:      pred.confidence,
           pred_home_runs:  parseFloat(pred.homeRuns.toFixed(2)),
           pred_away_runs:  parseFloat(pred.awayRuns.toFixed(2)),
+          ...(gamePk ? { game_pk: gamePk } : {}),
+          home_team: cleanHomeAbbr,
+          away_team: cleanAwayAbbr,
         });
         updated++;
       } catch (e) { console.warn("refreshPredictions error:", row.id, e); }
@@ -1208,60 +1233,12 @@ function HistoryTab({ refreshKey }) {
         <button onClick={async () => {
           // Re-run prediction model on all visible rows and overwrite stale model values
           if (!records.length) return alert("No records to refresh");
+          const msg = document.createElement("div");
           const n = await refreshPredictions(records, (m) => console.log(m));
           load();
           alert(`Refreshed ${n} prediction(s) with current model`);
         }} style={{ background: "#21262d", color: "#58a6ff", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
           🔁 Refresh Predictions
-        </button>
-        <button onClick={async () => {
-          // 1. Find junk rows: team name is purely numeric or "UNK"
-          const isJunk = s => !s || /^\d+$/.test(s.trim()) || s.trim().toUpperCase() === "UNK";
-          const junkRows = records.filter(r => isJunk(r.home_team) || isJunk(r.away_team));
-
-          // 2. Find duplicate matchups on the same date — keep the one with result_entered=true,
-          //    or if neither has a result, keep the most recently created one
-          const seen = {};
-          const dupRows = [];
-          const allRows = await supabaseQuery("/mlb_predictions?order=game_date.desc,created_at.desc&limit=5000") || [];
-          for (const r of allRows) {
-            const key = `${r.game_date}|${r.away_team}@${r.home_team}`;
-            if (seen[key]) {
-              // Keep whichever has result; if tie, keep first seen (newest by created_at)
-              const existing = seen[key];
-              if (!existing.result_entered && r.result_entered) {
-                dupRows.push(existing.id);
-                seen[key] = r;
-              } else {
-                dupRows.push(r.id);
-              }
-            } else {
-              seen[key] = r;
-            }
-          }
-
-          const toDelete = [
-            ...new Set([...junkRows.map(r => r.id), ...dupRows])
-          ];
-
-          if (!toDelete.length) return alert("No junk or duplicate rows found — history looks clean!");
-
-          if (!window.confirm(`Delete ${toDelete.length} row(s)?
-
-• ${junkRows.length} junk team name(s) (UNK/numeric)
-• ${dupRows.length} duplicate matchup(s)
-
-This cannot be undone.`)) return;
-
-          let deleted = 0;
-          for (const id of toDelete) {
-            await supabaseQuery(`/mlb_predictions?id=eq.${id}`, "DELETE");
-            deleted++;
-          }
-          load();
-          alert(`Cleaned up ${deleted} row(s)`);
-        }} style={{ background: "#21262d", color: "#f85149", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
-          🧹 Clean Up Junk
         </button>
       </div>
 
