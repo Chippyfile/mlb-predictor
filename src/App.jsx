@@ -103,11 +103,16 @@ async function fillFinalScores(pendingRows) {
 
   for (const [dateStr, rows] of Object.entries(byDate)) {
     try {
-      // Use Vercel proxy (/api/mlb) to avoid CORS — same path used everywhere else
+      // Use Vercel proxy (/api/mlb) to avoid CORS
+      // Must pass correct gameType or MLB API returns empty — S=spring, R=regular, P=postseason
+      const d = new Date(dateStr);
+      const m = d.getMonth() + 1;
+      const gameType = (m <= 3) ? "S" : (m >= 10) ? "P,F,D,L,W" : "R";
       const params = new URLSearchParams({
         path: "schedule",
         sportId: 1,
         date: dateStr,
+        gameType,
         hydrate: "linescore,teams",
       });
       const r = await fetch(`/api/mlb?${params}`);
@@ -986,6 +991,14 @@ function HistoryTab({ refreshKey }) {
         </button>}
         <button onClick={load} style={{ background: "#21262d", color: "#58a6ff", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
           🔄 Refresh
+        </button>
+        <button onClick={async () => {
+          const pending = records.filter(r => !r.result_entered);
+          if (!pending.length) return alert("No pending games to update");
+          const n = await fillFinalScores(pending);
+          if (n) { load(); } else { alert("No finished games found yet — try again later"); }
+        }} style={{ background: "#21262d", color: "#e3b341", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
+          ⚡ Sync Results Now
         </button>
       </div>
 
