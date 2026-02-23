@@ -53,13 +53,28 @@ async function supabaseQuery(path, method = "GET", body = null) {
 //   2. Checks all pending rows → fills final scores when games finish
 const SEASON_START = `${new Date().getFullYear()}-02-01`;
 
+// Resolve split-squad team ID (e.g. 4864 "NYY1") to the real MLB team ID (147 "NYY")
+// Split-squad IDs have no stats — must use parent team for all stat lookups
+function resolveStatTeamId(teamId, abbr) {
+  if (TEAMS.find(t => t.id === teamId)) return teamId; // already a real team
+  // Strip digits from abbr and find matching real team
+  const baseAbbr = (abbr || "").replace(/\d+$/, "").toUpperCase();
+  const parent = TEAMS.find(t => t.abbr === baseAbbr);
+  if (parent) return parent.id;
+  return teamId; // best effort
+}
+
 async function buildPredictionRow(game, dateStr) {
+  // Use resolved IDs for stat fetches — split-squad IDs (4000s) have no stats
+  const homeStatId = resolveStatTeamId(game.homeTeamId, game.homeAbbr);
+  const awayStatId = resolveStatTeamId(game.awayTeamId, game.awayAbbr);
+
   const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
     await Promise.all([
-      fetchTeamHitting(game.homeTeamId), fetchTeamHitting(game.awayTeamId),
-      fetchTeamPitching(game.homeTeamId), fetchTeamPitching(game.awayTeamId),
+      fetchTeamHitting(homeStatId), fetchTeamHitting(awayStatId),
+      fetchTeamPitching(homeStatId), fetchTeamPitching(awayStatId),
       fetchStarterStats(game.homeStarterId), fetchStarterStats(game.awayStarterId),
-      fetchRecentForm(game.homeTeamId), fetchRecentForm(game.awayTeamId),
+      fetchRecentForm(homeStatId), fetchRecentForm(awayStatId),
     ]);
   const homeGamesPlayed = homeForm?.gamesPlayed || 0;
   const awayGamesPlayed = awayForm?.gamesPlayed || 0;
@@ -79,8 +94,10 @@ async function buildPredictionRow(game, dateStr) {
   const away = teamById(game.awayTeamId);
   return {
     game_date: dateStr,
-    home_team: (home?.abbr || String(game.homeTeamId)).replace(/\d+$/, ''),
-    away_team: (away?.abbr || String(game.awayTeamId)).replace(/\d+$/, ''),
+    // Use abbreviation from schedule API response (already stripped of split-squad digits)
+    // Fall back to TEAMS lookup, then numeric ID as last resort
+    home_team: game.homeAbbr || (home?.abbr || String(game.homeTeamId)).replace(/\d+$/, ''),
+    away_team: game.awayAbbr || (away?.abbr || String(game.awayTeamId)).replace(/\d+$/, ''),
     game_pk:   game.gamePk,
     model_ml_home: pred.modelML_home,
     model_ml_away: pred.modelML_away,
@@ -189,7 +206,8 @@ async function autoSync(onProgress) {
   const existing = await supabaseQuery(
     `/mlb_predictions?select=id,game_date,home_team,away_team,result_entered,ou_total,game_pk&order=game_date.asc&limit=5000`
   );
-  const savedKeys = new Set((existing || []).map(r => `${r.game_date}|${r.away_team}@${r.home_team}`));
+  const normA = s => (s || "").replace(/\d+$/, "").toUpperCase();
+  const savedKeys = new Set((existing || []).map(r => `${r.game_date}|${normA(r.away_team)}@${normA(r.home_team)}`));
   const pendingResults = (existing || []).filter(r => !r.result_entered);
 
   // Step 1: fill any pending scores
@@ -215,9 +233,11 @@ async function autoSync(onProgress) {
     const schedule = await fetchScheduleForDate(dateStr);
     if (!schedule.length) continue;
     const unsaved = schedule.filter(g => {
-      const home = teamById(g.homeTeamId);
-      const away = teamById(g.awayTeamId);
-      return home && away && !savedKeys.has(`${dateStr}|${away.abbr}@${home.abbr}`);
+      const ha = normA(g.homeAbbr || teamById(g.homeTeamId).abbr);
+      const aa = normA(g.awayAbbr || teamById(g.awayTeamId).abbr);
+      // Only skip if both teams resolved to something meaningful
+      if (!ha || !aa) return true;
+      return !savedKeys.has(`${dateStr}|${aa}@${ha}`);
     });
     if (!unsaved.length) continue;
     onProgress?.(`📝 Saving ${unsaved.length} game(s) for ${dateStr}…`);
@@ -287,12 +307,14 @@ async function refreshPredictions(rows, onProgress) {
         const homeStarterId = schedGame?.teams?.home?.probablePitcher?.id || null;
         const awayStarterId = schedGame?.teams?.away?.probablePitcher?.id || null;
 
+        const homeStatId = resolveStatTeamId(homeTeamId, row.home_team);
+        const awayStatId = resolveStatTeamId(awayTeamId, row.away_team);
         const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
           await Promise.all([
-            fetchTeamHitting(homeTeamId), fetchTeamHitting(awayTeamId),
-            fetchTeamPitching(homeTeamId), fetchTeamPitching(awayTeamId),
+            fetchTeamHitting(homeStatId), fetchTeamHitting(awayStatId),
+            fetchTeamPitching(homeStatId), fetchTeamPitching(awayStatId),
             fetchStarterStats(homeStarterId), fetchStarterStats(awayStarterId),
-            fetchRecentForm(homeTeamId), fetchRecentForm(awayTeamId),
+            fetchRecentForm(homeStatId), fetchRecentForm(awayStatId),
           ]);
 
         const homeGamesPlayed = homeForm?.gamesPlayed || 0;
@@ -384,7 +406,28 @@ const TEAMS = [
   { id: 147, name: "Yankees",     abbr: "NYY", league: "AL" },
   { id: 158, name: "Brewers",     abbr: "MIL", league: "NL" },
 ];
-const teamById = (id) => TEAMS.find(t => t.id === id) || { name: "Unknown", abbr: "UNK" };
+
+// teamById: local lookup first, then returns a placeholder with numeric ID
+// Spring training split squads use the same MLB team IDs — "UNK" means the 
+// schedule returned a team ID not in this list (rare for real teams)
+const teamById = (id) => {
+  const found = TEAMS.find(t => t.id === id);
+  if (found) return found;
+  // Try to match by numeric ID to a known team (handles edge cases)
+  return { name: String(id), abbr: String(id), id, league: "?" };
+};
+
+// Async version: resolves unknown team IDs via MLB API
+async function resolveTeam(id) {
+  const local = TEAMS.find(t => t.id === id);
+  if (local) return local;
+  try {
+    const data = await mlbFetch(`teams/${id}`, { sportId: 1 });
+    const t = data?.teams?.[0];
+    if (t) return { id: t.id, name: t.name, abbr: (t.abbreviation || t.name.slice(0,3)).replace(/\d+$/, ""), league: t.league?.name?.includes("National") ? "NL" : "AL" };
+  } catch {}
+  return { id, name: String(id), abbr: String(id), league: "?" };
+}
 
 // ── PARK FACTORS ──────────────────────────────────────────────
 const PARK_FACTORS = {
@@ -534,14 +577,25 @@ async function fetchScheduleForDate(dateStr) {
   for (const d of (data?.dates || [])) {
     for (const g of (d.games || [])) {
       const norm = s => (s || "").replace(/\d+$/, ""); // strip split-squad suffix
+      const homeId = g.teams?.home?.team?.id;
+      const awayId = g.teams?.away?.team?.id;
+      // Use API abbreviation directly — strip split-squad suffix (e.g. "NYY1" → "NYY")
+      const rawHomeAbbr = g.teams?.home?.team?.abbreviation || "";
+      const rawAwayAbbr = g.teams?.away?.team?.abbreviation || "";
+      const homeAbbr = rawHomeAbbr.replace(/\d+$/, "") || teamById(homeId).abbr;
+      const awayAbbr = rawAwayAbbr.replace(/\d+$/, "") || teamById(awayId).abbr;
       games.push({
         gamePk:       g.gamePk,
         gameDate:     g.gameDate,
         status:       (g.status?.abstractGameState === "Final" || g.status?.detailedState === "Game Over") ? "Final"
                       : g.status?.abstractGameState === "Live" ? "Live" : "Preview",
         detailedState: g.status?.detailedState || "",
-        homeTeamId:   g.teams?.home?.team?.id,
-        awayTeamId:   g.teams?.away?.team?.id,
+        homeTeamId:   homeId,
+        awayTeamId:   awayId,
+        homeAbbr,
+        awayAbbr,
+        homeTeamName: g.teams?.home?.team?.name || homeAbbr,
+        awayTeamName: g.teams?.away?.team?.name || awayAbbr,
         homeScore:    g.teams?.home?.score ?? null,
         awayScore:    g.teams?.away?.score ?? null,
         homeStarter:  g.teams?.home?.probablePitcher?.fullName || null,
@@ -909,16 +963,18 @@ function CalendarTab() {
 
     // Enrich each game
     const enriched = await Promise.all(raw.map(async (g) => {
+      const homeStatId = resolveStatTeamId(g.homeTeamId, g.homeAbbr);
+      const awayStatId = resolveStatTeamId(g.awayTeamId, g.awayAbbr);
       const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
         await Promise.all([
-          fetchTeamHitting(g.homeTeamId),
-          fetchTeamHitting(g.awayTeamId),
-          fetchTeamPitching(g.homeTeamId),
-          fetchTeamPitching(g.awayTeamId),
+          fetchTeamHitting(homeStatId),
+          fetchTeamHitting(awayStatId),
+          fetchTeamPitching(homeStatId),
+          fetchTeamPitching(awayStatId),
           fetchStarterStats(g.homeStarterId),
           fetchStarterStats(g.awayStarterId),
-          fetchRecentForm(g.homeTeamId),
-          fetchRecentForm(g.awayTeamId),
+          fetchRecentForm(homeStatId),
+          fetchRecentForm(awayStatId),
         ]);
       const homeGamesPlayed = homeForm?.gamesPlayed || 0;
       const awayGamesPlayed = awayForm?.gamesPlayed || 0;
@@ -1227,12 +1283,14 @@ function ParlayTab() {
     setParlay(null);
     const raw = await fetchScheduleForDate(d);
     const enriched = await Promise.all(raw.map(async (g) => {
+      const homeStatId = resolveStatTeamId(g.homeTeamId, g.homeAbbr);
+      const awayStatId = resolveStatTeamId(g.awayTeamId, g.awayAbbr);
       const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
         await Promise.all([
-          fetchTeamHitting(g.homeTeamId), fetchTeamHitting(g.awayTeamId),
-          fetchTeamPitching(g.homeTeamId), fetchTeamPitching(g.awayTeamId),
+          fetchTeamHitting(homeStatId), fetchTeamHitting(awayStatId),
+          fetchTeamPitching(homeStatId), fetchTeamPitching(awayStatId),
           fetchStarterStats(g.homeStarterId), fetchStarterStats(g.awayStarterId),
-          fetchRecentForm(g.homeTeamId), fetchRecentForm(g.awayTeamId),
+          fetchRecentForm(homeStatId), fetchRecentForm(awayStatId),
         ]);
       const homeGamesPlayed = homeForm?.gamesPlayed || 0;
       const awayGamesPlayed = awayForm?.gamesPlayed || 0;
