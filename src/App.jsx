@@ -318,14 +318,21 @@ function predictGame({
   hr += ump.runImpact * 0.5;
   ar += ump.runImpact * 0.5;
 
-  // ── FORM / MOMENTUM ────────────────────────────────────────
+  // ── SPRING TRAINING DETECTION ────────────────────────────
+  // Spring training: form/momentum is noise (experimental rosters, stars resting).
+  // Home advantage is actually NEGATIVE in spring (visiting teams bring stronger squads).
+  // Regular season starts ~late March (game 1 of 162). Use avgGP as proxy.
   const avgGP = (homeGamesPlayed + awayGamesPlayed) / 2;
-  const formSampleWeight = Math.min(0.12, 0.12 * Math.sqrt(Math.min(avgGP, 30) / 30));
+  const isSpringTraining = avgGP < 5; // fewer than 5 regular season games played
+
+  // ── FORM / MOMENTUM ────────────────────────────────────────
+  // Zero out during spring training — spring records are meaningless for prediction
+  const formSampleWeight = isSpringTraining ? 0 : Math.min(0.12, 0.12 * Math.sqrt(Math.min(avgGP, 30) / 30));
   const luckWeight = Math.min(0.08, formSampleWeight);
-  if (homeForm?.formScore) hr += homeForm.formScore * formSampleWeight;
-  if (awayForm?.formScore) ar += awayForm.formScore * formSampleWeight;
-  if (homeForm?.luckFactor) hr -= homeForm.luckFactor * luckWeight;
-  if (awayForm?.luckFactor) ar -= awayForm.luckFactor * luckWeight;
+  if (!isSpringTraining && homeForm?.formScore) hr += homeForm.formScore * formSampleWeight;
+  if (!isSpringTraining && awayForm?.formScore) ar += awayForm.formScore * formSampleWeight;
+  if (!isSpringTraining && homeForm?.luckFactor) hr -= homeForm.luckFactor * luckWeight;
+  if (!isSpringTraining && awayForm?.luckFactor) ar -= awayForm.luckFactor * luckWeight;
 
   // ── CLAMP ─────────────────────────────────────────────────
   hr = Math.max(1.8, Math.min(9.5, hr));
@@ -335,8 +342,9 @@ function predictGame({
   const EXP = 1.83;
   let pythWinPct = Math.pow(hr, EXP) / (Math.pow(hr, EXP) + Math.pow(ar, EXP));
 
-  // Season-scaled home advantage
-  const hfaScale = Math.min(1.0, avgGP / 20);
+  // Home advantage: zero during spring training (away teams often stronger in ST),
+  // scales up to full 3.8% by game 20 of regular season
+  const hfaScale = isSpringTraining ? 0 : Math.min(1.0, avgGP / 20);
   const homeAdv = 0.038 * hfaScale;
   let hwp = Math.min(0.88, Math.max(0.12, pythWinPct + homeAdv));
 
@@ -1527,6 +1535,13 @@ function HistoryTab({refreshKey}) {
           load();
           alert(`✅ Done! Refreshed ${refreshed} predictions, regraded ${regraded} results.`);
         }} style={{background:"#0d2010",color:"#3fb950",border:"1px solid #2ea043",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>⚡ Full Reset & Regrade</button>
+        <button onClick={async()=>{
+          if(!window.confirm("⚠️ DELETE all spring training records (games before 2026-03-20)? This clears noisy pre-season data so accuracy stats reflect regular season only. Cannot be undone."))return;
+          // Spring training ends ~March 20. Delete everything before regular season.
+          const deleted=await supabaseQuery("/mlb_predictions?game_date=lt.2026-03-20","DELETE");
+          load();
+          alert("✅ Spring training records deleted. Accuracy stats now reflect regular season only.");
+        }} style={{background:"#2a0a0a",color:"#f85149",border:"1px solid #6e1f1f",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>🗑 Delete Spring Training</button>
       </div>
       {loading&&<div style={{color:"#484f58",textAlign:"center",marginTop:40}}>Loading…</div>}
       {!loading&&records.length===0&&<div style={{color:"#484f58",textAlign:"center",marginTop:40}}>No predictions yet</div>}
