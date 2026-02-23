@@ -1183,7 +1183,19 @@ function AccuracyDashboard({refreshKey, onCalibrationChange}) {
   const calib=acc?.calibration;
 
   if (loading) return <div style={{color:"#484f58",textAlign:"center",marginTop:60,fontSize:13}}>Loading…</div>;
-  if (!acc) return <div style={{color:"#484f58",textAlign:"center",marginTop:60}}><div style={{fontSize:24,marginBottom:12}}>📊</div><div>No graded predictions yet. Results are auto-recorded as games finish.</div></div>;
+  if (!acc) return (
+    <div style={{color:"#484f58",textAlign:"center",marginTop:60}}>
+      <div style={{fontSize:24,marginBottom:12}}>📊</div>
+      {gameTypeFilter==="R"
+        ? <div>
+            <div style={{marginBottom:8}}>No regular season games graded yet.</div>
+            <div style={{fontSize:11,color:"#3a3a3a",marginBottom:16}}>Regular season starts ~March 27.</div>
+            <button onClick={()=>setGameTypeFilter("S")} style={{background:"#161b22",color:"#e3b341",border:"1px solid #3a2a00",borderRadius:6,padding:"7px 16px",cursor:"pointer",fontSize:11,fontWeight:700}}>🌸 View Spring Training Stats</button>
+          </div>
+        : <div>No graded predictions yet for this filter. Results are auto-recorded as games finish.</div>
+      }
+    </div>
+  );
 
   const C={green:"#3fb950",yellow:"#e3b341",red:"#f85149",blue:"#58a6ff",dim:"#484f58",muted:"#8b949e",border:"#21262d"};
 
