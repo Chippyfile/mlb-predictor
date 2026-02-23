@@ -1,977 +1,1175 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  fetchSchedule, fetchTeamHitting, fetchTeamPitching, fetchStarterStats,
-  fetchVsTeamSplits, fetchRecentGames, fetchBullpenFatigue, fetchLikelyRelievers,
-  fetchLiveOdds, matchOddsToGame,
-} from './api/mlb.js';
-import {
-  TEAMS, PARK_FACTORS, UMPIRE_PROFILES,
-  teamById, estimateWOBA, estimateWRCPlus, estimateFIP,
-  predictGame, getBannerColor, applySTDeflator, evaluateBets,
-  modelWinToMoneyline, moneylineToImplied, impliedToMoneyline,
-  runDiffToSpread, runLineOdds
-} from './data/constants.js';
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, RadarChart, Radar, PolarGrid, PolarAngleAxis, ReferenceLine
+} from "recharts";
 
-// ─── Design tokens ────────────────────────────────────────────
-const C = {
-  bg:'#060a06', card:'#0d140d', border:'#182418', green:'#39d353',
-  dkGreen:'#14532d', gold:'#f59e0b', red:'#ef4444', blue:'#60a5fa',
-  muted:'#8b9eb0', text:'#e8f8f0', dim:'#1e2e1e',
-  bannerGreen:   {bg:'#0d2a0d',border:'#1a5a1a',accent:'#39d353',label:'MODEL EDGE'},
-  bannerRed:     {bg:'#2a0d0d',border:'#5a1a1a',accent:'#ef4444',label:'FADE'},
-  bannerYellow:  {bg:'#2a220a',border:'#5a4a1a',accent:'#f59e0b',label:'DATA INCOMPLETE'},
-  bannerNeutral: {bg:'#0d140d',border:'#1a2a1a',accent:'#8b9eb0',label:'NEAR MARKET'},
+// ============================================================
+// MLB PREDICTOR v6 — HISTORY + PARLAY + SEASON ACCURACY
+// New in v6:
+//   • History tab  — saves every prediction to Supabase
+//   • Season Accuracy banner — ML, ATS, O/U, by confidence tier
+//   • Parlay tab   — pick leg count, auto-suggests highest-prob games
+//   • Result entry — mark actual outcomes to drive accuracy tracking
+// ============================================================
+
+// ── SUPABASE CONFIG ──────────────────────────────────────────
+// Replace with your project URL and anon key
+const SUPABASE_URL = https://lxaaqtqvlwjvyuedyauo.supabase.co;
+const SUPABASE_ANON_KEY = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4YWFxdHF2bHdqdnl1ZWR5YXVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4MDYzNTUsImV4cCI6MjA4NzM4MjM1NX0.UItPw2j2oo5F2_zJZmf43gmZnNHVQ5FViQgbd4QEii0;
+
+async function supabaseQuery(path, method = "GET", body = null) {
+  try {
+    const opts = {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+        "Prefer": method === "POST" ? "return=representation" : "",
+      },
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, opts);
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("Supabase error:", err);
+      return null;
+    }
+    const text = await res.text();
+    return text ? JSON.parse(text) : [];
+  } catch (e) {
+    console.error("Supabase fetch failed:", e);
+    return null;
+  }
+}
+
+// Supabase SQL to create the table (run once in Supabase SQL editor):
+// CREATE TABLE mlb_predictions (
+//   id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+//   game_date date NOT NULL,
+//   home_team text NOT NULL,
+//   away_team text NOT NULL,
+//   model_ml_home integer,
+//   model_ml_away integer,
+//   run_line_home numeric,
+//   run_line_away numeric,
+//   ou_total numeric,
+//   win_pct_home numeric,
+//   confidence text,
+//   pred_home_runs numeric,
+//   pred_away_runs numeric,
+//   actual_home_runs integer,
+//   actual_away_runs integer,
+//   result_entered boolean DEFAULT false,
+//   ml_correct boolean,
+//   rl_correct boolean,
+//   ou_correct text,
+//   created_at timestamptz DEFAULT now()
+// );
+
+// ── MLB API ───────────────────────────────────────────────────
+const MLB_API  = "https://statsapi.mlb.com/api/v1";
+const ODDS_API_KEY = ""; // optional: the-odds-api.com free key
+const SEASON   = new Date().getFullYear();
+
+// ── TEAMS ─────────────────────────────────────────────────────
+const TEAMS = [
+  { id: 108, name: "Angels",      abbr: "LAA", league: "AL" },
+  { id: 109, name: "D-backs",     abbr: "ARI", league: "NL" },
+  { id: 110, name: "Orioles",     abbr: "BAL", league: "AL" },
+  { id: 111, name: "Red Sox",     abbr: "BOS", league: "AL" },
+  { id: 112, name: "Cubs",        abbr: "CHC", league: "NL" },
+  { id: 113, name: "Reds",        abbr: "CIN", league: "NL" },
+  { id: 114, name: "Guardians",   abbr: "CLE", league: "AL" },
+  { id: 115, name: "Rockies",     abbr: "COL", league: "NL" },
+  { id: 116, name: "Tigers",      abbr: "DET", league: "AL" },
+  { id: 117, name: "Astros",      abbr: "HOU", league: "AL" },
+  { id: 118, name: "Royals",      abbr: "KC",  league: "AL" },
+  { id: 119, name: "Dodgers",     abbr: "LAD", league: "NL" },
+  { id: 120, name: "Nationals",   abbr: "WSH", league: "NL" },
+  { id: 121, name: "Mets",        abbr: "NYM", league: "NL" },
+  { id: 133, name: "Athletics",   abbr: "OAK", league: "AL" },
+  { id: 134, name: "Pirates",     abbr: "PIT", league: "NL" },
+  { id: 135, name: "Padres",      abbr: "SD",  league: "NL" },
+  { id: 136, name: "Mariners",    abbr: "SEA", league: "AL" },
+  { id: 137, name: "Giants",      abbr: "SF",  league: "NL" },
+  { id: 138, name: "Cardinals",   abbr: "STL", league: "NL" },
+  { id: 139, name: "Rays",        abbr: "TB",  league: "AL" },
+  { id: 140, name: "Rangers",     abbr: "TEX", league: "AL" },
+  { id: 141, name: "Blue Jays",   abbr: "TOR", league: "AL" },
+  { id: 142, name: "Twins",       abbr: "MIN", league: "AL" },
+  { id: 143, name: "Phillies",    abbr: "PHI", league: "NL" },
+  { id: 144, name: "Braves",      abbr: "ATL", league: "NL" },
+  { id: 145, name: "White Sox",   abbr: "CWS", league: "AL" },
+  { id: 146, name: "Marlins",     abbr: "MIA", league: "NL" },
+  { id: 147, name: "Yankees",     abbr: "NYY", league: "AL" },
+  { id: 158, name: "Brewers",     abbr: "MIL", league: "NL" },
+];
+const teamById = (id) => TEAMS.find(t => t.id === id) || { name: "Unknown", abbr: "UNK" };
+
+// ── PARK FACTORS ──────────────────────────────────────────────
+const PARK_FACTORS = {
+  108: { runFactor: 1.02, hrFactor: 1.05, name: "Angel Stadium" },
+  109: { runFactor: 1.03, hrFactor: 1.02, name: "Chase Field" },
+  110: { runFactor: 0.95, hrFactor: 0.91, name: "Camden Yards" },
+  111: { runFactor: 1.04, hrFactor: 1.08, name: "Fenway Park" },
+  112: { runFactor: 1.04, hrFactor: 1.07, name: "Wrigley Field" },
+  113: { runFactor: 1.00, hrFactor: 1.01, name: "Great American" },
+  114: { runFactor: 0.97, hrFactor: 0.95, name: "Progressive Field" },
+  115: { runFactor: 1.16, hrFactor: 1.19, name: "Coors Field" },
+  116: { runFactor: 0.98, hrFactor: 0.96, name: "Comerica Park" },
+  117: { runFactor: 0.99, hrFactor: 0.97, name: "Minute Maid" },
+  118: { runFactor: 1.01, hrFactor: 1.00, name: "Kauffman Stadium" },
+  119: { runFactor: 1.00, hrFactor: 1.01, name: "Dodger Stadium" },
+  120: { runFactor: 1.01, hrFactor: 1.02, name: "Nationals Park" },
+  121: { runFactor: 1.03, hrFactor: 1.06, name: "Citi Field" },
+  133: { runFactor: 0.99, hrFactor: 0.98, name: "Oakland Coliseum" },
+  134: { runFactor: 0.96, hrFactor: 0.93, name: "PNC Park" },
+  135: { runFactor: 0.95, hrFactor: 0.92, name: "Petco Park" },
+  136: { runFactor: 0.94, hrFactor: 0.90, name: "T-Mobile Park" },
+  137: { runFactor: 0.91, hrFactor: 0.88, name: "Oracle Park" },
+  138: { runFactor: 0.97, hrFactor: 0.95, name: "Busch Stadium" },
+  139: { runFactor: 0.96, hrFactor: 0.94, name: "Tropicana Field" },
+  140: { runFactor: 1.05, hrFactor: 1.08, name: "Globe Life Field" },
+  141: { runFactor: 1.03, hrFactor: 1.04, name: "Rogers Centre" },
+  142: { runFactor: 1.00, hrFactor: 0.99, name: "Target Field" },
+  143: { runFactor: 1.06, hrFactor: 1.09, name: "Citizens Bank" },
+  144: { runFactor: 1.02, hrFactor: 1.04, name: "Truist Park" },
+  145: { runFactor: 1.00, hrFactor: 1.00, name: "Guaranteed Rate" },
+  146: { runFactor: 0.97, hrFactor: 0.96, name: "loanDepot Park" },
+  147: { runFactor: 1.05, hrFactor: 1.10, name: "Yankee Stadium" },
+  158: { runFactor: 0.97, hrFactor: 0.95, name: "American Family Field" },
 };
 
-// ─── Tiny UI components ───────────────────────────────────────
-const Badge = ({ text, color=C.dkGreen, textColor=C.green }) => (
-  <span style={{background:color,color:textColor,fontSize:9,fontWeight:800,padding:'2px 7px',borderRadius:3,letterSpacing:1.5,textTransform:'uppercase',fontFamily:'monospace'}}>{text}</span>
-);
-const Panel = ({ children, style={} }) => (
-  <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:16,...style}}>{children}</div>
-);
-const SLabel = ({ children }) => (
-  <div style={{color:C.muted,fontSize:10,fontWeight:800,letterSpacing:2.5,textTransform:'uppercase',marginBottom:10,fontFamily:'monospace'}}>{children}</div>
-);
-const StatRow = ({ label, home, away, higherIsBetter=true, highlight=false }) => {
-  const h=parseFloat(home), a=parseFloat(away);
-  const hB = !isNaN(h)&&!isNaN(a) ? (higherIsBetter?h>=a:h<=a) : null;
+// ── PREDICTION ENGINE ─────────────────────────────────────────
+function predictGame({ homeTeamId, awayTeamId, homeHit, awayHit, homePitch, awayPitch,
+                        homeStarterStats, awayStarterStats, homeForm, awayForm, bullpenData }) {
+  const park = PARK_FACTORS[homeTeamId] || { runFactor: 1.0, hrFactor: 1.0 };
+  const wOBA = (h) => {
+    if (!h) return 0.320;
+    const { obp = 0.320, slg = 0.420, avg = 0.250 } = h;
+    return Math.max(0.25, Math.min(0.42, 0.69 * (obp - avg) + 0.89 * avg + 1.27 * (slg - avg) * 0.9 + 0.05));
+  };
+
+  let hr = 4.5, ar = 4.5;
+  hr += (wOBA(homeHit) - 0.320) * 14;
+  ar += (wOBA(awayHit) - 0.320) * 14;
+
+  const hFIP = homeStarterStats?.fip || (homePitch ? homePitch.era * 0.82 + homePitch.whip * 0.4 : 4.25);
+  const aFIP = awayStarterStats?.fip  || (awayPitch  ? awayPitch.era  * 0.82 + awayPitch.whip  * 0.4 : 4.25);
+  ar += (hFIP - 4.25) * 0.35;
+  hr += (aFIP - 4.25) * 0.35;
+
+  hr *= park.runFactor;
+  ar *= park.runFactor;
+
+  if (homeForm?.formScore) hr += homeForm.formScore * 0.3;
+  if (awayForm?.formScore) ar += awayForm.formScore * 0.3;
+  if (homeForm?.luckFactor) hr -= homeForm.luckFactor * 0.2;
+  if (awayForm?.luckFactor) ar -= awayForm.luckFactor * 0.2;
+
+  const bpHome = bullpenData?.[homeTeamId];
+  const bpAway = bullpenData?.[awayTeamId];
+  if (bpHome?.fatigued) ar += 0.3;
+  if (bpAway?.fatigued) hr += 0.3;
+
+  hr = Math.max(1.5, Math.min(10, hr));
+  ar = Math.max(1.5, Math.min(10, ar));
+
+  const homeAdv = 0.038;
+  const lambda = hr / ar;
+  const hwp = Math.min(0.85, Math.max(0.15, 0.5 + (Math.log(lambda) * 0.6) + homeAdv));
+
+  let confScore = 50;
+  if (homeStarterStats) confScore += 12;
+  if (awayStarterStats) confScore += 12;
+  if (homeForm) confScore += 8;
+  if (awayForm) confScore += 8;
+  if (bullpenData) confScore += 10;
+
+  const confidence = confScore >= 85 ? "HIGH" : confScore >= 65 ? "MEDIUM" : "LOW";
+
+  const modelML_home = hwp >= 0.5
+    ? -Math.round((hwp / (1 - hwp)) * 100)
+    : Math.round(((1 - hwp) / hwp) * 100);
+  const modelML_away = hwp >= 0.5
+    ? Math.round(((1 - hwp) / hwp) * 100)
+    : -Math.round((hwp / (1 - hwp)) * 100);
+
+  return { homeRuns: hr, awayRuns: ar, homeWinPct: hwp, awayWinPct: 1 - hwp,
+           confidence, confScore, modelML_home, modelML_away,
+           ouTotal: parseFloat((hr + ar).toFixed(1)),
+           runLineHome: -1.5, runLinePct: hwp > 0.65 ? hwp - 0.12 : hwp - 0.18 };
+}
+
+// ── MLB API HELPERS ───────────────────────────────────────────
+function getGameTypes(dateStr) {
+  const d = new Date(dateStr);
+  const m = d.getMonth() + 1;
+  if (m >= 2 && m <= 3) return "S";
+  if (m >= 10) return "P";
+  return "R";
+}
+
+async function fetchScheduleForDate(dateStr) {
+  const gameType = getGameTypes(dateStr);
+  const url = `${MLB_API}/schedule?sportId=1&date=${dateStr}&gameType=${gameType}&hydrate=probablePitcher,teams,venue,broadcasts`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const games = [];
+    for (const d of (data?.dates || [])) {
+      for (const g of (d.games || [])) {
+        games.push({
+          gamePk: g.gamePk,
+          gameDate: g.gameDate,
+          status: g.status?.abstractGameState,
+          homeTeamId: g.teams?.home?.team?.id,
+          awayTeamId: g.teams?.away?.team?.id,
+          homeScore: g.teams?.home?.score,
+          awayScore: g.teams?.away?.score,
+          homeStarter: g.teams?.home?.probablePitcher?.fullName || null,
+          awayStarter: g.teams?.away?.probablePitcher?.fullName || null,
+          homeStarterId: g.teams?.home?.probablePitcher?.id || null,
+          awayStarterId: g.teams?.away?.probablePitcher?.id || null,
+          venue: g.venue?.name,
+        });
+      }
+    }
+    return games;
+  } catch { return []; }
+}
+
+async function fetchTeamHitting(teamId) {
+  const url = `${MLB_API}/teams/${teamId}/stats?stats=season&group=hitting&season=${SEASON}&sportId=1`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const s = data?.stats?.[0]?.splits?.[0]?.stat || {};
+    return { avg: parseFloat(s.avg)||0.250, obp: parseFloat(s.obp)||0.320, slg: parseFloat(s.slg)||0.420, ops: parseFloat(s.ops)||0.740 };
+  } catch { return null; }
+}
+
+async function fetchTeamPitching(teamId) {
+  const url = `${MLB_API}/teams/${teamId}/stats?stats=season&group=pitching&season=${SEASON}&sportId=1`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const s = data?.stats?.[0]?.splits?.[0]?.stat || {};
+    return { era: parseFloat(s.era)||4.00, whip: parseFloat(s.whip)||1.30 };
+  } catch { return null; }
+}
+
+async function fetchStarterStats(pitcherId) {
+  if (!pitcherId) return null;
+  const url = `${MLB_API}/people/${pitcherId}/stats?stats=season&group=pitching&season=${SEASON}&sportId=1`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const s = data?.stats?.[0]?.splits?.[0]?.stat || {};
+    const era = parseFloat(s.era) || 4.50;
+    const whip = parseFloat(s.whip) || 1.35;
+    const k9 = parseFloat(s.strikeoutsPer9Inn) || 8.0;
+    const bb9 = parseFloat(s.walksPer9Inn) || 3.2;
+    const fip = parseFloat(s.fip) || (era * 0.82 + whip * 0.4);
+    return { era, whip, k9, bb9, fip };
+  } catch { return null; }
+}
+
+async function fetchRecentForm(teamId, numGames = 15) {
+  const today = new Date().toISOString().split("T")[0];
+  const url = `${MLB_API}/schedule?teamId=${teamId}&season=${SEASON}&gameType=S,R&startDate=${SEASON}-01-01&endDate=${today}&hydrate=linescore`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const games = [];
+    for (const d of (data?.dates || [])) {
+      for (const g of (d.games || [])) {
+        if (g.status?.abstractGameState === "Final") {
+          const isHome = g.teams?.home?.team?.id === teamId;
+          const my = isHome ? g.teams?.home : g.teams?.away;
+          const op = isHome ? g.teams?.away : g.teams?.home;
+          games.push({ win: my?.isWinner || false, rs: my?.score || 0, ra: op?.score || 0 });
+        }
+      }
+    }
+    const recent = games.slice(-numGames);
+    if (!recent.length) return null;
+    const rf = recent.reduce((s, g) => s + g.rs, 0);
+    const ra = recent.reduce((s, g) => s + g.ra, 0);
+    const wins = recent.filter(g => g.win).length;
+    const pyth = Math.pow(rf, 1.83) / (Math.pow(rf, 1.83) + Math.pow(ra, 1.83));
+    const actualWP = wins / recent.length;
+    const formScore = recent.slice(-5).reduce((s, g, i) => s + (g.win ? 1 : -0.6) * (i + 1), 0) / 15;
+    return { winPct: actualWP, pythWinPct: pyth, luckFactor: actualWP - pyth, formScore };
+  } catch { return null; }
+}
+
+// ── BANNER COLOR ──────────────────────────────────────────────
+function getBannerColor(pred, hasStarter) {
+  if (!pred || !hasStarter) return "yellow";
+  if (pred.homeWinPct >= 0.60) return "green";
+  if (pred.homeWinPct <= 0.40) return "green";
+  return "neutral";
+}
+
+// ── PARLAY ODDS CALCULATOR ────────────────────────────────────
+function mlToDecimal(ml) {
+  if (ml >= 100) return ml / 100 + 1;
+  return 100 / Math.abs(ml) + 1;
+}
+function combinedParlayOdds(legs) {
+  return legs.reduce((acc, leg) => acc * mlToDecimal(leg.ml), 1);
+}
+function combinedParlayProbability(legs) {
+  return legs.reduce((acc, leg) => acc * leg.prob, 1);
+}
+function decimalToML(dec) {
+  if (dec >= 2) return `+${Math.round((dec - 1) * 100)}`;
+  return `-${Math.round(100 / (dec - 1))}`;
+}
+
+// ── ACCURACY HELPERS ──────────────────────────────────────────
+function computeAccuracy(records) {
+  const withResults = records.filter(r => r.result_entered);
+  if (!withResults.length) return null;
+  const ml = withResults.filter(r => r.ml_correct !== null);
+  const rl = withResults.filter(r => r.rl_correct !== null);
+  const ou = withResults.filter(r => r.ou_correct !== null);
+  const tiers = { HIGH: { total: 0, correct: 0 }, MEDIUM: { total: 0, correct: 0 }, LOW: { total: 0, correct: 0 } };
+  withResults.forEach(r => {
+    if (r.confidence && tiers[r.confidence]) {
+      tiers[r.confidence].total++;
+      if (r.ml_correct) tiers[r.confidence].correct++;
+    }
+  });
+  return {
+    total: withResults.length,
+    mlAcc: ml.length ? (ml.filter(r => r.ml_correct).length / ml.length * 100).toFixed(1) : null,
+    rlAcc: rl.length ? (rl.filter(r => r.rl_correct).length / rl.length * 100).toFixed(1) : null,
+    ouAcc: ou.length ? (ou.filter(r => r.ou_correct === "OVER" || r.ou_correct === "UNDER").length / ou.length * 100).toFixed(1) : null,
+    tiers,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
+export default function App() {
+  const [activeTab, setActiveTab] = useState("calendar");
+  const tabs = [
+    { id: "calendar",  label: "📅 Calendar" },
+    { id: "history",   label: "📊 History" },
+    { id: "parlay",    label: "🎯 Parlay" },
+    { id: "matchup",   label: "⚾ Matchup" },
+  ];
+
   return (
-    <div style={{display:'flex',alignItems:'center',padding:'5px 0',borderBottom:`1px solid ${C.dim}`,background:highlight?'#0d1f0d':'transparent'}}>
-      <span style={{minWidth:80,textAlign:'right',fontWeight:700,color:hB===true?C.green:hB===false?C.muted:'#c8d8e8',fontVariantNumeric:'tabular-nums',fontSize:12}}>{home}</span>
-      <span style={{flex:1,textAlign:'center',color:C.muted,fontSize:10,letterSpacing:1,fontFamily:'monospace',padding:'0 8px'}}>{label}</span>
-      <span style={{minWidth:80,fontWeight:700,color:hB===false?C.green:hB===true?C.muted:'#c8d8e8',fontVariantNumeric:'tabular-nums',fontSize:12}}>{away}</span>
+    <div style={{ fontFamily: "'Inter', sans-serif", background: "#0d1117", minHeight: "100vh", color: "#e6edf3" }}>
+      {/* Header */}
+      <div style={{ background: "linear-gradient(135deg, #161b22 0%, #1a2332 100%)", borderBottom: "1px solid #30363d", padding: "16px 24px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+          <span style={{ fontSize: 28 }}>⚾</span>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#58a6ff", letterSpacing: 1 }}>MLB PREDICTOR v6</div>
+            <div style={{ fontSize: 11, color: "#8b949e", letterSpacing: 2 }}>HISTORY · PARLAY · SEASON ACCURACY</div>
+          </div>
+        </div>
+        {/* Season Accuracy Banner */}
+        <SeasonAccuracyBanner />
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setActiveTab(t.id)}
+              style={{
+                padding: "6px 16px", borderRadius: 20, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500,
+                background: activeTab === t.id ? "#58a6ff" : "#21262d",
+                color: activeTab === t.id ? "#0d1117" : "#8b949e",
+                transition: "all 0.15s",
+              }}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ padding: "20px 24px" }}>
+        {activeTab === "calendar" && <CalendarTab />}
+        {activeTab === "history"  && <HistoryTab />}
+        {activeTab === "parlay"   && <ParlayTab />}
+        {activeTab === "matchup"  && <MatchupTab />}
+      </div>
     </div>
   );
-};
+}
 
-// ─── Game Banner (calendar) ───────────────────────────────────
-function GameBanner({ game, onSelect, isSelected }) {
-  const color = getBannerColor(game);
-  const theme = C[`banner${color.charAt(0).toUpperCase()+color.slice(1)}`] || C.bannerNeutral;
-  const { prediction, homeTeam, awayTeam, homeStarter, awayStarter } = game;
-  const gameTime = game.gameTime ? new Date(game.gameTime) : null;
-  const timeStr = gameTime ? gameTime.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZoneName:'short'}) : 'TBD';
-  const isLive = game.status === 'Live';
-  const isFinal = game.status === 'Final';
-  const hasScore = game.homeScore !== null && game.awayScore !== null;
+// ═══════════════════════════════════════════════════════════════
+// SEASON ACCURACY BANNER
+// ═══════════════════════════════════════════════════════════════
+function SeasonAccuracyBanner() {
+  const [acc, setAcc] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      const data = await supabaseQuery(`/mlb_predictions?result_entered=eq.true&select=ml_correct,rl_correct,ou_correct,confidence`);
+      if (data && data.length) setAcc(computeAccuracy(data));
+      setLoading(false);
+    })();
+  }, []);
+
+  if (loading) return (
+    <div style={{ background: "#21262d", borderRadius: 8, padding: "10px 16px", fontSize: 12, color: "#8b949e" }}>
+      Loading season accuracy...
+    </div>
+  );
+  if (!acc) return (
+    <div style={{ background: "#21262d", borderRadius: 8, padding: "10px 16px", fontSize: 12, color: "#8b949e" }}>
+      📈 Season accuracy will appear once results are logged — enter outcomes in the History tab.
+    </div>
+  );
+
+  const statBox = (label, val, color) => (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontSize: 20, fontWeight: 700, color: color || "#58a6ff" }}>{val ?? "—"}%</div>
+      <div style={{ fontSize: 10, color: "#8b949e", letterSpacing: 1 }}>{label}</div>
+    </div>
+  );
+
+  const tierColor = (t) => {
+    if (!t.total) return "#8b949e";
+    const pct = t.correct / t.total;
+    return pct >= 0.60 ? "#3fb950" : pct >= 0.50 ? "#e3b341" : "#f85149";
+  };
 
   return (
-    <div onClick={() => onSelect(game)} style={{
-      background:theme.bg, border:`1px solid ${isSelected?theme.accent:theme.border}`,
-      borderLeft:`4px solid ${theme.accent}`, borderRadius:8, padding:'12px 14px',
-      cursor:'pointer', transition:'all 0.15s', marginBottom:8, position:'relative'
-    }}>
-      {/* Top right badges */}
-      <div style={{position:'absolute',top:8,right:10,display:'flex',gap:5,alignItems:'center'}}>
-        {isLive && <span style={{background:'#3a0000',color:C.red,fontSize:9,fontWeight:800,padding:'2px 6px',borderRadius:3,letterSpacing:1}}>● LIVE</span>}
-        {isFinal && <span style={{color:C.muted,fontSize:9,fontWeight:800,letterSpacing:1}}>FINAL</span>}
-        {!isLive&&!isFinal && <span style={{color:C.muted,fontSize:9}}>{timeStr}</span>}
-        {game.gameType === 'S' && <span style={{background:'#1a2a3a',color:C.blue,fontSize:8,fontWeight:800,padding:'1px 5px',borderRadius:2,letterSpacing:1.5}}>SPRING</span>}
-        <span style={{background:theme.bg,color:theme.accent,border:`1px solid ${theme.border}`,fontSize:8,fontWeight:800,padding:'1px 5px',borderRadius:2,letterSpacing:1.5,textTransform:'uppercase'}}>{theme.label}</span>
-      </div>
-
-      {/* Teams + score */}
-      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
-        <div style={{textAlign:'center',minWidth:46}}>
-          <div style={{fontSize:16,fontWeight:900,color:prediction&&prediction.awayRuns>prediction.homeRuns?C.green:'#c8d8e8'}}>{awayTeam?.abbr||'???'}</div>
-          <div style={{fontSize:9,color:C.muted}}>AWAY</div>
+    <div style={{ background: "linear-gradient(90deg, #1a2332, #162032)", border: "1px solid #30363d", borderRadius: 10, padding: "12px 20px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: "#e3b341" }}>📈 SEASON ACCURACY</span>
+          <span style={{ fontSize: 11, color: "#8b949e" }}>({acc.total} games graded)</span>
         </div>
-        <div style={{flex:1,textAlign:'center'}}>
-          {(isFinal || isLive) && hasScore ? (
-            <div>
-              <div style={{fontSize:20,fontWeight:900,color:isLive?C.red:C.text,fontVariantNumeric:'tabular-nums'}}>
-                {game.awayScore} – {game.homeScore}
+        <div style={{ display: "flex", gap: 24 }}>
+          {statBox("MONEYLINE", acc.mlAcc, acc.mlAcc >= 55 ? "#3fb950" : "#f85149")}
+          {statBox("RUN LINE", acc.rlAcc, acc.rlAcc >= 52 ? "#3fb950" : "#f85149")}
+          {statBox("O/U", acc.ouAcc, acc.ouAcc >= 50 ? "#3fb950" : "#f85149")}
+        </div>
+        <div style={{ display: "flex", gap: 12 }}>
+          {["HIGH", "MEDIUM", "LOW"].map(tier => (
+            <div key={tier} style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: tierColor(acc.tiers[tier]) }}>
+                {acc.tiers[tier].total ? `${Math.round(acc.tiers[tier].correct / acc.tiers[tier].total * 100)}%` : "—"}
               </div>
-              {isLive && game.inning && <div style={{fontSize:9,color:C.muted}}>{game.inningHalf?.charAt(0)} {game.inning}</div>}
-              {prediction && <div style={{fontSize:9,color:C.muted,marginTop:2}}>proj: {prediction.awayRuns.toFixed(1)} – {prediction.homeRuns.toFixed(1)}</div>}
-            </div>
-          ) : !prediction ? (
-            <div style={{color:'#8b9eb0',fontSize:11}}>Loading…</div>
-          ) : (
-            <div>
-              <div style={{fontSize:18,fontWeight:900,color:C.text,fontVariantNumeric:'tabular-nums'}}>
-                {prediction.awayRuns.toFixed(1)} – {prediction.homeRuns.toFixed(1)}
-              </div>
-              <div style={{fontSize:9,color:'#8b9eb0'}}>projected</div>
-            </div>
-          )}
-        </div>
-        <div style={{textAlign:'center',minWidth:46}}>
-          <div style={{fontSize:16,fontWeight:900,color:prediction&&prediction.homeRuns>=prediction.awayRuns?C.green:'#c8d8e8'}}>{homeTeam?.abbr||'???'}</div>
-          <div style={{fontSize:9,color:C.muted}}>HOME</div>
-        </div>
-      </div>
-
-      {/* Pitchers */}
-      <div style={{display:'flex',justifyContent:'space-between',fontSize:10,marginBottom:prediction?8:0,color:C.muted}}>
-        <span>⚾ {awayStarter?.fullName || <span style={{color:C.gold}}>SP TBD</span>}</span>
-        <span style={{color:C.border}}>vs</span>
-        <span style={{textAlign:'right'}}>⚾ {homeStarter?.fullName || <span style={{color:C.gold}}>SP TBD</span>}</span>
-      </div>
-
-      {/* Stats row */}
-      {prediction && (
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6,borderTop:`1px solid ${theme.border}`,paddingTop:8}}>
-          {[
-            {label:'TOTAL',   main:(prediction.homeRuns+prediction.awayRuns).toFixed(1),sub:'exp. runs'},
-            {label:'MODEL RL', main:`${runDiffToSpread(prediction.homeRuns,prediction.awayRuns)>0?'-':'+'}${Math.abs(parseFloat(runDiffToSpread(prediction.homeRuns,prediction.awayRuns))).toFixed(1)}`,sub:`${homeTeam?.abbr} spread`},
-            {label:'MODEL ML', main:modelWinToMoneyline(prediction.homeWinPct),sub:`${homeTeam?.abbr} ${(prediction.homeWinPct*100).toFixed(0)}%`},
-            {label:'RUN LINE', main:runLineOdds(prediction.homeWinPct,prediction.homeRuns,prediction.awayRuns).homeML,sub:`${homeTeam?.abbr} -1.5`},
-          ].map(({label,main,sub})=>(
-            <div key={label} style={{textAlign:'center'}}>
-              <div style={{fontSize:9,color:C.muted,letterSpacing:1}}>{label}</div>
-              <div style={{fontSize:13,fontWeight:800,color:theme.accent,fontFamily:'monospace'}}>{main}</div>
-              <div style={{fontSize:9,color:C.muted}}>{sub}</div>
+              <div style={{ fontSize: 9, color: "#8b949e", letterSpacing: 1 }}>{tier}</div>
             </div>
           ))}
         </div>
-      )}
-
-      {color==='yellow' && (
-        <div style={{marginTop:6,fontSize:9,color:C.gold}}>
-          ⚠️ {!homeStarter||!awayStarter?'Probable starters not yet posted. ':''}Predictions based on season averages only.
-        </div>
-      )}
+      </div>
     </div>
   );
 }
 
-// ─── Bet Card ──────────────────────────────────────────────────
-function BetCard({ bet }) {
-  const isStrong = bet.strong;
-  const isValue = bet.value && !isStrong;
-  const bg = isStrong ? '#0a2a0a' : isValue ? '#0d1f0d' : '#0d140d';
-  const border = isStrong ? '#1a5a1a' : isValue ? '#1a3a1a' : '#182418';
-  const accent = isStrong ? '#39d353' : isValue ? '#4a9a5a' : '#8b9eb0';
-  return (
-    <div style={{background:bg,border:`1px solid ${border}`,borderLeft:`3px solid ${accent}`,borderRadius:6,padding:'10px 12px',marginBottom:6}}>
-      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-        <div style={{display:'flex',gap:6,alignItems:'center'}}>
-          <span style={{color:accent,fontSize:10,fontWeight:800,letterSpacing:1,textTransform:'uppercase'}}>{bet.type}</span>
-          {isStrong && <span style={{background:'#1a4a1a',color:'#39d353',fontSize:8,fontWeight:800,padding:'1px 5px',borderRadius:2,letterSpacing:1.5}}>STAR STRONG</span>}
-          {isValue && <span style={{background:'#1a3a1a',color:'#4a9a5a',fontSize:8,fontWeight:800,padding:'1px 5px',borderRadius:2,letterSpacing:1.5}}>VALUE</span>}
-          {!isStrong && !isValue && <span style={{background:'#1a1a1a',color:'#8b9eb0',fontSize:8,fontWeight:800,padding:'1px 5px',borderRadius:2,letterSpacing:1.5}}>NEUTRAL</span>}
-        </div>
-        <span style={{color:accent,fontSize:14,fontWeight:900,fontFamily:'monospace'}}>{bet.side}</span>
-      </div>
-      <div style={{display:'flex',justifyContent:'space-between',fontSize:10,marginBottom:3}}>
-        {bet.type === 'Over/Under' ? (
-          <>
-            <span style={{color:'#8b9eb0'}}>Model: <span style={{color:accent,fontWeight:700}}>{bet.modelTotal}</span></span>
-            <span style={{color:'#8b9eb0'}}>Vegas: <span style={{color:'#c8d8e8',fontWeight:700}}>{bet.vegasOU}</span></span>
-            <span style={{color:bet.rawEdge>0?'#39d353':'#60a5fa',fontWeight:700,fontFamily:'monospace'}}>{bet.rawEdge>0?'+':''}{bet.rawEdge.toFixed(1)} runs</span>
-          </>
-        ) : (
-          <>
-            <span style={{color:'#8b9eb0'}}>Model: <span style={{color:accent,fontWeight:700,fontFamily:'monospace'}}>{bet.modelLine}</span></span>
-            <span style={{color:'#8b9eb0'}}>Vegas: <span style={{color:'#c8d8e8',fontWeight:700,fontFamily:'monospace'}}>{bet.vegasLine}</span></span>
-            <span style={{color:accent,fontWeight:700}}>{bet.modelPct ? bet.modelPct+'% win' : (bet.edge*100).toFixed(1)+'% edge'}</span>
-          </>
-        )}
-      </div>
-      <div style={{color:'#8b9eb0',fontSize:9}}>{bet.description}</div>
-    </div>
-  );
-}
-
-function VegasInput({ gameId, onSubmit, prefill, oddsStatus }) {
-  const [mlHome, setMLHome] = useState(prefill?.vegasML?.home?.toString() || '');
-  const [mlAway, setMLAway] = useState(prefill?.vegasML?.away?.toString() || '');
-  const [ou, setOU] = useState(prefill?.vegasOU?.toString() || '');
-  const [rlHome, setRLHome] = useState(prefill?.vegasRL?.home?.toString() || '');
-
-  // Update fields if prefill changes (e.g. odds loaded after expand)
-  useEffect(() => {
-    if (prefill?.vegasML?.home) setMLHome(prefill.vegasML.home.toString());
-    if (prefill?.vegasML?.away) setMLAway(prefill.vegasML.away.toString());
-    if (prefill?.vegasOU)       setOU(prefill.vegasOU.toString());
-    if (prefill?.vegasRL?.home) setRLHome(prefill.vegasRL.home.toString());
-  }, [prefill]);
-  const handleSubmit = () => {
-    onSubmit(gameId, {
-      vegasML: { home: mlHome ? parseInt(mlHome) : null, away: mlAway ? parseInt(mlAway) : null },
-      vegasOU: ou ? parseFloat(ou) : null,
-      vegasRL: { home: rlHome ? parseInt(rlHome) : null },
-    });
-  };
-  const iS = {background:'#060a06',color:'#e8f8f0',border:'1px solid #182418',borderRadius:4,padding:'5px 8px',fontSize:11,fontFamily:'monospace',width:'100%',outline:'none',textAlign:'center'};
-  const statusBadge = {
-    loading: <span style={{color:'#f59e0b',fontSize:9}}>⏳ Loading odds…</span>,
-    loaded:  <span style={{color:'#39d353',fontSize:9}}>✓ Auto-filled from DraftKings — edit if lines have moved</span>,
-    no_key:  <span style={{color:'#f59e0b',fontSize:9}}>⚠️ No odds API key — enter manually or add ODDS_API_KEY to Vercel</span>,
-    error:   <span style={{color:'#ef4444',fontSize:9}}>✗ Odds fetch failed — enter manually</span>,
-    idle:    null,
-  }[oddsStatus] || null;
-  return (
-    <div style={{background:'#0a0f0a',border:'1px solid #182418',borderRadius:8,padding:12,marginBottom:10}}>
-      <div style={{color:'#8b9eb0',fontSize:9,fontWeight:800,letterSpacing:2,textTransform:'uppercase',marginBottom:8}}>Enter Vegas Odds to Analyze Bets</div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr auto',gap:6,alignItems:'flex-end'}}>
-        <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>HOME ML</div><input value={mlHome} onChange={e=>setMLHome(e.target.value)} placeholder="-148" style={iS}/></div>
-        <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>AWAY ML</div><input value={mlAway} onChange={e=>setMLAway(e.target.value)} placeholder="+124" style={iS}/></div>
-        <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>O/U</div><input value={ou} onChange={e=>setOU(e.target.value)} placeholder="8.5" style={iS}/></div>
-        <div><div style={{color:'#8b9eb0',fontSize:9,marginBottom:3}}>HOME RL -1.5</div><input value={rlHome} onChange={e=>setRLHome(e.target.value)} placeholder="+136" style={iS}/></div>
-        <button onClick={handleSubmit} style={{background:'#14532d',color:'#39d353',border:'1px solid #1a5a1a',borderRadius:4,padding:'7px 10px',fontSize:10,fontWeight:800,cursor:'pointer',fontFamily:'monospace',whiteSpace:'nowrap'}}>ANALYZE</button>
-      </div>
-      <div style={{marginTop:6}}>{statusBadge || <span style={{color:'#4a5568',fontSize:9}}>Source: DraftKings / Vegas Insider. Edit any field if lines have moved.</span>}</div>
-    </div>
-  );
-}
-
-// ─── Calendar Tab ─────────────────────────────────────────────
-function CalendarTab({ onSelectGame }) {
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+// ═══════════════════════════════════════════════════════════════
+// CALENDAR TAB
+// ═══════════════════════════════════════════════════════════════
+function CalendarTab() {
+  const todayStr = new Date().toISOString().split("T")[0];
+  const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [expandedId, setExpandedId] = useState(null);
-  const [relievers, setRelievers] = useState({});
-  const [vegasOdds, setVegasOdds] = useState({});
-  const [betResults, setBetResults] = useState({});
-  const [oddsData, setOddsData] = useState([]);
-  const [oddsStatus, setOddsStatus] = useState('idle'); // idle | loading | loaded | error | no_key
-  const cacheRef = useRef({});
+  const [expanded, setExpanded] = useState(null);
+  const [savedIds, setSavedIds] = useState(new Set());
 
-  // Fetch live odds once on mount (and after date changes)
-  useEffect(() => {
-    setOddsStatus('loading');
-    fetchLiveOdds().then(data => {
-      if (data.error === 'NO_API_KEY') {
-        setOddsStatus('no_key');
-      } else if (data.error) {
-        setOddsStatus('error');
-      } else {
-        setOddsData(data.games || []);
-        setOddsStatus('loaded');
-      }
-    });
-  }, [selectedDate]);
+  const loadGames = useCallback(async (d) => {
+    setLoading(true);
+    setGames([]);
+    const raw = await fetchScheduleForDate(d);
+    setGames(raw.map(g => ({ ...g, pred: null, loading: true })));
 
-  // Auto-populate Vegas odds for a game from the live odds data
-  const autoPopulateOdds = (game) => {
-    if (!oddsData.length) return null;
-    const match = matchOddsToGame(oddsData, game.homeTeam?.name, game.awayTeam?.name);
-    if (!match) return null;
-    return {
-      vegasML: { home: match.homeML, away: match.awayML },
-      vegasOU: match.overUnder,
-      vegasRL: { home: match.homeRL },
-    };
-  };
-
-  const loadGames = useCallback(async (dateStr) => {
-    if (cacheRef.current[dateStr]) { setGames(cacheRef.current[dateStr]); return; }
-    setLoading(true); setError(null); setGames([]);
-    try {
-      const rawGames = await fetchSchedule(dateStr);
-      if (!rawGames.length) { setGames([]); setLoading(false); return; }
-      setGames(rawGames.map(g => ({...g, prediction:null})));
-
-      // Enrich each game in parallel
-      const enriched = await Promise.all(rawGames.map(async (game) => {
-        try {
-          const [homeHit, awayHit, homePitch, awayPitch,
-                 homeStarterStats, awayStarterStats,
-                 homeVsAway, awayVsHome,
-                 homeForm, awayForm,
-                 homeBullpen, awayBullpen] = await Promise.all([
-            fetchTeamHitting(game.homeTeam.id),
-            fetchTeamHitting(game.awayTeam.id),
-            fetchTeamPitching(game.homeTeam.id),
-            fetchTeamPitching(game.awayTeam.id),
-            game.homeStarter?.id ? fetchStarterStats(game.homeStarter.id) : null,
-            game.awayStarter?.id ? fetchStarterStats(game.awayStarter.id) : null,
-            fetchVsTeamSplits(game.homeTeam.id, game.awayTeam.id),
-            fetchVsTeamSplits(game.awayTeam.id, game.homeTeam.id),
-            fetchRecentGames(game.homeTeam.id),
-            fetchRecentGames(game.awayTeam.id),
-            fetchBullpenFatigue(game.homeTeam.id),
-            fetchBullpenFatigue(game.awayTeam.id),
-          ]);
-          const prediction = predictGame({
-            homeTeam:game.homeTeam, awayTeam:game.awayTeam,
-            homeHit, awayHit, homePitch, awayPitch,
-            homeStarterStats, awayStarterStats,
-            homeVsAway, awayVsHome,
-            homeForm, awayForm, homeBullpen, awayBullpen,
-            umpireName:'Default',
-          });
-          return {...game, prediction, homeStarterStats, awayStarterStats, homeForm, awayForm, homeBullpen, awayBullpen};
-        } catch { return game; }
-      }));
-
-      cacheRef.current[dateStr] = enriched;
-      setGames(enriched);
-    } catch (e) {
-      setError(e.message);
-    } finally { setLoading(false); }
+    // Enrich each game
+    const enriched = await Promise.all(raw.map(async (g) => {
+      const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
+        await Promise.all([
+          fetchTeamHitting(g.homeTeamId),
+          fetchTeamHitting(g.awayTeamId),
+          fetchTeamPitching(g.homeTeamId),
+          fetchTeamPitching(g.awayTeamId),
+          fetchStarterStats(g.homeStarterId),
+          fetchStarterStats(g.awayStarterId),
+          fetchRecentForm(g.homeTeamId),
+          fetchRecentForm(g.awayTeamId),
+        ]);
+      const pred = predictGame({
+        homeTeamId: g.homeTeamId, awayTeamId: g.awayTeamId,
+        homeHit, awayHit, homePitch, awayPitch,
+        homeStarterStats: homeStarter, awayStarterStats: awayStarter,
+        homeForm, awayForm,
+      });
+      return { ...g, homeHit, awayHit, homePitch, awayPitch, homeStarterStats: homeStarter,
+               awayStarterStats: awayStarter, homeForm, awayForm, pred, loading: false };
+    }));
+    setGames(enriched);
+    setLoading(false);
   }, []);
 
-  useEffect(() => { loadGames(selectedDate); }, [selectedDate, loadGames]);
+  useEffect(() => { loadGames(dateStr); }, [dateStr]);
 
-  // Auto-refresh live games every 5 min
+  // Check which games are already saved
   useEffect(() => {
-    const iv = setInterval(() => {
-      if (games.some(g => g.status === 'Live')) {
-        delete cacheRef.current[selectedDate];
-        loadGames(selectedDate);
+    (async () => {
+      const existing = await supabaseQuery(`/mlb_predictions?game_date=eq.${dateStr}&select=home_team,away_team`);
+      if (existing) {
+        setSavedIds(new Set(existing.map(r => `${r.away_team}@${r.home_team}`)));
       }
-    }, 300000);
-    return () => clearInterval(iv);
-  }, [games, selectedDate, loadGames]);
+    })();
+  }, [dateStr]);
 
-  const handleVegasSubmit = (gameId, odds) => {
-    setVegasOdds(p => ({...p, [gameId]: odds}));
-    const game = games.find(g => g.gameId === gameId);
-    if (!game?.prediction) return;
-    const adj = applySTDeflator(game.prediction, game.gameType === 'S');
-    const bets = evaluateBets({
-      prediction: adj,
-      vegasML: odds.vegasML,
-      vegasOU: odds.vegasOU,
-      vegasRL: odds.vegasRL,
-      gameType: game.gameType,
-    });
-    setBetResults(p => ({...p, [gameId]: bets}));
+  const saveGame = async (game) => {
+    if (!game.pred) return;
+    const homeTeam = teamById(game.homeTeamId);
+    const awayTeam = teamById(game.awayTeamId);
+    const key = `${awayTeam.abbr}@${homeTeam.abbr}`;
+    const row = {
+      game_date: dateStr,
+      home_team: homeTeam.abbr,
+      away_team: awayTeam.abbr,
+      model_ml_home: game.pred.modelML_home,
+      model_ml_away: game.pred.modelML_away,
+      run_line_home: game.pred.runLineHome,
+      run_line_away: -game.pred.runLineHome,
+      ou_total: game.pred.ouTotal,
+      win_pct_home: parseFloat(game.pred.homeWinPct.toFixed(4)),
+      confidence: game.pred.confidence,
+      pred_home_runs: parseFloat(game.pred.homeRuns.toFixed(2)),
+      pred_away_runs: parseFloat(game.pred.awayRuns.toFixed(2)),
+    };
+    const result = await supabaseQuery("/mlb_predictions", "POST", row);
+    if (result) setSavedIds(prev => new Set([...prev, key]));
+    else alert("Save failed — check Supabase config");
   };
 
-  const changeDate = d => {
-    const dt = new Date(selectedDate); dt.setDate(dt.getDate() + d);
-    setSelectedDate(dt.toISOString().split('T')[0]);
-  };
-  const isToday = selectedDate === new Date().toISOString().split('T')[0];
-
-  const handleExpand = async (game) => {
-    const newId = expandedId === game.gameId ? null : game.gameId;
-    setExpandedId(newId);
-    onSelectGame(game);
-    if (newId) {
-      // Auto-populate odds if we have live data and haven't manually set odds yet
-      if (!vegasOdds[game.gameId]) {
-        const auto = autoPopulateOdds(game);
-        if (auto) {
-          setVegasOdds(p => ({...p, [game.gameId]: auto}));
-          // Also auto-run bet analysis
-          if (game.prediction) {
-            const adj = applySTDeflator(game.prediction, game.gameType === 'S');
-            const bets = evaluateBets({
-              prediction: adj,
-              vegasML: auto.vegasML,
-              vegasOU: auto.vegasOU,
-              vegasRL: auto.vegasRL,
-              gameType: game.gameType,
-            });
-            setBetResults(p => ({...p, [game.gameId]: bets}));
-          }
-        }
-      }
-      // Fetch relievers
-      if (!relievers[game.homeTeam.id]) {
-        const [hr, ar] = await Promise.all([fetchLikelyRelievers(game.homeTeam.id), fetchLikelyRelievers(game.awayTeam.id)]);
-        setRelievers(p => ({...p, [game.homeTeam.id]:hr, [game.awayTeam.id]:ar}));
-      }
+  const saveAll = async () => {
+    for (const g of games) {
+      if (!g.loading && g.pred) await saveGame(g);
     }
   };
 
-  const green = games.filter(g => getBannerColor(g)==='green').length;
-  const yellow = games.filter(g => getBannerColor(g)==='yellow').length;
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16, flexWrap: "wrap" }}>
+        <input type="date" value={dateStr} onChange={e => setDateStr(e.target.value)}
+          style={{ background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 8, padding: "6px 12px", fontSize: 14 }} />
+        <button onClick={() => loadGames(dateStr)}
+          style={{ background: "#238636", color: "#fff", border: "none", borderRadius: 8, padding: "6px 16px", cursor: "pointer", fontSize: 13 }}>
+          🔄 Refresh
+        </button>
+        {games.length > 0 && (
+          <button onClick={saveAll}
+            style={{ background: "#1f6feb", color: "#fff", border: "none", borderRadius: 8, padding: "6px 16px", cursor: "pointer", fontSize: 13 }}>
+            💾 Save All to History
+          </button>
+        )}
+        {loading && <span style={{ color: "#8b949e", fontSize: 13 }}>Loading games...</span>}
+      </div>
+
+      {!loading && games.length === 0 && (
+        <div style={{ color: "#8b949e", textAlign: "center", marginTop: 40, fontSize: 14 }}>
+          No games scheduled for {dateStr}
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {games.map((game) => {
+          const home = teamById(game.homeTeamId);
+          const away = teamById(game.awayTeamId);
+          const key = `${away.abbr}@${home.abbr}`;
+          const color = game.loading ? "yellow" : getBannerColor(game.pred, game.homeStarter && game.awayStarter);
+          const bannerBg = color === "green" ? "linear-gradient(135deg, #0d2818, #162d1a)"
+            : color === "yellow" ? "linear-gradient(135deg, #2d2500, #2a2200)"
+            : color === "neutral" ? "linear-gradient(135deg, #161b22, #1c2128)"
+            : "linear-gradient(135deg, #2d0e0e, #2a1010)";
+          const borderColor = color === "green" ? "#2ea043"
+            : color === "yellow" ? "#e3b341"
+            : color === "neutral" ? "#30363d"
+            : "#f85149";
+          const isOpen = expanded === game.gamePk;
+
+          return (
+            <div key={game.gamePk} style={{ background: bannerBg, border: `1px solid ${borderColor}`, borderRadius: 12, overflow: "hidden" }}>
+              <div onClick={() => setExpanded(isOpen ? null : game.gamePk)}
+                style={{ padding: "16px 20px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+                {/* Teams */}
+                <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: "#e6edf3" }}>{away.abbr}</div>
+                    <div style={{ fontSize: 10, color: "#8b949e" }}>AWAY</div>
+                    {game.awayStarter && <div style={{ fontSize: 11, color: "#8b949e", marginTop: 2 }}>{game.awayStarter.split(" ").pop()}</div>}
+                  </div>
+                  <div style={{ fontSize: 18, color: "#8b949e" }}>@</div>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 22, fontWeight: 800, color: "#e6edf3" }}>{home.abbr}</div>
+                    <div style={{ fontSize: 10, color: "#8b949e" }}>HOME</div>
+                    {game.homeStarter && <div style={{ fontSize: 11, color: "#8b949e", marginTop: 2 }}>{game.homeStarter.split(" ").pop()}</div>}
+                  </div>
+                </div>
+
+                {/* Prediction stats */}
+                {game.loading ? (
+                  <div style={{ color: "#8b949e", fontSize: 12 }}>Calculating...</div>
+                ) : game.pred ? (
+                  <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                    <StatPill label="MODEL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} />
+                    <StatPill label="RUN LINE" value={`${home.abbr} -1.5`} />
+                    <StatPill label="O/U" value={game.pred.ouTotal} />
+                    <StatPill label="WIN %" value={`${Math.round(game.pred.homeWinPct * 100)}%`} color={game.pred.homeWinPct >= 0.55 ? "#3fb950" : "#e6edf3"} />
+                    <StatPill label="CONF" value={game.pred.confidence}
+                      color={game.pred.confidence === "HIGH" ? "#3fb950" : game.pred.confidence === "MEDIUM" ? "#e3b341" : "#8b949e"} />
+                  </div>
+                ) : (
+                  <div style={{ color: "#8b949e", fontSize: 12 }}>⚠ Prediction unavailable</div>
+                )}
+
+                {/* Save / status */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {savedIds.has(key)
+                    ? <span style={{ fontSize: 11, color: "#3fb950" }}>✓ Saved</span>
+                    : game.pred && !game.loading && (
+                      <button onClick={e => { e.stopPropagation(); saveGame(game); }}
+                        style={{ background: "#1f6feb", border: "none", color: "#fff", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11 }}>
+                        💾 Save
+                      </button>
+                    )
+                  }
+                  <span style={{ color: "#8b949e", fontSize: 16 }}>{isOpen ? "▲" : "▼"}</span>
+                </div>
+              </div>
+
+              {/* Expanded details */}
+              {isOpen && game.pred && (
+                <div style={{ borderTop: `1px solid ${borderColor}`, padding: "16px 20px", background: "rgba(0,0,0,0.3)" }}>
+                  <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
+                    <Detail label="Proj Score" value={`${away.abbr} ${game.pred.awayRuns.toFixed(1)} — ${home.abbr} ${game.pred.homeRuns.toFixed(1)}`} />
+                    <Detail label="Home Win %" value={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
+                    <Detail label="Away Win %" value={`${(game.pred.awayWinPct * 100).toFixed(1)}%`} />
+                    <Detail label="Over/Under" value={`${game.pred.ouTotal} total`} />
+                    <Detail label="Model ML (H)" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} />
+                    <Detail label="Model ML (A)" value={game.pred.modelML_away > 0 ? `+${game.pred.modelML_away}` : game.pred.modelML_away} />
+                    <Detail label="Confidence" value={game.pred.confidence} />
+                    <Detail label="Conf Score" value={`${game.pred.confScore}/100`} />
+                  </div>
+                  {(game.homeStarter || game.awayStarter) && (
+                    <div style={{ marginTop: 12, display: "flex", gap: 16 }}>
+                      {game.awayStarter && <Detail label={`${away.abbr} SP`} value={game.awayStarter} />}
+                      {game.homeStarter && <Detail label={`${home.abbr} SP`} value={game.homeStarter} />}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// HISTORY TAB
+// ═══════════════════════════════════════════════════════════════
+function HistoryTab() {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterDate, setFilterDate] = useState("");
+  const [entering, setEntering] = useState(null); // id of row being edited
+  const [resultForm, setResultForm] = useState({ actual_home: "", actual_away: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    let path = "/mlb_predictions?order=game_date.desc&limit=200";
+    if (filterDate) path += `&game_date=eq.${filterDate}`;
+    const data = await supabaseQuery(path);
+    setRecords(data || []);
+    setLoading(false);
+  }, [filterDate]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const enterResult = async (id) => {
+    const home = parseInt(resultForm.actual_home);
+    const away = parseInt(resultForm.actual_away);
+    if (isNaN(home) || isNaN(away)) return alert("Enter valid scores");
+    const rec = records.find(r => r.id === id);
+    if (!rec) return;
+    const ml_correct = home > away ? true : false;
+    const rl_correct = (home - away) > 1.5 ? true : (away - home) > 1.5 ? false : null;
+    const ou_correct = (home + away) > rec.ou_total ? "OVER" : (home + away) < rec.ou_total ? "UNDER" : "PUSH";
+    const patch = {
+      actual_home_runs: home, actual_away_runs: away,
+      result_entered: true, ml_correct, rl_correct, ou_correct,
+    };
+    await supabaseQuery(`/mlb_predictions?id=eq.${id}`, "PATCH", patch);
+    setEntering(null);
+    setResultForm({ actual_home: "", actual_away: "" });
+    load();
+  };
+
+  const deleteRecord = async (id) => {
+    if (!window.confirm("Delete this prediction?")) return;
+    await supabaseQuery(`/mlb_predictions?id=eq.${id}`, "DELETE");
+    load();
+  };
+
+  const grouped = records.reduce((acc, r) => {
+    if (!acc[r.game_date]) acc[r.game_date] = [];
+    acc[r.game_date].push(r);
+    return acc;
+  }, {});
+
+  const confColor = (c) => c === "HIGH" ? "#3fb950" : c === "MEDIUM" ? "#e3b341" : "#8b949e";
+  const mlSign = (ml) => ml > 0 ? `+${ml}` : ml;
 
   return (
     <div>
-      {/* Date nav */}
-      <Panel style={{marginBottom:12}}>
-        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-          <button onClick={()=>changeDate(-1)} style={btnStyle}>← Prev</button>
-          <input type="date" value={selectedDate} onChange={e=>setSelectedDate(e.target.value)}
-            style={{...inputStyle,flex:1}} />
-          <button onClick={()=>changeDate(1)} style={btnStyle}>Next →</button>
-          {!isToday && <button onClick={()=>setSelectedDate(new Date().toISOString().split('T')[0])} style={{...btnStyle,background:C.dkGreen,color:C.green}}>Today</button>}
-          <button onClick={()=>{delete cacheRef.current[selectedDate];loadGames(selectedDate);}} style={{...btnStyle,color:C.muted}}>↺</button>
-        </div>
-        {games.length > 0 && (
-          <div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap',alignItems:'center'}}>
-            <span style={{color:C.muted,fontSize:10}}>Signal:</span>
-            <Badge text={`${green} model edge`} color="#0d2a0d" textColor={C.green}/>
-            <Badge text={`${yellow} incomplete`} color="#2a220a" textColor={C.gold}/>
-            <Badge text={`${games.length} games`} color={C.dim} textColor={C.muted}/>
-          </div>
-        )}
-      </Panel>
-
-      {/* Legend */}
-      <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',fontSize:10}}>
-        {[
-          {color:C.bannerGreen, label:'Model win% > 58% (value)'},
-          {color:C.bannerYellow,label:'Starters TBD / data loading'},
-          {color:C.bannerNeutral,label:'No strong signal'},
-        ].map(({color,label})=>(
-          <div key={label} style={{display:'flex',alignItems:'center',gap:5}}>
-            <div style={{width:10,height:10,background:color.bg,border:`2px solid ${color.accent}`,borderRadius:2}}/>
-            <span style={{color:C.muted}}>{label}</span>
-          </div>
-        ))}
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        <h2 style={{ margin: 0, fontSize: 18, color: "#58a6ff" }}>📊 Prediction History</h2>
+        <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)}
+          style={{ background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", fontSize: 13 }} />
+        {filterDate && <button onClick={() => setFilterDate("")}
+          style={{ background: "#21262d", color: "#8b949e", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
+          Clear Filter
+        </button>}
+        <button onClick={load} style={{ background: "#21262d", color: "#58a6ff", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
+          🔄 Refresh
+        </button>
       </div>
 
-      {loading && <Panel><div style={{textAlign:'center',padding:20,color:C.muted}}>
-        <div style={{display:'flex',gap:6,justifyContent:'center',marginBottom:10}}>
-          {[0,1,2].map(i=><div key={i} style={{width:8,height:8,background:C.green,borderRadius:'50%',animation:`pulse 1s ${i*0.2}s ease infinite`}}/>)}
+      {loading && <div style={{ color: "#8b949e", textAlign: "center", marginTop: 40 }}>Loading history...</div>}
+
+      {!loading && records.length === 0 && (
+        <div style={{ color: "#8b949e", textAlign: "center", marginTop: 40 }}>
+          No predictions saved yet. Use the Calendar tab to generate and save predictions.
         </div>
-        Fetching schedule & running predictions…
-      </div></Panel>}
-
-      {error && <Panel style={{borderColor:'#3a1a1a',background:'#0a0505',marginBottom:12}}>
-        <div style={{color:C.red,fontSize:12}}>❌ {error}</div>
-        <div style={{color:C.muted,fontSize:11,marginTop:6}}>Check that the app is deployed to Vercel — the MLB API proxy requires Vercel's edge network.</div>
-      </Panel>}
-
-      {!loading && !error && games.length === 0 && (
-        <Panel><div style={{textAlign:'center',color:'#a0b8c8',padding:20}}>No games found for this date.</div></Panel>
       )}
 
-      {games.map(game => (
-        <div key={game.gameId}>
-          <GameBanner game={game} onSelect={handleExpand} isSelected={expandedId===game.gameId}/>
-          {expandedId===game.gameId && game.prediction && (
-            <div style={{background:'#080e08',border:`1px solid ${C.border}`,borderRadius:8,padding:14,marginTop:-4,marginBottom:12}}>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
-                {/* Full odds */}
-                <div>
-                  <SLabel>Full Odds Breakdown</SLabel>
-                  {[
-                    ['Model ML', modelWinToMoneyline(1-game.prediction.homeWinPct), modelWinToMoneyline(game.prediction.homeWinPct)],
-                    ['Run Line -1.5', runLineOdds(1-game.prediction.homeWinPct,game.prediction.awayRuns,game.prediction.homeRuns).homeML, runLineOdds(game.prediction.homeWinPct,game.prediction.homeRuns,game.prediction.awayRuns).homeML],
-                    ['O/U Total', `O ${(game.prediction.homeRuns+game.prediction.awayRuns).toFixed(1)}`, `U ${(game.prediction.homeRuns+game.prediction.awayRuns).toFixed(1)}`],
-                    ['Win %', `${((1-game.prediction.homeWinPct)*100).toFixed(1)}%`, `${(game.prediction.homeWinPct*100).toFixed(1)}%`],
-                    ['Confidence', `${(game.prediction.confidence*100).toFixed(0)}%`, ''],
-                  ].map(([lbl,away,home])=>(
-                    <div key={lbl} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:`1px solid ${C.dim}`,fontSize:11}}>
-                      <span style={{color:C.muted,minWidth:90,fontSize:10}}>{lbl}</span>
-                      <span style={{color:'#c8d8e8',fontFamily:'monospace'}}>{away}</span>
-                      <span style={{color:C.green,fontFamily:'monospace'}}>{home}</span>
-                    </div>
+      {Object.entries(grouped).map(([date, recs]) => (
+        <div key={date} style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#e3b341", marginBottom: 8, borderBottom: "1px solid #30363d", paddingBottom: 6 }}>
+            📅 {date}
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ color: "#8b949e", fontSize: 11, letterSpacing: 1 }}>
+                  {["MATCHUP", "MODEL ML", "RUN LINE", "O/U", "WIN %", "CONF", "RESULT", "ML✓", "RL✓", "O/U✓", "ACTIONS"].map(h => (
+                    <th key={h} style={{ padding: "6px 10px", textAlign: "left", borderBottom: "1px solid #21262d", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
-                </div>
-                {/* Starters */}
-                <div>
-                  <SLabel>Starter Stats</SLabel>
-                  {[{label:`${game.awayTeam?.abbr}: ${game.awayStarter?.fullName||'TBD'}`,stats:game.awayStarterStats},
-                    {label:`${game.homeTeam?.abbr}: ${game.homeStarter?.fullName||'TBD'}`,stats:game.homeStarterStats}].map(({label,stats})=>(
-                    <div key={label} style={{marginBottom:8,background:C.dkGreen,borderRadius:6,padding:8}}>
-                      <div style={{color:C.text,fontSize:10,fontWeight:700,marginBottom:4}}>{label}</div>
-                      {stats ? (
-                        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:3}}>
-                          {[['ERA',stats.era?.toFixed(2)],['FIP',stats.fip?.toFixed(2)],['xFIP',stats.xfip?.toFixed(2)],['K/9',stats.k9?.toFixed(1)],['BB/9',stats.bb9?.toFixed(1)],['IP',stats.ip?.toFixed(0)]].map(([l,v])=>(
-                            <div key={l} style={{textAlign:'center'}}>
-                              <div style={{fontSize:8,color:C.muted}}>{l}</div>
-                              <div style={{fontSize:11,fontWeight:800,color:C.green,fontFamily:'monospace'}}>{v||'—'}</div>
+                </tr>
+              </thead>
+              <tbody>
+                {recs.map(r => {
+                  const isEntering = entering === r.id;
+                  const resultBg = r.result_entered
+                    ? (r.ml_correct ? "rgba(63,185,80,0.08)" : "rgba(248,81,73,0.08)")
+                    : "transparent";
+                  return (
+                    <tr key={r.id} style={{ borderBottom: "1px solid #161b22", background: resultBg }}>
+                      <td style={{ padding: "8px 10px", fontWeight: 600, whiteSpace: "nowrap" }}>
+                        {r.away_team} @ {r.home_team}
+                      </td>
+                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                        <span style={{ color: "#58a6ff" }}>H: {mlSign(r.model_ml_home)}</span>
+                        <span style={{ color: "#8b949e", margin: "0 4px" }}>|</span>
+                        <span style={{ color: "#8b949e" }}>A: {mlSign(r.model_ml_away)}</span>
+                      </td>
+                      <td style={{ padding: "8px 10px", color: "#8b949e", whiteSpace: "nowrap" }}>
+                        {r.home_team} {r.run_line_home > 0 ? "+" : ""}{r.run_line_home}
+                      </td>
+                      <td style={{ padding: "8px 10px", color: "#e3b341" }}>{r.ou_total}</td>
+                      <td style={{ padding: "8px 10px", color: "#58a6ff" }}>
+                        {r.win_pct_home != null ? `${Math.round(r.win_pct_home * 100)}%` : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{ color: confColor(r.confidence), fontWeight: 600, fontSize: 11 }}>{r.confidence}</span>
+                      </td>
+                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                        {r.result_entered
+                          ? <span style={{ color: "#3fb950" }}>{r.away_team} {r.actual_away_runs} — {r.home_team} {r.actual_home_runs}</span>
+                          : isEntering ? (
+                            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                              <input placeholder="Home" value={resultForm.actual_home}
+                                onChange={e => setResultForm(f => ({ ...f, actual_home: e.target.value }))}
+                                style={{ width: 44, background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 4, padding: "2px 6px", fontSize: 12 }} />
+                              <input placeholder="Away" value={resultForm.actual_away}
+                                onChange={e => setResultForm(f => ({ ...f, actual_away: e.target.value }))}
+                                style={{ width: 44, background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 4, padding: "2px 6px", fontSize: 12 }} />
+                              <button onClick={() => enterResult(r.id)}
+                                style={{ background: "#238636", border: "none", color: "#fff", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontSize: 11 }}>✓</button>
+                              <button onClick={() => setEntering(null)}
+                                style={{ background: "#21262d", border: "1px solid #30363d", color: "#8b949e", borderRadius: 4, padding: "2px 6px", cursor: "pointer", fontSize: 11 }}>✕</button>
                             </div>
-                          ))}
-                        </div>
-                      ):<div style={{color:'#a0b8c8',fontSize:10}}>Stats not available (early season / ST)</div>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {/* Relievers */}
-              {(relievers[game.homeTeam?.id]||relievers[game.awayTeam?.id]) && (
-                <div>
-                  <SLabel>Likely Relievers</SLabel>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-                    {[{team:game.awayTeam,key:game.awayTeam?.id},{team:game.homeTeam,key:game.homeTeam?.id}].map(({team,key})=>(
-                      <div key={key}>
-                        <div style={{color:C.muted,fontSize:9,marginBottom:4}}>{team?.abbr} BULLPEN</div>
-                        {(relievers[key]||[]).map(r=>(
-                          <div key={r.name} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:`1px solid ${C.dim}`,fontSize:10}}>
-                            <span style={{color:r.isCloser?C.gold:C.text}}>{r.isCloser?'🔒 ':''}{r.name}</span>
-                            <span style={{color:r.era<3.5?C.green:r.era>4.5?C.red:C.muted,fontFamily:'monospace'}}>{r.era.toFixed(2)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <VegasInput gameId={game.gameId} onSubmit={handleVegasSubmit} prefill={vegasOdds[game.gameId]} oddsStatus={oddsStatus} />
-              {betResults[game.gameId]?.length > 0 && (
-                <div style={{marginBottom:10}}>
-                  <div style={{color:'#8b9eb0',fontSize:9,fontWeight:800,letterSpacing:2,textTransform:'uppercase',marginBottom:8}}>
-                    Bet Analysis
-                    {game.gameType==='S' && <span style={{color:'#f59e0b',marginLeft:8,fontWeight:400,letterSpacing:0}}>Spring Training: 0.82x run deflator applied</span>}
-                  </div>
-                  {betResults[game.gameId].map((bet,i) => <BetCard key={i} bet={bet}/>)}
-                </div>
-              )}
-              <div style={{marginTop:10,textAlign:'right'}}>
-                <button onClick={()=>onSelectGame(game)} style={{...btnStyle,background:C.dkGreen,color:C.green,border:`1px solid #1a4a1a`}}>
-                  → Full Deep-Dive Analysis
-                </button>
-              </div>
-            </div>
-          )}
+                          ) : <span style={{ color: "#8b949e", fontSize: 11 }}>Pending</span>
+                        }
+                      </td>
+                      <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                        {r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                        {r.result_entered ? (r.rl_correct === null ? "🔲" : r.rl_correct ? "✅" : "❌") : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                        {r.result_entered ? (
+                          <span style={{ color: r.ou_correct === "PUSH" ? "#e3b341" : "#e6edf3", fontSize: 11 }}>{r.ou_correct}</span>
+                        ) : "—"}
+                      </td>
+                      <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                        {!r.result_entered && (
+                          <button onClick={() => { setEntering(r.id); setResultForm({ actual_home: "", actual_away: "" }); }}
+                            style={{ background: "#21262d", border: "1px solid #30363d", color: "#58a6ff", borderRadius: 4, padding: "2px 8px", cursor: "pointer", fontSize: 11, marginRight: 4 }}>
+                            Enter Score
+                          </button>
+                        )}
+                        <button onClick={() => deleteRecord(r.id)}
+                          style={{ background: "transparent", border: "none", color: "#8b949e", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       ))}
     </div>
   );
 }
 
-// ─── Shared style helpers ─────────────────────────────────────
-const btnStyle = {background:C.dim,border:`1px solid #1e2e1e`,color:'#e8f8f0',borderRadius:5,padding:'7px 12px',cursor:'pointer',fontFamily:'monospace',fontSize:11};
-const inputStyle = {background:'#0a120a',color:'#e8f8f0',border:`1px solid #182418`,borderRadius:6,padding:'8px 10px',fontSize:12,fontFamily:'monospace',outline:'none'};
-const selectStyle = {...inputStyle,cursor:'pointer'};
-
-// ─── Matchup Tab ──────────────────────────────────────────────
-function MatchupTab({ prefillHome, prefillAway, prefillDate }) {
-  const [homeTeam, setHomeTeam] = useState(prefillHome || TEAMS.find(t=>t.abbr==='CHC'));
-  const [awayTeam, setAwayTeam] = useState(prefillAway || TEAMS.find(t=>t.abbr==='MIL'));
-  const [gameDate, setGameDate] = useState(prefillDate || new Date().toISOString().split('T')[0]);
-  const [umpire, setUmpire] = useState('Default');
+// ═══════════════════════════════════════════════════════════════
+// PARLAY TAB
+// ═══════════════════════════════════════════════════════════════
+function ParlayTab() {
+  const todayStr = new Date().toISOString().split("T")[0];
+  const [dateStr, setDateStr] = useState(todayStr);
+  const [legCount, setLegCount] = useState(3);
+  const [allGames, setAllGames] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState(null);
-  const [log, setLog] = useState([]);
-  const logRef = useRef([]);
-  const addLog = m => { logRef.current=[...logRef.current,m]; setLog([...logRef.current]); };
+  const [parlay, setParlay] = useState(null);
+  const [customLegs, setCustomLegs] = useState([]); // manually toggled legs
+  const [mode, setMode] = useState("auto"); // "auto" or "custom"
+  const [wager, setWager] = useState(100);
 
-  // Update teams if prefill changes
-  useEffect(() => { if (prefillHome) setHomeTeam(prefillHome); }, [prefillHome]);
-  useEffect(() => { if (prefillAway) setAwayTeam(prefillAway); }, [prefillAway]);
+  const loadGames = useCallback(async (d) => {
+    setLoading(true);
+    setParlay(null);
+    const raw = await fetchScheduleForDate(d);
+    const enriched = await Promise.all(raw.map(async (g) => {
+      const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
+        await Promise.all([
+          fetchTeamHitting(g.homeTeamId), fetchTeamHitting(g.awayTeamId),
+          fetchTeamPitching(g.homeTeamId), fetchTeamPitching(g.awayTeamId),
+          fetchStarterStats(g.homeStarterId), fetchStarterStats(g.awayStarterId),
+          fetchRecentForm(g.homeTeamId), fetchRecentForm(g.awayTeamId),
+        ]);
+      const pred = predictGame({
+        homeTeamId: g.homeTeamId, awayTeamId: g.awayTeamId,
+        homeHit, awayHit, homePitch, awayPitch,
+        homeStarterStats: homeStarter, awayStarterStats: awayStarter,
+        homeForm, awayForm,
+      });
+      return { ...g, pred };
+    }));
+    const withPreds = enriched.filter(g => g.pred);
+    setAllGames(withPreds);
+    setLoading(false);
+  }, []);
 
-  const run = useCallback(async () => {
-    if (homeTeam.id===awayTeam.id) return;
-    setLoading(true); setError(null); setResult(null);
-    logRef.current=[]; setLog([]);
-    try {
-      addLog('📡 Fetching season stats…');
-      const [homeHit,awayHit,homePitch,awayPitch] = await Promise.all([
-        fetchTeamHitting(homeTeam.id), fetchTeamHitting(awayTeam.id),
-        fetchTeamPitching(homeTeam.id), fetchTeamPitching(awayTeam.id),
-      ]);
+  useEffect(() => { loadGames(dateStr); }, [dateStr]);
 
-      addLog('🔍 Fetching vsTeam splits…');
-      const [homeVsAway,awayVsHome] = await Promise.all([
-        fetchVsTeamSplits(homeTeam.id,awayTeam.id),
-        fetchVsTeamSplits(awayTeam.id,homeTeam.id),
-      ]);
-      addLog(homeVsAway?`✅ vsTeam splits found`:`⚠️ No vsTeam splits — using season averages`);
+  // Build auto parlay from top confidence games
+  useEffect(() => {
+    if (!allGames.length || mode !== "auto") return;
+    buildAutoParlay();
+  }, [allGames, legCount, mode]);
 
-      addLog('⚾ Fetching probable starters…');
-      const fetchSP = async (teamId) => {
-        const url = `/mlb/schedule?teamId=${teamId}&season=${new Date(gameDate).getFullYear()}&startDate=${gameDate}&endDate=${gameDate}&hydrate=probablePitcher`;
-        try { const r=await fetch(url); const d=await r.json();
-          const g=d?.dates?.[0]?.games?.[0]; if(!g) return null;
-          const isHome=g.teams?.home?.team?.id===teamId;
-          return isHome?g.teams?.home?.probablePitcher:g.teams?.away?.probablePitcher;
-        } catch { return null; }
+  const buildAutoParlay = () => {
+    // Score each game: favorite side by highest win prob
+    const legs = allGames.map(g => {
+      const home = teamById(g.homeTeamId);
+      const away = teamById(g.awayTeamId);
+      const pickHome = g.pred.homeWinPct >= 0.5;
+      return {
+        gamePk: g.gamePk,
+        label: `${away.abbr} @ ${home.abbr}`,
+        pick: pickHome ? home.abbr : away.abbr,
+        prob: pickHome ? g.pred.homeWinPct : g.pred.awayWinPct,
+        ml: pickHome ? g.pred.modelML_home : g.pred.modelML_away,
+        confidence: g.pred.confidence,
+        confScore: g.pred.confScore,
       };
-      const [homeStarterInfo,awayStarterInfo] = await Promise.all([fetchSP(homeTeam.id),fetchSP(awayTeam.id)]);
-      addLog(homeStarterInfo?`✅ ${homeTeam.abbr}: ${homeStarterInfo.fullName}`:`⚠️ ${homeTeam.abbr} starter TBD`);
-      addLog(awayStarterInfo?`✅ ${awayTeam.abbr}: ${awayStarterInfo.fullName}`:`⚠️ ${awayTeam.abbr} starter TBD`);
+    })
+    .sort((a, b) => b.prob - a.prob)
+    .slice(0, legCount);
 
-      addLog('📊 Fetching starter stats…');
-      const [homeStarterStats,awayStarterStats] = await Promise.all([
-        homeStarterInfo?fetchStarterStats(homeStarterInfo.id):null,
-        awayStarterInfo?fetchStarterStats(awayStarterInfo.id):null,
-      ]);
+    setParlay(legs);
+  };
 
-      addLog('📈 Fetching rolling form…');
-      const [homeForm,awayForm] = await Promise.all([fetchRecentGames(homeTeam.id),fetchRecentGames(awayTeam.id)]);
-      if (homeForm) addLog(`✅ ${homeTeam.abbr}: ${homeForm.wins}W-${homeForm.losses}L, Pyth ${(homeForm.pythWinPct*100).toFixed(1)}%`);
-      if (awayForm) addLog(`✅ ${awayTeam.abbr}: ${awayForm.wins}W-${awayForm.losses}L, Pyth ${(awayForm.pythWinPct*100).toFixed(1)}%`);
+  const toggleCustomLeg = (game, pickHome) => {
+    const home = teamById(game.homeTeamId);
+    const away = teamById(game.awayTeamId);
+    const legId = `${game.gamePk}-${pickHome ? "H" : "A"}`;
+    const exists = customLegs.find(l => l.gamePk === game.gamePk);
+    if (exists) {
+      if ((exists.pick === home.abbr && pickHome) || (exists.pick === away.abbr && !pickHome)) {
+        setCustomLegs(customLegs.filter(l => l.gamePk !== game.gamePk));
+      } else {
+        setCustomLegs(customLegs.map(l => l.gamePk === game.gamePk ? {
+          ...l,
+          pick: pickHome ? home.abbr : away.abbr,
+          prob: pickHome ? game.pred.homeWinPct : game.pred.awayWinPct,
+          ml: pickHome ? game.pred.modelML_home : game.pred.modelML_away,
+        } : l));
+      }
+    } else {
+      setCustomLegs([...customLegs, {
+        gamePk: game.gamePk,
+        label: `${away.abbr} @ ${home.abbr}`,
+        pick: pickHome ? home.abbr : away.abbr,
+        prob: pickHome ? game.pred.homeWinPct : game.pred.awayWinPct,
+        ml: pickHome ? game.pred.modelML_home : game.pred.modelML_away,
+        confidence: game.pred.confidence,
+        confScore: game.pred.confScore,
+      }]);
+    }
+  };
 
-      addLog('💪 Fetching bullpen fatigue…');
-      const [homeBullpen,awayBullpen] = await Promise.all([fetchBullpenFatigue(homeTeam.id),fetchBullpenFatigue(awayTeam.id)]);
-
-      addLog('👥 Fetching relievers…');
-      const [homeRelievers,awayRelievers] = await Promise.all([fetchLikelyRelievers(homeTeam.id),fetchLikelyRelievers(awayTeam.id)]);
-
-      const prediction = predictGame({
-        homeTeam,awayTeam,homeHit,awayHit,homePitch,awayPitch,
-        homeStarterStats,awayStarterStats,homeVsAway,awayVsHome,
-        homeForm,awayForm,homeBullpen,awayBullpen,umpireName:umpire,
-      });
-
-      setResult({
-        prediction,homeHit,awayHit,homePitch,awayPitch,
-        homeStarter:homeStarterInfo,awayStarter:awayStarterInfo,
-        homeStarterStats,awayStarterStats,homeVsAway,awayVsHome,
-        homeForm,awayForm,homeBullpen,awayBullpen,homeRelievers,awayRelievers,
-        dataQuality:{
-          'Season Stats':!!(homeHit&&awayHit),
-          'vsTeam Splits':!!(homeVsAway||awayVsHome),
-          'Starter FIP/xFIP':!!(homeStarterStats&&awayStarterStats),
-          'Rolling Form':!!(homeForm&&awayForm),
-          'Bullpen Fatigue':!!(homeBullpen&&awayBullpen),
-          'Park Factor':true,
-          'Umpire':umpire!=='Default',
-        }
-      });
-      addLog('✅ Complete!');
-    } catch(e) { setError(e.message); addLog(`❌ ${e.message}`); }
-    finally { setLoading(false); }
-  }, [homeTeam,awayTeam,gameDate,umpire]);
+  const activeLegList = mode === "auto" ? (parlay || []) : customLegs;
+  const combinedProb = activeLegList.length ? combinedParlayProbability(activeLegList) : 0;
+  const decOdds = activeLegList.length ? combinedParlayOdds(activeLegList) : 1;
+  const fairML = activeLegList.length ? decimalToML(decOdds) : null;
+  const payout = (wager * decOdds).toFixed(2);
+  const ev = activeLegList.length ? ((combinedProb * (decOdds - 1) * wager) - ((1 - combinedProb) * wager)).toFixed(2) : null;
 
   return (
     <div>
-      <Panel style={{marginBottom:12}}>
-        <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',gap:10,alignItems:'end',marginBottom:12}}>
-          <div>
-            <div style={{color:C.muted,fontSize:9,letterSpacing:2,marginBottom:4}}>🏠 HOME TEAM</div>
-            <select value={homeTeam.id} onChange={e=>setHomeTeam(TEAMS.find(t=>t.id===+e.target.value))} style={{...selectStyle,width:'100%'}}>
-              {[...TEAMS].sort((a,b)=>a.name.localeCompare(b.name)).map(t=><option key={t.id} value={t.id}>{t.name} ({t.abbr})</option>)}
-            </select>
-          </div>
-          <div style={{color:'#1a3a1a',fontWeight:900,fontSize:16,paddingBottom:8,textAlign:'center'}}>VS</div>
-          <div>
-            <div style={{color:C.muted,fontSize:9,letterSpacing:2,marginBottom:4}}>✈️ AWAY TEAM</div>
-            <select value={awayTeam.id} onChange={e=>setAwayTeam(TEAMS.find(t=>t.id===+e.target.value))} style={{...selectStyle,width:'100%'}}>
-              {[...TEAMS].sort((a,b)=>a.name.localeCompare(b.name)).map(t=><option key={t.id} value={t.id}>{t.name} ({t.abbr})</option>)}
-            </select>
-          </div>
+      <h2 style={{ margin: "0 0 16px", fontSize: 18, color: "#58a6ff" }}>🎯 Parlay Builder</h2>
+
+      {/* Controls */}
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        <input type="date" value={dateStr} onChange={e => setDateStr(e.target.value)}
+          style={{ background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 8, padding: "6px 12px", fontSize: 13 }} />
+
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ color: "#8b949e", fontSize: 13 }}>Legs:</span>
+          {[2, 3, 4, 5, 6, 7, 8].map(n => (
+            <button key={n} onClick={() => { setLegCount(n); setMode("auto"); }}
+              style={{
+                width: 32, height: 32, borderRadius: "50%", border: "none", cursor: "pointer", fontSize: 13, fontWeight: 700,
+                background: mode === "auto" && legCount === n ? "#58a6ff" : "#21262d",
+                color: mode === "auto" && legCount === n ? "#0d1117" : "#8b949e",
+              }}>{n}</button>
+          ))}
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:12}}>
-          <div>
-            <div style={{color:C.muted,fontSize:9,letterSpacing:2,marginBottom:4}}>📅 GAME DATE</div>
-            <input type="date" value={gameDate} onChange={e=>setGameDate(e.target.value)} style={{...inputStyle,width:'100%'}}/>
-          </div>
-          <div>
-            <div style={{color:C.muted,fontSize:9,letterSpacing:2,marginBottom:4}}>👤 HOME PLATE UMP</div>
-            <select value={umpire} onChange={e=>setUmpire(e.target.value)} style={{...selectStyle,width:'100%'}}>
-              {Object.keys(UMPIRE_PROFILES).map(u=><option key={u} value={u}>{u}</option>)}
-            </select>
-          </div>
-        </div>
-        {homeTeam.id===awayTeam.id && <div style={{color:C.gold,fontSize:11,marginBottom:8}}>⚠️ Select two different teams</div>}
-        <button onClick={run} disabled={loading||homeTeam.id===awayTeam.id}
-          style={{width:'100%',padding:'13px',background:loading?C.dim:'linear-gradient(135deg,#14532d,#15803d)',color:loading?C.muted:'#fff',border:'none',borderRadius:7,fontSize:11,fontWeight:900,letterSpacing:2.5,cursor:loading?'not-allowed':'pointer',textTransform:'uppercase',fontFamily:'monospace'}}>
-          {loading?'⚡ ANALYZING…':'⚡ GENERATE PREDICTION'}
+
+        <button onClick={() => setMode(mode === "auto" ? "custom" : "auto")}
+          style={{ background: mode === "custom" ? "#58a6ff" : "#21262d", color: mode === "custom" ? "#0d1117" : "#e6edf3",
+            border: "1px solid #30363d", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontSize: 12 }}>
+          {mode === "custom" ? "✏️ Custom Mode" : "⚡ Auto Mode"}
         </button>
-      </Panel>
 
-      {loading && (
-        <Panel style={{marginBottom:12}}>
-          <div style={{display:'flex',gap:6,justifyContent:'center',marginBottom:10}}>
-            {[0,1,2,3].map(i=><div key={i} style={{width:8,height:8,background:C.green,borderRadius:'50%',animation:`pulse 1s ${i*0.2}s ease infinite`}}/>)}
+        {loading && <span style={{ color: "#8b949e", fontSize: 13 }}>Loading games...</span>}
+      </div>
+
+      {/* Parlay Summary Card */}
+      {activeLegList.length > 0 && (
+        <div style={{ background: "linear-gradient(135deg, #1a2332, #162032)", border: "1px solid #58a6ff", borderRadius: 12, padding: "16px 20px", marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#58a6ff", marginBottom: 12, letterSpacing: 1 }}>
+            {mode === "auto" ? `⚡ AUTO ${legCount}-LEG PARLAY` : `✏️ CUSTOM ${activeLegList.length}-LEG PARLAY`}
           </div>
-          {log.map((m,i)=><div key={i} style={{fontFamily:'monospace',fontSize:11,padding:'2px 0',color:i===log.length-1?C.green:'#4a8a5a'}}>{m}</div>)}
-        </Panel>
-      )}
+          <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 12 }}>
+            <StatPill label="COMBINED PROB" value={`${(combinedProb * 100).toFixed(1)}%`} color={combinedProb > 0.15 ? "#3fb950" : "#f85149"} />
+            <StatPill label="FAIR ODDS" value={fairML} color="#e3b341" />
+            <StatPill label="PAYOUT (${wager})" value={`$${payout}`} color="#3fb950" />
+            <StatPill label="MODEL EV" value={`$${ev}`} color={parseFloat(ev) >= 0 ? "#3fb950" : "#f85149"} />
+          </div>
+          {/* Wager input */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: "#8b949e", fontSize: 12 }}>Wager: $</span>
+            <input type="number" value={wager} onChange={e => setWager(Number(e.target.value))}
+              style={{ width: 80, background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 6, padding: "4px 8px", fontSize: 13 }} />
+          </div>
 
-      {error && <Panel style={{marginBottom:12,borderColor:'#3a1a1a',background:'#0a0505'}}><div style={{color:C.red,fontSize:12}}>❌ {error}</div></Panel>}
-
-      {result && !loading && (
-        <div>
-          {/* Score card */}
-          <Panel style={{marginBottom:12}}>
-            <div style={{textAlign:'center',marginBottom:14}}>
-              <SLabel>Projected Final Score</SLabel>
-              <div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:24}}>
-                {[{team:awayTeam,runs:result.prediction.awayRuns,win:result.prediction.awayRuns>result.prediction.homeRuns,tag:'AWAY'},
-                  {team:homeTeam,runs:result.prediction.homeRuns,win:result.prediction.homeRuns>=result.prediction.awayRuns,tag:'HOME'}].map(({team,runs,win,tag},i)=>(
-                  <div key={i} style={{textAlign:'center'}}>
-                    <div style={{fontSize:9,color:C.muted,letterSpacing:2}}>{tag}</div>
-                    <div style={{fontSize:13,fontWeight:800,color:C.muted}}>{team.name}</div>
-                    <div style={{fontSize:52,fontWeight:900,lineHeight:1,color:win?C.green:'#8b9eb0',fontVariantNumeric:'tabular-nums'}}>{runs.toFixed(1)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            {/* Win bar */}
-            <div style={{marginBottom:12}}>
-              <div style={{display:'flex',justifyContent:'space-between',marginBottom:5,fontSize:13,fontWeight:800}}>
-                <span style={{color:C.green}}>{homeTeam.abbr} {(result.prediction.homeWinPct*100).toFixed(1)}%</span>
-                <span style={{color:C.muted}}>{awayTeam.abbr} {((1-result.prediction.homeWinPct)*100).toFixed(1)}%</span>
-              </div>
-              <div style={{height:18,background:'#0d0d1a',borderRadius:9,overflow:'hidden'}}>
-                <div style={{height:'100%',width:`${result.prediction.homeWinPct*100}%`,background:`linear-gradient(90deg,#14532d,${C.green})`,borderRadius:9,transition:'width 1.2s ease'}}/>
-              </div>
-            </div>
-            {/* Odds grid */}
-            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6}}>
-              {[
-                {l:'MODEL ML',   v:modelWinToMoneyline(result.prediction.homeWinPct),s:`${homeTeam.abbr}`},
-                {l:'AWAY ML',    v:modelWinToMoneyline(1-result.prediction.homeWinPct),s:`${awayTeam.abbr}`},
-                {l:'RUN LINE',   v:`${runLineOdds(result.prediction.homeWinPct,result.prediction.homeRuns,result.prediction.awayRuns).homeML}`,s:`${homeTeam.abbr} -1.5`},
-                {l:'O/U TOTAL',  v:(result.prediction.homeRuns+result.prediction.awayRuns).toFixed(1),s:'exp. runs'},
-              ].map(({l,v,s})=>(
-                <div key={l} style={{textAlign:'center',background:'#0d1a0d',borderRadius:6,padding:8}}>
-                  <div style={{fontSize:8,color:C.muted,letterSpacing:1,marginBottom:3}}>{l}</div>
-                  <div style={{fontSize:14,fontWeight:800,color:C.green,fontFamily:'monospace'}}>{v}</div>
-                  <div style={{fontSize:9,color:C.muted}}>{s}</div>
+          {/* Legs list */}
+          <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+            {activeLegList.map((leg, i) => (
+              <div key={leg.gamePk} style={{ display: "flex", alignItems: "center", gap: 12, background: "rgba(255,255,255,0.04)", borderRadius: 8, padding: "8px 12px" }}>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#58a6ff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#0d1117" }}>{i + 1}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3" }}>{leg.label}</div>
+                  <div style={{ fontSize: 11, color: "#8b949e" }}>Pick: <span style={{ color: "#3fb950" }}>{leg.pick}</span></div>
                 </div>
-              ))}
-            </div>
-            <div style={{marginTop:10,textAlign:'center',fontSize:11,color:C.muted}}>
-              Confidence: <span style={{color:result.prediction.confidence>0.75?C.green:result.prediction.confidence>0.65?C.gold:C.muted,fontWeight:800}}>{(result.prediction.confidence*100).toFixed(0)}%</span>
-              <span style={{marginLeft:8}}>Park: {result.prediction.park?.name} ({result.prediction.park?.runFactor}×)</span>
-            </div>
-          </Panel>
-
-          {/* Starters */}
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
-            {[{team:homeTeam,sp:result.homeStarter,stats:result.homeStarterStats,tag:'HOME'},
-              {team:awayTeam,sp:result.awayStarter,stats:result.awayStarterStats,tag:'AWAY'}].map(({team,sp,stats,tag})=>(
-              <Panel key={team.id}>
-                <SLabel>{team.abbr} {tag} SP</SLabel>
-                <div style={{color:C.text,fontWeight:800,fontSize:13,marginBottom:8}}>{sp?.fullName||'TBD'}</div>
-                {stats ? (
-                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:3}}>
-                    {[['ERA',stats.era?.toFixed(2)],['FIP',stats.fip?.toFixed(2)],['xFIP',stats.xfip?.toFixed(2)],['K/9',stats.k9?.toFixed(1)],['BB/9',stats.bb9?.toFixed(1)],['WHIP',stats.whip?.toFixed(3)]].map(([l,v])=>(
-                      <div key={l} style={{textAlign:'center',background:'#0d1a0d',borderRadius:4,padding:5}}>
-                        <div style={{fontSize:8,color:C.muted}}>{l}</div>
-                        <div style={{fontSize:12,fontWeight:800,color:C.green,fontFamily:'monospace'}}>{v||'—'}</div>
-                      </div>
-                    ))}
-                  </div>
-                ):<div style={{color:'#a0b8c8',fontSize:10}}>Stats unavailable</div>}
-              </Panel>
+                <StatPill label="PROB" value={`${(leg.prob * 100).toFixed(1)}%`} />
+                <StatPill label="ML" value={leg.ml > 0 ? `+${leg.ml}` : leg.ml} />
+                <span style={{ color: leg.confidence === "HIGH" ? "#3fb950" : leg.confidence === "MEDIUM" ? "#e3b341" : "#8b949e", fontSize: 10, fontWeight: 700 }}>{leg.confidence}</span>
+                {mode === "custom" && (
+                  <button onClick={() => setCustomLegs(customLegs.filter(l => l.gamePk !== leg.gamePk))}
+                    style={{ background: "none", border: "none", color: "#f85149", cursor: "pointer", fontSize: 14 }}>✕</button>
+                )}
+              </div>
             ))}
           </div>
-
-          {/* Relievers */}
-          {(result.homeRelievers?.length||result.awayRelievers?.length) > 0 && (
-            <Panel style={{marginBottom:10}}>
-              <SLabel>Likely Relievers</SLabel>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-                {[{team:homeTeam,rl:result.homeRelievers},{team:awayTeam,rl:result.awayRelievers}].map(({team,rl})=>(
-                  <div key={team.id}>
-                    <div style={{color:C.muted,fontSize:9,marginBottom:4,letterSpacing:1}}>{team.abbr} BULLPEN</div>
-                    {(rl||[]).map(r=>(
-                      <div key={r.name} style={{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:`1px solid ${C.dim}`,fontSize:10}}>
-                        <span style={{color:r.isCloser?C.gold:C.text}}>{r.isCloser?'🔒 ':''}{r.name}</span>
-                        <span style={{color:r.era<3.5?C.green:r.era>4.5?C.red:C.muted,fontFamily:'monospace'}}>{r.era.toFixed(2)} ERA</span>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </Panel>
-          )}
-
-          {/* Stats */}
-          <Panel style={{marginBottom:10}}>
-            <SLabel>Season Stats Comparison</SLabel>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:8,fontSize:11,fontWeight:800}}>
-              <span style={{color:C.green,minWidth:80,textAlign:'right'}}>{homeTeam.abbr}</span>
-              <span style={{color:C.muted,flex:1,textAlign:'center'}}>STAT</span>
-              <span style={{color:'#c8d8e8',minWidth:80}}>{awayTeam.abbr}</span>
-            </div>
-            <StatRow label="AVG"       home={result.homeHit?.avg?.toFixed(3)}  away={result.awayHit?.avg?.toFixed(3)}/>
-            <StatRow label="OBP"       home={result.homeHit?.obp?.toFixed(3)}  away={result.awayHit?.obp?.toFixed(3)}/>
-            <StatRow label="SLG"       home={result.homeHit?.slg?.toFixed(3)}  away={result.awayHit?.slg?.toFixed(3)}/>
-            <StatRow label="wOBA"      home={estimateWOBA(result.homeHit)?.toFixed(3)} away={estimateWOBA(result.awayHit)?.toFixed(3)} highlight/>
-            <StatRow label="wRC+"      home={estimateWRCPlus(result.homeHit)} away={estimateWRCPlus(result.awayHit)} highlight/>
-            <StatRow label="ERA"       home={result.homePitch?.era?.toFixed(2)} away={result.awayPitch?.era?.toFixed(2)} higherIsBetter={false}/>
-            <StatRow label="FIP"       home={estimateFIP(result.homePitch)?.toFixed(2)} away={estimateFIP(result.awayPitch)?.toFixed(2)} higherIsBetter={false} highlight/>
-            <StatRow label="WHIP"      home={result.homePitch?.whip?.toFixed(3)} away={result.awayPitch?.whip?.toFixed(3)} higherIsBetter={false}/>
-            {result.homeStarterStats && <StatRow label="SP FIP"  home={result.homeStarterStats.fip?.toFixed(2)} away={result.awayStarterStats?.fip?.toFixed(2)} higherIsBetter={false}/>}
-            {result.homeStarterStats && <StatRow label="SP xFIP" home={result.homeStarterStats.xfip?.toFixed(2)} away={result.awayStarterStats?.xfip?.toFixed(2)} higherIsBetter={false}/>}
-          </Panel>
-
-          {/* Form */}
-          {(result.homeForm||result.awayForm) && (
-            <Panel style={{marginBottom:10}}>
-              <SLabel>Rolling Form (last 15 games)</SLabel>
-              {[{team:homeTeam,form:result.homeForm},{team:awayTeam,form:result.awayForm}].map(({team,form})=>(
-                <div key={team.id} style={{marginBottom:12}}>
-                  <div style={{display:'flex',justifyContent:'space-between',marginBottom:4,alignItems:'center'}}>
-                    <span style={{color:C.text,fontWeight:700,fontSize:12}}>{team.name}</span>
-                    {form && <div style={{display:'flex',gap:4}}>
-                      <Badge text={`${form.wins}W-${form.losses}L`}/>
-                      <Badge text={form.luckFactor>0.03?'Overperf':form.luckFactor<-0.03?'Due up':'Stable'} color={form.luckFactor>0.03?'#2a0a0a':form.luckFactor<-0.03?'#0a2a0a':C.dim} textColor={form.luckFactor>0.03?C.red:form.luckFactor<-0.03?C.green:C.muted}/>
-                    </div>}
-                  </div>
-                  {form ? (
-                    <>
-                      <div style={{display:'flex',gap:2,marginBottom:4}}>
-                        {form.games?.map((g,i)=>(
-                          <div key={i} style={{flex:1,height:18,borderRadius:2,background:g.win?C.green:C.red,opacity:0.4+(i/form.games.length)*0.6}} title={`${g.rs}-${g.ra}`}/>
-                        ))}
-                      </div>
-                      <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:C.muted}}>
-                        <span>Actual {(form.winPct*100).toFixed(0)}%</span>
-                        <span>Pyth {(form.pythWinPct*100).toFixed(0)}%</span>
-                        <span>RF/G {form.avgRF?.toFixed(1)}</span>
-                        <span>RA/G {form.avgRA?.toFixed(1)}</span>
-                      </div>
-                    </>
-                  ):<div style={{color:'#a0b8c8',fontSize:11}}>No form data (early season)</div>}
-                </div>
-              ))}
-            </Panel>
-          )}
-
-          {/* Data quality */}
-          <Panel>
-            <SLabel>Data Coverage</SLabel>
-            <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
-              {Object.entries(result.dataQuality).map(([k,v])=>(
-                <Badge key={k} text={`${v?'✓':'✗'} ${k}`} color={v?'#0d2a0d':'#1a0d0d'} textColor={v?C.green:'#5a3030'}/>
-              ))}
-            </div>
-          </Panel>
         </div>
+      )}
+
+      {/* All games with pick buttons (custom mode) or ranked list (auto mode) */}
+      {!loading && allGames.length > 0 && (
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#8b949e", marginBottom: 8, letterSpacing: 1 }}>
+            {mode === "auto" ? "ALL GAMES (sorted by model confidence)" : "SELECT YOUR LEGS"}
+          </div>
+          {[...allGames]
+            .sort((a, b) => Math.max(b.pred.homeWinPct, 1 - b.pred.homeWinPct) - Math.max(a.pred.homeWinPct, 1 - a.pred.homeWinPct))
+            .map((g, i) => {
+              const home = teamById(g.homeTeamId);
+              const away = teamById(g.awayTeamId);
+              const favHome = g.pred.homeWinPct >= 0.5;
+              const customLeg = customLegs.find(l => l.gamePk === g.gamePk);
+              const isAutoSelected = mode === "auto" && parlay && parlay.find(l => l.gamePk === g.gamePk);
+
+              return (
+                <div key={g.gamePk} style={{
+                  background: isAutoSelected ? "linear-gradient(135deg, #1a2d1a, #162d16)" : "#161b22",
+                  border: `1px solid ${isAutoSelected ? "#2ea043" : "#30363d"}`,
+                  borderRadius: 10, padding: "12px 16px", marginBottom: 8,
+                  display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap"
+                }}>
+                  <div style={{ width: 24, fontSize: 12, color: "#8b949e", textAlign: "center" }}>
+                    {isAutoSelected ? "✅" : `#${i + 1}`}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#e6edf3" }}>{away.abbr} @ {home.abbr}</div>
+                    <div style={{ fontSize: 11, color: "#8b949e" }}>
+                      Fav: {favHome ? home.abbr : away.abbr} — {(Math.max(g.pred.homeWinPct, g.pred.awayWinPct) * 100).toFixed(1)}%
+                    </div>
+                  </div>
+                  <StatPill label="WIN% H" value={`${(g.pred.homeWinPct * 100).toFixed(0)}%`} />
+                  <StatPill label="O/U" value={g.pred.ouTotal} />
+                  <span style={{ color: g.pred.confidence === "HIGH" ? "#3fb950" : g.pred.confidence === "MEDIUM" ? "#e3b341" : "#8b949e", fontSize: 10, fontWeight: 700 }}>{g.pred.confidence}</span>
+                  {mode === "custom" && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        onClick={() => toggleCustomLeg(g, true)}
+                        style={{
+                          background: customLeg?.pick === home.abbr ? "#3fb950" : "#21262d",
+                          color: customLeg?.pick === home.abbr ? "#0d1117" : "#e6edf3",
+                          border: "1px solid #30363d", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12
+                        }}>
+                        {home.abbr}
+                      </button>
+                      <button
+                        onClick={() => toggleCustomLeg(g, false)}
+                        style={{
+                          background: customLeg?.pick === away.abbr ? "#3fb950" : "#21262d",
+                          color: customLeg?.pick === away.abbr ? "#0d1117" : "#e6edf3",
+                          border: "1px solid #30363d", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12
+                        }}>
+                        {away.abbr}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </div>
+      )}
+
+      {!loading && allGames.length === 0 && (
+        <div style={{ color: "#8b949e", textAlign: "center", marginTop: 40 }}>No games found for {dateStr}</div>
       )}
     </div>
   );
 }
 
-// ─── Park Tab ─────────────────────────────────────────────────
-function ParkTab() {
-  return (
-    <div>
-      <Panel>
-        <SLabel>All 30 Park Run Factors</SLabel>
-        <ResponsiveContainer width="100%" height={320}>
-          <BarChart layout="vertical" barSize={7}
-            data={Object.entries(PARK_FACTORS).map(([id,p])=>({
-              name: TEAMS.find(t=>t.id===+id)?.abbr||id,
-              run: p.runFactor,
-            })).sort((a,b)=>b.run-a.run)}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#0d1a0d" horizontal={false}/>
-            <XAxis type="number" domain={[0.85,1.2]} tick={{fill:C.muted,fontSize:9,fontFamily:'monospace'}} axisLine={false}/>
-            <YAxis type="category" dataKey="name" tick={{fill:C.muted,fontSize:9,fontFamily:'monospace'}} width={30} axisLine={false}/>
-            <Tooltip contentStyle={{background:C.card,border:`1px solid ${C.border}`,borderRadius:6,fontFamily:'monospace',fontSize:11}}/>
-            <ReferenceLine x={1.0} stroke="#1a3a1a" strokeDasharray="4 4"/>
-            <Bar dataKey="run" fill={C.green} radius={[0,3,3,0]}/>
-          </BarChart>
-        </ResponsiveContainer>
-        <div style={{fontSize:10,color:C.muted,marginTop:6}}>
-          Run factor vs neutral (1.00). Coors Field 1.16× = ~16% more runs. Oracle Park 0.91× = ~9% fewer runs.
-        </div>
-      </Panel>
-      <Panel style={{marginTop:10}}>
-        <SLabel>Park Details</SLabel>
-        {Object.entries(PARK_FACTORS).sort((a,b)=>b[1].runFactor-a[1].runFactor).map(([id,p])=>(
-          <div key={id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:`1px solid ${C.dim}`,fontSize:11}}>
-            <span style={{color:C.text,minWidth:50,fontWeight:700}}>{TEAMS.find(t=>t.id===+id)?.abbr||id}</span>
-            <span style={{color:C.muted,flex:1,fontSize:10}}>{p.name}</span>
-            <span style={{color:p.runFactor>1.04?C.gold:p.runFactor<0.95?C.blue:C.green,fontFamily:'monospace',fontWeight:800,minWidth:36}}>{p.runFactor}</span>
-            <span style={{color:'#a0b8c8',fontSize:9,minWidth:90,textAlign:'right'}}>{p.notes}</span>
-          </div>
-        ))}
-      </Panel>
-    </div>
-  );
-}
+// ═══════════════════════════════════════════════════════════════
+// MATCHUP TAB (simplified standalone version)
+// ═══════════════════════════════════════════════════════════════
+function MatchupTab() {
+  const [homeTeam, setHomeTeam] = useState(TEAMS[19]);
+  const [awayTeam, setAwayTeam] = useState(TEAMS[11]);
+  const [pred, setPred] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-// ─── Deploy Tab ───────────────────────────────────────────────
-function DeployTab() {
-  return (
-    <div style={{display:'flex',flexDirection:'column',gap:12}}>
-      <Panel style={{background:'#09090f',borderColor:'#1a1a3a'}}>
-        <SLabel>🚀 You Are Deployed!</SLabel>
-        <div style={{fontSize:12,color:'#c8d8e8',lineHeight:1.9}}>
-          Since you're reading this on Vercel, the MLB API proxy is live. All schedule, stats, and pitcher data flows through <code style={{color:'#a5b4fc'}}>/mlb/*</code> → <code style={{color:'#a5b4fc'}}>statsapi.mlb.com/api/v1/*</code> via Vercel's edge network — no CORS, no CSP issues.
-        </div>
-      </Panel>
-      <Panel style={{background:'#09090f',borderColor:'#1a1a3a'}}>
-        <SLabel>Live Odds API (Optional)</SLabel>
-        <div style={{fontSize:12,color:'#c8d8e8',lineHeight:1.9,marginBottom:10}}>
-          Get a free key at <span style={{color:'#a5b4fc'}}>the-odds-api.com</span> (500 req/month free). Add it as a Vercel environment variable:
-        </div>
-        <div style={{background:'#06060c',borderRadius:8,padding:12,fontFamily:'monospace',fontSize:11,color:'#a5b4fc',lineHeight:2}}>
-          {`VITE_ODDS_API_KEY=your_key_here`}<br/>
-          {`# In Vercel dashboard → Project → Settings → Environment Variables`}
-        </div>
-      </Panel>
-      <Panel style={{background:'#09090f',borderColor:'#1a1a3a'}}>
-        <SLabel>Statcast Backend (Tier 3)</SLabel>
-        <div style={{background:'#06060c',borderRadius:8,padding:12,fontFamily:'monospace',fontSize:10,color:'#a5b4fc',lineHeight:1.9,overflowX:'auto'}}>
-{`# api/statcast.py — add to this repo
-from http.server import BaseHTTPRequestHandler
-import json
-try:
-  import pybaseball; pybaseball.cache.enable()
-except: pass
-
-class handler(BaseHTTPRequestHandler):
-  def do_GET(self):
-    from urllib.parse import urlparse, parse_qs
-    qs = parse_qs(urlparse(self.path).query)
-    abbr = qs.get("teamAbbr", ["NYY"])[0]
-    season = int(qs.get("season", [2026])[0])
-    try:
-      df = pybaseball.team_batting(season)
-      row = df[df["Team"] == abbr].iloc[0]
-      out = {
-        "xwOBA": float(row.get("xwOBA", 0.320)),
-        "barrelRate": float(row.get("Barrel%", 8.5)) / 100,
-        "hardHitPct": float(row.get("HardHit%", 38.0)) / 100,
-        "exitVelo": float(row.get("EV", 88.5)),
-      }
-    except Exception as e:
-      out = {"error": str(e)}
-    self.send_response(200)
-    self.send_header("Content-type","application/json")
-    self.send_header("Access-Control-Allow-Origin","*")
-    self.end_headers()
-    self.wfile.write(json.dumps(out).encode())`}
-        </div>
-        <div style={{fontSize:11,color:C.muted,marginTop:8}}>Add <code style={{color:'#a5b4fc'}}>pybaseball</code> to <code style={{color:'#a5b4fc'}}>requirements.txt</code> in the repo root.</div>
-      </Panel>
-    </div>
-  );
-}
-
-// ─── ROOT APP ─────────────────────────────────────────────────
-const TABS = ['📅 Calendar','⚾ Matchup','🏟️ Parks','🚀 Deploy'];
-
-export default function App() {
-  const [activeTab, setActiveTab] = useState('📅 Calendar');
-  const [matchupPrefill, setMatchupPrefill] = useState({});
-
-  const handleCalendarSelect = (game) => {
-    setMatchupPrefill({
-      home: game.homeTeam ? TEAMS.find(t=>t.id===game.homeTeam.id)||game.homeTeam : null,
-      away: game.awayTeam ? TEAMS.find(t=>t.id===game.awayTeam.id)||game.awayTeam : null,
-      date: game.gameTime ? game.gameTime.split('T')[0] : null,
-    });
+  const runPrediction = async () => {
+    setLoading(true);
+    const [homeHit, awayHit, homePitch, awayPitch, homeForm, awayForm] = await Promise.all([
+      fetchTeamHitting(homeTeam.id), fetchTeamHitting(awayTeam.id),
+      fetchTeamPitching(homeTeam.id), fetchTeamPitching(awayTeam.id),
+      fetchRecentForm(homeTeam.id), fetchRecentForm(awayTeam.id),
+    ]);
+    const result = predictGame({ homeTeamId: homeTeam.id, awayTeamId: awayTeam.id, homeHit, awayHit, homePitch, awayPitch, homeForm, awayForm });
+    setPred(result);
+    setLoading(false);
   };
 
   return (
-    <div style={{background:C.bg,minHeight:'100vh',fontFamily:"'Courier New',monospace",color:C.text,padding:'18px 14px',maxWidth:900,margin:'0 auto'}}>
-      <style>{`
-        *{box-sizing:border-box;}
-        ::-webkit-scrollbar{width:5px;height:5px;}
-        ::-webkit-scrollbar-track{background:#060a06;}
-        ::-webkit-scrollbar-thumb{background:#1a3a1a;border-radius:3px;}
-        option{background:#0d140d;}
-        .tab{cursor:pointer;padding:7px 12px;border-radius:5px;font-size:10px;font-weight:800;letter-spacing:1px;text-transform:uppercase;transition:all 0.15s;border:1px solid transparent;font-family:'Courier New',monospace;background:transparent;}
-        .tab.active{background:#0d2a0d;color:#39d353;border-color:#1a4a1a;}
-        .tab.inactive{color:#4a5568;}
-        .tab:hover:not(.active){border-color:#182418;color:#6a7a6a;}
-        @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-        @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
-      `}</style>
-
-      {/* Header */}
-      <div style={{textAlign:'center',marginBottom:20}}>
-        <div style={{fontSize:9,letterSpacing:5,color:'#1a4a1a',marginBottom:3}}>⚾ ADVANCED ANALYTICS</div>
-        <h1 style={{margin:0,fontSize:24,fontWeight:900,letterSpacing:-1}}>
-          <span style={{color:C.green}}>MLB PREDICTOR</span>{' '}
-          <span style={{color:'#4a8a5a',fontSize:14}}>v5</span>
-        </h1>
-        <div style={{color:C.muted,fontSize:9,marginTop:4,letterSpacing:3}}>
-          LIVE DATA · PARK FACTORS · STARTERS · FORM · BULLPEN · vsTeam SPLITS
+    <div>
+      <h2 style={{ margin: "0 0 16px", fontSize: 18, color: "#58a6ff" }}>⚾ Matchup Predictor</h2>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ color: "#8b949e", fontSize: 11, marginBottom: 4 }}>AWAY</div>
+          <select value={awayTeam.id} onChange={e => setAwayTeam(TEAMS.find(t => t.id === parseInt(e.target.value)))}
+            style={{ background: "#21262d", color: "#e6edf3", border: "1px solid #30363d", borderRadius: 8, padding: "6px 12px", fontSize: 13 }}>
+            {TEAMS.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
         </div>
+        <div style={{ color: "#8b949e", fontSize: 18, marginTop: 16 }}>@</div>
+        <div>
+          <div style={{ color: "#8b949e", fontSize: 11, marginBottom: 4 }}>HOME</div>
+          <select value={homeTeam.id} onChange={e => setHomeTeam(TEAMS.find(t => t.id === parseInt(e.target.value)))}
+            style={{ background: "#21262d", color: "#21262d", border: "1px solid #30363d", borderRadius: 8, padding: "6px 12px", fontSize: 13, color: "#e6edf3" }}>
+            {TEAMS.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </div>
+        <button onClick={runPrediction}
+          style={{ marginTop: 16, background: "#238636", color: "#fff", border: "none", borderRadius: 8, padding: "8px 20px", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
+          {loading ? "Computing..." : "⚡ Predict"}
+        </button>
       </div>
 
-      {/* Tabs */}
-      <div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap'}}>
-        {TABS.map(tab=>(
-          <button key={tab} className={`tab ${activeTab===tab?'active':'inactive'}`} onClick={()=>setActiveTab(tab)}>{tab}</button>
-        ))}
-      </div>
+      {pred && (
+        <div style={{ background: "#161b22", border: "1px solid #30363d", borderRadius: 12, padding: 20, maxWidth: 560 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "#e6edf3", marginBottom: 12 }}>
+            {awayTeam.abbr} {pred.awayRuns.toFixed(1)} — {homeTeam.abbr} {pred.homeRuns.toFixed(1)}
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <Detail label="Home Win %" value={`${(pred.homeWinPct * 100).toFixed(1)}%`} />
+            <Detail label="Away Win %" value={`${(pred.awayWinPct * 100).toFixed(1)}%`} />
+            <Detail label="O/U Total" value={pred.ouTotal} />
+            <Detail label="Model ML (H)" value={pred.modelML_home > 0 ? `+${pred.modelML_home}` : pred.modelML_home} />
+            <Detail label="Run Line" value={`${homeTeam.abbr} -1.5`} />
+            <Detail label="Confidence" value={pred.confidence} />
+            <Detail label="Conf Score" value={`${pred.confScore}/100`} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
-      {activeTab==='📅 Calendar' && <CalendarTab onSelectGame={handleCalendarSelect}/>}
-      {activeTab==='⚾ Matchup'  && <MatchupTab prefillHome={matchupPrefill.home} prefillAway={matchupPrefill.away} prefillDate={matchupPrefill.date}/>}
-      {activeTab==='🏟️ Parks'    && <ParkTab/>}
-      {activeTab==='🚀 Deploy'   && <DeployTab/>}
+// ── SHARED UI COMPONENTS ──────────────────────────────────────
+function StatPill({ label, value, color }) {
+  return (
+    <div style={{ textAlign: "center", minWidth: 48 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: color || "#e6edf3" }}>{value}</div>
+      <div style={{ fontSize: 9, color: "#8b949e", letterSpacing: 1.5 }}>{label}</div>
+    </div>
+  );
+}
 
-      <div style={{textAlign:'center',marginTop:18,color:'#2a4a3a',fontSize:9,letterSpacing:2,fontFamily:'monospace'}}>
-        MLB PREDICTOR v5 · {new Date().getFullYear()} · Vercel Edge Proxy · statsapi.mlb.com
-      </div>
+function Detail({ label, value }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, color: "#8b949e", letterSpacing: 1, marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: "#e6edf3" }}>{value}</div>
     </div>
   );
 }
