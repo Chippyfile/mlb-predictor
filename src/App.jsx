@@ -466,13 +466,18 @@ function mlbFetch(path, params = {}) {
 // ── STATCAST FETCH ────────────────────────────────────────────
 // Calls /api/statcast?teamId=X&season=Y (pybaseball Vercel serverless)
 // Falls back silently if not deployed
+// Statcast is not available (requires Python backend not supported on Vercel free tier).
+// fetchStatcast returns null silently — all callers fall back to wOBA approximation.
+// To enable: host api/statcast.py on Railway or Render and point STATCAST_URL env var here.
 const _statcastCache = {};
 async function fetchStatcast(teamId) {
   if (!teamId) return null;
   const key = `${teamId}-${STAT_SEASON}`;
   if (_statcastCache[key] !== undefined) return _statcastCache[key];
+  const baseUrl = typeof STATCAST_URL !== "undefined" ? STATCAST_URL : null;
+  if (!baseUrl) { _statcastCache[key] = null; return null; } // no endpoint configured
   try {
-    const res = await fetch(`/api/statcast?teamId=${teamId}&season=${STAT_SEASON}`);
+    const res = await fetch(`${baseUrl}/api/statcast?teamId=${teamId}&season=${STAT_SEASON}`);
     if (!res.ok) { _statcastCache[key] = null; return null; }
     const data = await res.json();
     if (data?.error) { _statcastCache[key] = null; return null; }
