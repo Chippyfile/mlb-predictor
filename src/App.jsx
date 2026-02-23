@@ -909,6 +909,11 @@ async function ncaaRegradeAllResults(onProgress) {
 }
 
 // NCAA season starts Nov 1 of the prior calendar year
+// LIVE_CUTOFF: date from which predictions use real-time stats (not backfilled).
+// Set to today's date — all games on/after this are "forward-only" (trustworthy).
+// Games before this date used end-of-season ESPN stats applied retroactively,
+// which inflates historical accuracy. Change this if you redeploy later.
+const NCAA_LIVE_CUTOFF = "2026-02-23";
 const _ncaaSeasonStart = (() => {
   const now = new Date();
   // Before August = still in prior season year (e.g. Feb 2026 → Nov 2024)
@@ -1120,11 +1125,12 @@ const C = { green: "#3fb950", yellow: "#e3b341", red: "#f85149", blue: "#58a6ff"
 const confColor2 = c => c === "HIGH" ? C.green : c === "MEDIUM" ? C.yellow : C.muted;
 
 // ── ACCURACY DASHBOARD ─────────────────────────────────────────
-function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel = "Run Line" }) {
+function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel = "Run Line", isNCAA = false }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState("overview");
   const [gameTypeFilter, setGameTypeFilter] = useState(table === "mlb_predictions" ? "R" : "ALL");
+  const [forwardOnly, setForwardOnly] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -1136,7 +1142,12 @@ function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel
     })();
   }, [refreshKey, gameTypeFilter, table]);
 
-  const acc = useMemo(() => records.length ? computeAccuracy(records) : null, [records]);
+  // forwardOnly filters to games on/after NCAA_LIVE_CUTOFF — these used real-time stats
+  const filteredRecords = useMemo(() => {
+    if (!isNCAA || !forwardOnly) return records;
+    return records.filter(r => r.game_date >= NCAA_LIVE_CUTOFF);
+  }, [records, forwardOnly, isNCAA]);
+  const acc = useMemo(() => filteredRecords.length ? computeAccuracy(filteredRecords) : null, [filteredRecords]);
   const calib = acc?.calibration;
 
   if (loading) return <div style={{ color: C.dim, textAlign: "center", marginTop: 60, fontSize: 13 }}>Loading…</div>;
@@ -1153,9 +1164,9 @@ function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel
   );
 
   const cumData = []; let correct = 0, total = 0;
-  records.filter(r => r.ml_correct !== null).forEach(r => { total++; if (r.ml_correct) correct++; cumData.push({ game: total, pct: parseFloat((correct / total * 100).toFixed(1)) }); });
+  filteredRecords.filter(r => r.ml_correct !== null).forEach(r => { total++; if (r.ml_correct) correct++; cumData.push({ game: total, pct: parseFloat((correct / total * 100).toFixed(1)) }); });
   const roiData = []; let cumRoi = 0;
-  records.filter(r => r.ml_correct !== null).forEach((r, i) => { cumRoi += r.ml_correct ? 90.9 : -100; roiData.push({ game: i + 1, roi: parseFloat(cumRoi.toFixed(0)) }); });
+  filteredRecords.filter(r => r.ml_correct !== null).forEach((r, i) => { cumRoi += r.ml_correct ? 90.9 : -100; roiData.push({ game: i + 1, roi: parseFloat(cumRoi.toFixed(0)) }); });
 
   return (
     <div style={{ maxWidth: 900 }}>
@@ -1169,12 +1180,28 @@ function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel
               ))}
             </div>
           )}
+          {isNCAA && (
+            <div style={{ display: "flex", gap: 3, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3 }}>
+              <button onClick={() => setForwardOnly(false)} style={{ padding: "3px 10px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, background: !forwardOnly ? C.orange : "transparent", color: !forwardOnly ? C.bg : C.dim }}>All Games</button>
+              <button onClick={() => setForwardOnly(true)} style={{ padding: "3px 10px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, background: forwardOnly ? C.green : "transparent", color: forwardOnly ? C.bg : C.dim }}>✓ Live Only</button>
+            </div>
+          )}
           {["overview", "calibration", "monthly"].map(s => (
             <button key={s} onClick={() => setActiveSection(s)} style={{ padding: "4px 12px", borderRadius: 6, border: `1px solid ${activeSection === s ? "#30363d" : "transparent"}`, background: activeSection === s ? "#161b22" : "transparent", color: activeSection === s ? C.blue : C.dim, cursor: "pointer", fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase" }}>{s}</button>
           ))}
         </div>
       </div>
       {table === "mlb_predictions" && gameTypeFilter === "S" && <div style={{ background: "#1a1200", border: "1px solid #3a2a00", borderRadius: 8, padding: "8px 14px", marginBottom: 12, fontSize: 11, color: C.yellow }}>⚠️ Spring Training: lower accuracy expected — rosters experimental, home advantage disabled.</div>}
+      {isNCAA && !forwardOnly && (
+        <div style={{ background: "#1a0f00", border: "1px solid #5a3a00", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 11, color: C.orange, lineHeight: 1.6 }}>
+          ⚠️ <strong>Backtested data warning:</strong> Historical games (before {NCAA_LIVE_CUTOFF}) were predicted using end-of-season ESPN stats retroactively applied — not the stats available on game day. This inflates ML accuracy significantly (teams' final stats are better predictors than mid-season stats would be). Switch to <strong>✓ Live Only</strong> for real-world accuracy once enough live games accumulate.
+        </div>
+      )}
+      {isNCAA && forwardOnly && filteredRecords.length < 20 && (
+        <div style={{ background: "#0d1a10", border: "1px solid #1a3a1a", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 11, color: C.green }}>
+          ✓ Showing live predictions only (on/after {NCAA_LIVE_CUTOFF}). {filteredRecords.length} games graded so far — accuracy will stabilize after ~50 games.
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         {[
@@ -1823,7 +1850,7 @@ function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalibrationN
       )}
 
       {tab === "calendar" && <NCAACalendarTab calibrationFactor={calibrationNCAA} onGamesLoaded={setNcaaGames} />}
-      {tab === "accuracy" && <AccuracyDashboard table="ncaa_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNCAA} spreadLabel="Spread" />}
+      {tab === "accuracy" && <AccuracyDashboard table="ncaa_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNCAA} spreadLabel="Spread" isNCAA={true} />}
       {tab === "history" && <HistoryTab table="ncaa_predictions" refreshKey={refreshKey} />}
       {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={ncaaGames} />}
     </div>
