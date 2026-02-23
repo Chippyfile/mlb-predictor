@@ -1206,11 +1206,22 @@ function matchNCAAOddsToGame(oddsGame, schedGame) {
 // SHARED UI COMPONENTS
 // ═══════════════════════════════════════════════════════════════
 
-function Pill({ label, value, color }) {
-  return <div style={{ textAlign: "center", minWidth: 44 }}>
-    <div style={{ fontSize: 14, fontWeight: 800, color: color || "#e2e8f0" }}>{value}</div>
-    <div style={{ fontSize: 8, color: "#484f58", letterSpacing: 1.5, textTransform: "uppercase" }}>{label}</div>
-  </div>;
+function Pill({ label, value, color, highlight }) {
+  return (
+    <div style={{
+      textAlign: "center", minWidth: 44, position: "relative",
+      background: highlight ? "rgba(46,160,67,0.15)" : "transparent",
+      border: highlight ? "1px solid #2ea04355" : "1px solid transparent",
+      borderRadius: 6, padding: highlight ? "2px 6px" : "0",
+    }}>
+      {highlight && (
+        <div style={{ position: "absolute", top: -7, right: -4, fontSize: 8, background: "#2ea043",
+          color: "#fff", borderRadius: 3, padding: "0 3px", fontWeight: 800, letterSpacing: 0.5, lineHeight: "14px" }}>BET</div>
+      )}
+      <div style={{ fontSize: 14, fontWeight: 800, color: highlight ? "#3fb950" : (color || "#e2e8f0") }}>{value}</div>
+      <div style={{ fontSize: 8, color: "#484f58", letterSpacing: 1.5, textTransform: "uppercase" }}>{label}</div>
+    </div>
+  );
 }
 function Kv({ k, v }) {
   return <div style={{ padding: "8px 10px", background: "#080c10", borderRadius: 6 }}>
@@ -1800,6 +1811,8 @@ function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const [homeStats, awayStats] = await Promise.all([fetchNCAATeamStats(g.homeTeamId), fetchNCAATeamStats(g.awayTeamId)]);
       const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: g.neutralSite, calibrationFactor }) : null;
       const gameOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
+      if (gameOdds) console.log("[NCAA odds matched]", g.homeTeamName, "vs", g.awayTeamName, gameOdds);
+      else if (odds?.games?.length) console.log("[NCAA odds NO MATCH]", g.homeTeamName, "vs", g.awayTeamName, "available:", odds.games.map(o => o.homeTeam + " vs " + o.awayTeam));
       return { ...g, homeStats, awayStats, pred, loading: false, odds: gameOdds };
     }));
     setGames(enriched);
