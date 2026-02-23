@@ -75,10 +75,11 @@ function resolveStatTeamId(teamId, abbr) {
     const parent = TEAMS.find(t => t.abbr === baseAbbr);
     if (parent) { _resolvedIdCache[teamId] = parent.id; return parent.id; }
   }
-  // 3. Purely numeric abbr or no abbr — try to match by common spring training ID ranges
-  // MLB assigns ST split-squad IDs sequentially; they don't correspond to real team IDs.
-  // Best we can do: return null so callers skip the fetch rather than 404ing.
-  console.warn(`resolveStatTeamId: unknown split-squad teamId=${teamId} abbr=${abbr} — skipping stat fetch`);
+  // 3. Purely numeric abbr or no abbr — unresolvable split-squad or bad ID
+  // Return null so callers skip the fetch rather than hitting a 404
+  if (process.env.NODE_ENV !== "production") {
+    console.warn(`resolveStatTeamId: unknown teamId=${teamId} abbr=${abbr} — skipping stat fetch`);
+  }
   _resolvedIdCache[teamId] = null;
   return null;
 }
@@ -393,6 +394,10 @@ async function refreshPredictions(rows, onProgress) {
 
 // ── MLB API ───────────────────────────────────────────────────
 const SEASON = new Date().getFullYear();
+// Before ~April 1, the current season has no stats yet.
+// STAT_SEASON is the most recent season that actually has data.
+const _now = new Date();
+const STAT_SEASON = (_now.getMonth() < 3) ? SEASON - 1 : SEASON; // month is 0-indexed
 
 // ── TEAMS ─────────────────────────────────────────────────────
 const TEAMS = [
@@ -634,7 +639,10 @@ async function fetchScheduleForDate(dateStr) {
 
 // ── HITTING (blended 3-season) ────────────────────────────────
 async function fetchOneSeasonHitting(teamId, season) {
+  if (!teamId) return null;
   const data = await mlbFetch(`teams/${teamId}/stats`, { stats: "season", group: "hitting", season, sportId: 1 });
+  // mlbFetch returns null on non-200 (404 when season not started yet)
+  if (!data) return null;
   const s = data?.stats?.[0]?.splits?.[0]?.stat;
   if (!s) return null;
   return {
@@ -649,16 +657,18 @@ async function fetchOneSeasonHitting(teamId, season) {
 async function fetchTeamHitting(teamId) {
   if (!teamId) return null;
   const [cur, p1, p2] = await Promise.all([
-    fetchOneSeasonHitting(teamId, SEASON),
-    fetchOneSeasonHitting(teamId, SEASON - 1),
-    fetchOneSeasonHitting(teamId, SEASON - 2),
+    fetchOneSeasonHitting(teamId, STAT_SEASON),
+    fetchOneSeasonHitting(teamId, STAT_SEASON - 1),
+    fetchOneSeasonHitting(teamId, STAT_SEASON - 2),
   ]);
   return blendStats(cur, p1, p2, cur?.gamesPlayed || 0);
 }
 
 // ── PITCHING (blended 3-season) ───────────────────────────────
 async function fetchOneSeasonPitching(teamId, season) {
+  if (!teamId) return null;
   const data = await mlbFetch(`teams/${teamId}/stats`, { stats: "season", group: "pitching", season, sportId: 1 });
+  if (!data) return null;
   const s = data?.stats?.[0]?.splits?.[0]?.stat;
   if (!s) return null;
   return {
@@ -672,10 +682,10 @@ async function fetchOneSeasonPitching(teamId, season) {
 async function fetchTeamPitching(teamId) {
   if (!teamId) return null;
   const [cur, p1, p2, gpData] = await Promise.all([
-    fetchOneSeasonPitching(teamId, SEASON),
-    fetchOneSeasonPitching(teamId, SEASON - 1),
-    fetchOneSeasonPitching(teamId, SEASON - 2),
-    fetchOneSeasonHitting(teamId, SEASON), // gamesPlayed lives on hitting endpoint
+    fetchOneSeasonPitching(teamId, STAT_SEASON),
+    fetchOneSeasonPitching(teamId, STAT_SEASON - 1),
+    fetchOneSeasonPitching(teamId, STAT_SEASON - 2),
+    fetchOneSeasonHitting(teamId, STAT_SEASON), // gamesPlayed lives on hitting endpoint
   ]);
   return blendStats(cur, p1, p2, gpData?.gamesPlayed || 0);
 }
@@ -684,6 +694,7 @@ async function fetchTeamPitching(teamId) {
 async function fetchOneSeasonStarterStats(pitcherId, season) {
   if (!pitcherId) return null;
   const data = await mlbFetch(`people/${pitcherId}/stats`, { stats: "season", group: "pitching", season, sportId: 1 });
+  if (!data) return null;
   const s = data?.stats?.[0]?.splits?.[0]?.stat;
   if (!s) return null;
   const era  = parseFloat(s.era)  || 4.50;
@@ -699,9 +710,9 @@ async function fetchOneSeasonStarterStats(pitcherId, season) {
 async function fetchStarterStats(pitcherId) {
   if (!pitcherId) return null;
   const [cur, p1, p2] = await Promise.all([
-    fetchOneSeasonStarterStats(pitcherId, SEASON),
-    fetchOneSeasonStarterStats(pitcherId, SEASON - 1),
-    fetchOneSeasonStarterStats(pitcherId, SEASON - 2),
+    fetchOneSeasonStarterStats(pitcherId, STAT_SEASON),
+    fetchOneSeasonStarterStats(pitcherId, STAT_SEASON - 1),
+    fetchOneSeasonStarterStats(pitcherId, STAT_SEASON - 2),
   ]);
   const ip = cur?.ip || 0;
   const w  = Math.min(1.0, ip / 120);
