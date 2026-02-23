@@ -761,26 +761,165 @@ async function ncaaFillFinalScores(pendingRows) {
   return filled;
 }
 
+// NCAA season starts Nov 1 of the prior calendar year
+const _ncaaSeasonStart = (() => {
+  const now = new Date();
+  // Before August = still in prior season year (e.g. Feb 2026 → Nov 2024)
+  const seasonYear = now.getMonth() < 7 ? now.getFullYear() - 1 : now.getFullYear();
+  return `${seasonYear}-11-01`;
+})();
+
+// Light delay between ESPN API calls to avoid throttling during backfill
+const _sleep = ms => new Promise(r => setTimeout(r, ms));
+
 async function ncaaAutoSync(onProgress) {
   onProgress?.("🏀 Syncing NCAA…");
   const today = new Date().toISOString().split("T")[0];
-  const existing = await supabaseQuery(`/ncaa_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=5000`);
+
+  // Load all existing records so we can skip already-saved games
+  const existing = await supabaseQuery(
+    `/ncaa_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=10000`
+  );
   const savedKeys = new Set((existing || []).map(r => r.game_id || `${r.game_date}|${r.home_team_id}|${r.away_team_id}`));
+
+  // Fill in any results that came in since last sync
   const pendingResults = (existing || []).filter(r => !r.result_entered);
-  if (pendingResults.length) { const filled = await ncaaFillFinalScores(pendingResults); if (filled) onProgress?.(`🏀 ${filled} NCAA result(s) recorded`); }
-  const dates = [today];
-  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-  dates.unshift(yesterday.toISOString().split("T")[0]);
-  let newPred = 0;
-  for (const dateStr of dates) {
-    const games = await fetchNCAAGamesForDate(dateStr);
-    if (!games.length) continue;
-    const unsaved = games.filter(g => !savedKeys.has(g.gameId || `${dateStr}|${g.homeTeamId}|${g.awayTeamId}`));
-    if (!unsaved.length) continue;
-    const rows = (await Promise.all(unsaved.map(g => ncaaBuildPredictionRow(g, dateStr)))).filter(Boolean);
-    if (rows.length) { await supabaseQuery("/ncaa_predictions", "UPSERT", rows); newPred += rows.length; const ns = await supabaseQuery(`/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,result_entered,game_date,win_pct_home,spread_home`); if (ns?.length) await ncaaFillFinalScores(ns); }
+  if (pendingResults.length) {
+    const filled = await ncaaFillFinalScores(pendingResults);
+    if (filled) onProgress?.(`🏀 ${filled} NCAA result(s) recorded`);
   }
-  onProgress?.(newPred ? `🏀 NCAA sync complete — ${newPred} new` : "🏀 NCAA up to date");
+
+  // Build full date list from season start → today
+  const allDates = [];
+  const cur = new Date(_ncaaSeasonStart);
+  const todayDate = new Date(today);
+  while (cur <= todayDate) {
+    allDates.push(cur.toISOString().split("T")[0]);
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  let newPred = 0;
+  let datesChecked = 0;
+
+  for (const dateStr of allDates) {
+    const games = await fetchNCAAGamesForDate(dateStr);
+    datesChecked++;
+
+    // Progress update every 14 days
+    if (datesChecked % 14 === 0) {
+      onProgress?.(`🏀 Scanning ${dateStr} (${datesChecked}/${allDates.length})… ${newPred} new`);
+    }
+
+    if (!games.length) {
+      await _sleep(80); // short pause on empty dates too
+      continue;
+    }
+
+    const unsaved = games.filter(g =>
+      !savedKeys.has(g.gameId || `${dateStr}|${g.homeTeamId}|${g.awayTeamId}`)
+    );
+    if (!unsaved.length) { await _sleep(80); continue; }
+
+    // Build prediction rows (fetches ESPN team stats per game)
+    const rows = (await Promise.all(unsaved.map(g => ncaaBuildPredictionRow(g, dateStr)))).filter(Boolean);
+
+    if (rows.length) {
+      await supabaseQuery("/ncaa_predictions", "UPSERT", rows);
+      newPred += rows.length;
+      // Immediately try to fill final scores for this date
+      const ns = await supabaseQuery(
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,result_entered,game_date,win_pct_home,spread_home`
+      );
+      if (ns?.length) await ncaaFillFinalScores(ns);
+      // Update savedKeys so subsequent iterations skip these
+      rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
+    }
+
+    // Throttle to ~250ms per date with games — keeps ESPN happy
+    await _sleep(250);
+  }
+
+  onProgress?.(newPred ? `🏀 NCAA sync complete — ${newPred} new predictions` : "🏀 NCAA up to date");
+}
+
+// Full backfill: same as autoSync but with a visible progress callback
+// and a longer throttle so it can run in the background without hammering ESPN
+async function ncaaFullBackfill(onProgress, signal) {
+  onProgress?.("🏀 Starting full NCAA season backfill…");
+  const today = new Date().toISOString().split("T")[0];
+
+  const existing = await supabaseQuery(
+    `/ncaa_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=10000`
+  );
+  const savedKeys = new Set((existing || []).map(r => r.game_id || `${r.game_date}|${r.home_team_id}|${r.away_team_id}`));
+
+  // Fill pending results first
+  const pendingResults = (existing || []).filter(r => !r.result_entered);
+  if (pendingResults.length) {
+    onProgress?.(`🏀 Grading ${pendingResults.length} pending result(s)…`);
+    const filled = await ncaaFillFinalScores(pendingResults);
+    if (filled) onProgress?.(`🏀 ${filled} result(s) recorded`);
+  }
+
+  const allDates = [];
+  const cur = new Date(_ncaaSeasonStart);
+  while (cur.toISOString().split("T")[0] <= today) {
+    allDates.push(cur.toISOString().split("T")[0]);
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  let newPred = 0, skipped = 0, errors = 0;
+
+  for (let i = 0; i < allDates.length; i++) {
+    // Allow caller to cancel via AbortSignal
+    if (signal?.aborted) { onProgress?.("🏀 Backfill cancelled"); return; }
+
+    const dateStr = allDates[i];
+    onProgress?.(`🏀 [${i + 1}/${allDates.length}] ${dateStr} — ${newPred} saved so far`);
+
+    let games;
+    try {
+      games = await fetchNCAAGamesForDate(dateStr);
+    } catch (e) {
+      errors++;
+      await _sleep(1000); // back off on fetch error
+      continue;
+    }
+
+    if (!games.length) { await _sleep(120); continue; }
+
+    const unsaved = games.filter(g =>
+      !savedKeys.has(g.gameId || `${dateStr}|${g.homeTeamId}|${g.awayTeamId}`)
+    );
+    skipped += games.length - unsaved.length;
+    if (!unsaved.length) { await _sleep(120); continue; }
+
+    let rows;
+    try {
+      rows = (await Promise.all(unsaved.map(g => ncaaBuildPredictionRow(g, dateStr)))).filter(Boolean);
+    } catch (e) {
+      errors++;
+      await _sleep(500);
+      continue;
+    }
+
+    if (rows.length) {
+      await supabaseQuery("/ncaa_predictions", "UPSERT", rows);
+      newPred += rows.length;
+      const ns = await supabaseQuery(
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,result_entered,game_date,win_pct_home,spread_home`
+      );
+      if (ns?.length) await ncaaFillFinalScores(ns);
+      rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
+    }
+
+    // 400ms between dates during full backfill — respectful to ESPN API
+    await _sleep(400);
+  }
+
+  onProgress?.(
+    `✅ NCAA backfill complete — ${newPred} new, ${skipped} already saved, ${errors} errors`
+  );
 }
 
 function matchNCAAOddsToGame(oddsGame, schedGame) {
@@ -1436,17 +1575,76 @@ function MLBSection({ mlbGames, setMlbGames, calibrationMLB, setCalibrationMLB, 
 
 function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalibrationNCAA, refreshKey, setRefreshKey }) {
   const [tab, setTab] = useState("calendar");
+  const [syncMsg, setSyncMsg] = useState("");
+  const [backfilling, setBackfilling] = useState(false);
+  const abortRef = useRef(null);
   const TABS = ["calendar", "accuracy", "history", "parlay"];
+
+  const handleAutoSync = async () => {
+    setSyncMsg("🏀 Syncing…");
+    await ncaaAutoSync(msg => setSyncMsg(msg));
+    setRefreshKey(k => k + 1);
+    setTimeout(() => setSyncMsg(""), 4000);
+  };
+
+  const handleFullBackfill = async () => {
+    if (backfilling) {
+      abortRef.current?.abort();
+      setBackfilling(false);
+      setSyncMsg("🏀 Backfill cancelled");
+      return;
+    }
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setBackfilling(true);
+    setSyncMsg("🏀 Starting full season backfill…");
+    await ncaaFullBackfill(msg => setSyncMsg(msg), controller.signal);
+    setBackfilling(false);
+    setRefreshKey(k => k + 1);
+  };
+
   return (
     <div>
-      <div style={{ display: "flex", gap: 4, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
         {TABS.map(t => (
           <button key={t} onClick={() => setTab(t)} style={{ padding: "6px 16px", borderRadius: 7, border: `1px solid ${tab === t ? "#30363d" : "transparent"}`, background: tab === t ? "#161b22" : "transparent", color: tab === t ? C.orange : C.dim, cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase" }}>
             {t === "calendar" ? "📅" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎯"} {t}
           </button>
         ))}
-        <button onClick={async () => { setRefreshKey(k => k + 1); await ncaaAutoSync(msg => console.log(msg)); setRefreshKey(k => k + 1); }} style={{ marginLeft: "auto", background: "#161b22", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 14px", cursor: "pointer", fontSize: 10 }}>⟳ Auto Sync</button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={handleAutoSync}
+            disabled={backfilling}
+            style={{ background: "#161b22", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", cursor: backfilling ? "not-allowed" : "pointer", fontSize: 10 }}
+          >⟳ Sync</button>
+          <button
+            onClick={handleFullBackfill}
+            style={{
+              background: backfilling ? "#2a0a0a" : "#1a0a00",
+              color: backfilling ? C.red : C.orange,
+              border: `1px solid ${backfilling ? "#5a1a1a" : "#3a1a00"}`,
+              borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 10, fontWeight: 700,
+              animation: backfilling ? "pulse 1.5s ease infinite" : "none"
+            }}
+          >{backfilling ? "⏹ Cancel" : "⏮ Full Season Backfill"}</button>
+        </div>
       </div>
+
+      {/* Sync progress bar */}
+      {syncMsg && (
+        <div style={{ background: "#0d1a10", border: `1px solid #1a3a1a`, borderRadius: 7, padding: "8px 14px", marginBottom: 12, fontSize: 11, color: backfilling ? C.orange : C.green, fontFamily: "monospace", display: "flex", alignItems: "center", gap: 8 }}>
+          {backfilling && <span style={{ animation: "pulse 1s ease infinite", fontSize: 14 }}>⏳</span>}
+          {syncMsg}
+        </div>
+      )}
+
+      {/* Season info banner */}
+      {!syncMsg && (
+        <div style={{ fontSize: 10, color: C.dim, marginBottom: 12, letterSpacing: 1 }}>
+          NCAA Men's Basketball · Season starts {_ncaaSeasonStart} · ESPN API (free, no key)
+        </div>
+      )}
+
       {tab === "calendar" && <NCAACalendarTab calibrationFactor={calibrationNCAA} onGamesLoaded={setNcaaGames} />}
       {tab === "accuracy" && <AccuracyDashboard table="ncaa_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNCAA} spreadLabel="Spread" />}
       {tab === "history" && <HistoryTab table="ncaa_predictions" refreshKey={refreshKey} />}
