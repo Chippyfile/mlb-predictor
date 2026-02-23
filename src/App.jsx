@@ -13,9 +13,13 @@ import {
 const SUPABASE_URL = "https://lxaaqtqvlwjvyuedyauo.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4YWFxdHF2bHdqdnl1ZWR5YXVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4MDYzNTUsImV4cCI6MjA4NzM4MjM1NX0.UItPw2j2oo5F2_zJZmf43gmZnNHVQ5FViQgbd4QEii0";
 
-async function supabaseQuery(path, method = "GET", body = null) {
+async function supabaseQuery(path, method = "GET", body = null, onConflict = null) {
   try {
     const isUpsert = method === "UPSERT";
+    const sep = path.includes("?") ? "&" : "?";
+    const url = (isUpsert && onConflict)
+      ? `${SUPABASE_URL}/rest/v1${path}${sep}on_conflict=${onConflict}`
+      : `${SUPABASE_URL}/rest/v1${path}`;
     const opts = {
       method: isUpsert ? "POST" : method,
       headers: {
@@ -27,7 +31,7 @@ async function supabaseQuery(path, method = "GET", body = null) {
       },
     };
     if (body) opts.body = JSON.stringify(body);
-    const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, opts);
+    const res = await fetch(url, opts);
     if (!res.ok) { console.error("Supabase error:", await res.text()); return null; }
     const text = await res.text();
     return text ? JSON.parse(text) : [];
@@ -438,7 +442,7 @@ async function mlbBuildPredictionRow(game, dateStr) {
   const pred = mlbPredictGame({ homeTeamId: game.homeTeamId, awayTeamId: game.awayTeamId, homeHit, awayHit, homePitch, awayPitch, homeStarterStats: homeStarter, awayStarterStats: awayStarter, homeForm, awayForm, homeGamesPlayed: homeForm?.gamesPlayed || 0, awayGamesPlayed: awayForm?.gamesPlayed || 0, bullpenData: { [game.homeTeamId]: homeBullpen, [game.awayTeamId]: awayBullpen }, homeLineup, awayLineup, umpire: game.umpire, homeStatcast, awayStatcast });
   if (!pred) return null;
   const home = mlbTeamById(game.homeTeamId), away = mlbTeamById(game.awayTeamId);
-  return { game_date: dateStr, home_team: game.homeAbbr || (home?.abbr || String(game.homeTeamId)).replace(/\d+$/, ''), away_team: game.awayAbbr || (away?.abbr || String(game.awayTeamId)).replace(/\d+$/, ''), game_pk: game.gamePk, game_type: getMLBGameType(dateStr), model_ml_home: pred.modelML_home, model_ml_away: pred.modelML_away, run_line_home: pred.runLineHome, run_line_away: -pred.runLineHome, ou_total: pred.ouTotal, win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)), confidence: pred.confidence, pred_home_runs: parseFloat(pred.homeRuns.toFixed(2)), pred_away_runs: parseFloat(pred.awayRuns.toFixed(2)), result_entered: false };
+  return { game_date: dateStr, home_team: game.homeAbbr || (home?.abbr || String(game.homeTeamId)).replace(/\d+$/, ''), away_team: game.awayAbbr || (away?.abbr || String(game.awayTeamId)).replace(/\d+$/, ''), game_pk: game.gamePk, game_type: getMLBGameType(dateStr), model_ml_home: pred.modelML_home, model_ml_away: pred.modelML_away, run_line_home: pred.runLineHome, run_line_away: -pred.runLineHome, ou_total: pred.ouTotal, win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)), confidence: pred.confidence, pred_home_runs: parseFloat(pred.homeRuns.toFixed(2)), pred_away_runs: parseFloat(pred.awayRuns.toFixed(2)) };
 }
 
 async function mlbFillFinalScores(pendingRows) {
@@ -560,7 +564,7 @@ async function mlbAutoSync(onProgress) {
     const unsaved = schedule.filter(g => { const ha = normAbbr(g.homeAbbr || mlbTeamById(g.homeTeamId).abbr), aa = normAbbr(g.awayAbbr || mlbTeamById(g.awayTeamId).abbr); return !savedKeys.has(`${dateStr}|${aa}@${ha}`); });
     if (!unsaved.length) continue;
     const rows = (await Promise.all(unsaved.map(g => mlbBuildPredictionRow(g, dateStr)))).filter(Boolean);
-    if (rows.length) { await supabaseQuery("/mlb_predictions", "UPSERT", rows); newPred += rows.length; const ns = await supabaseQuery(`/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`); if (ns?.length) await mlbFillFinalScores(ns); }
+    if (rows.length) { await supabaseQuery("/mlb_predictions", "UPSERT", rows, "game_pk"); newPred += rows.length; const ns = await supabaseQuery(`/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`); if (ns?.length) await mlbFillFinalScores(ns); }
   }
   onProgress?.(newPred ? `⚾ MLB sync complete — ${newPred} new` : "⚾ MLB up to date");
 }
@@ -725,7 +729,7 @@ async function ncaaBuildPredictionRow(game, dateStr) {
     model_ml_home: pred.modelML_home, model_ml_away: pred.modelML_away, spread_home: pred.projectedSpread,
     ou_total: pred.ouTotal, win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)), confidence: pred.confidence,
     pred_home_score: parseFloat(pred.homeScore.toFixed(1)), pred_away_score: parseFloat(pred.awayScore.toFixed(1)),
-    home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM, neutral_site: game.neutralSite || false, result_entered: false,
+    home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM, neutral_site: game.neutralSite || false,
   };
 }
 
@@ -824,7 +828,7 @@ async function ncaaAutoSync(onProgress) {
     const rows = (await Promise.all(unsaved.map(g => ncaaBuildPredictionRow(g, dateStr)))).filter(Boolean);
 
     if (rows.length) {
-      await supabaseQuery("/ncaa_predictions", "UPSERT", rows);
+      await supabaseQuery("/ncaa_predictions", "UPSERT", rows, "game_id");
       newPred += rows.length;
       // Immediately try to fill final scores for this date
       const ns = await supabaseQuery(
@@ -904,7 +908,7 @@ async function ncaaFullBackfill(onProgress, signal) {
     }
 
     if (rows.length) {
-      await supabaseQuery("/ncaa_predictions", "UPSERT", rows);
+      await supabaseQuery("/ncaa_predictions", "UPSERT", rows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
         `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,result_entered,game_date,win_pct_home,spread_home`
