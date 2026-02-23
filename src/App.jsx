@@ -146,28 +146,22 @@ async function fillFinalScores(pendingRows) {
 
   const normAbbr = s => (s || "").replace(/\d+$/, "").toUpperCase();
 
+  // Build teamId → abbr map from TEAMS array for fast lookup
+  const teamIdToAbbr = {};
+  TEAMS.forEach(t => { teamIdToAbbr[t.id] = t.abbr; });
+
   for (const [dateStr, rows] of Object.entries(byDate)) {
     try {
-      const params = new URLSearchParams({
-        path: "schedule",
+      // Use mlbFetch (proxy) — same as rest of app, avoids raw fetch CORS issues
+      // Full hydration ensures we get team IDs even when abbreviations are missing
+      const data = await mlbFetch("schedule", {
         sportId: 1,
         date: dateStr,
-        hydrate: "linescore,teams",
+        hydrate: "probablePitcher,teams,venue,linescore",
       });
-      const r = await fetch(`/api/mlb?${params}`);
-      console.log(`[fillFinalScores] ${dateStr} — HTTP ${r.status}`);
-      if (!r.ok) { console.warn(`[fillFinalScores] bad response for ${dateStr}`); continue; }
-      const data = await r.json();
+      if (!data) continue;
 
-      const dates = data?.dates || [];
-      console.log(`[fillFinalScores] ${dateStr} — ${dates.length} date(s), ${dates.reduce((n,d)=>n+d.games.length,0)} game(s) total`);
-
-      // Log what our pending rows expect
-      console.log(`[fillFinalScores] pending rows for ${dateStr}:`,
-        rows.map(r => `${r.away_team}@${r.home_team} pk=${r.game_pk}`)
-      );
-
-      for (const dt of dates) {
+      for (const dt of (data?.dates || [])) {
         for (const g of (dt.games || [])) {
           const state  = g.status?.abstractGameState || "";
           const detail = g.status?.detailedState || "";
@@ -175,29 +169,36 @@ async function fillFinalScores(pendingRows) {
           const isFinal = state === "Final"
             || detail === "Game Over"
             || detail.startsWith("Final")
-            || coded === "F";
-
-          const hAbbr = normAbbr(g.teams?.home?.team?.abbreviation);
-          const aAbbr = normAbbr(g.teams?.away?.team?.abbreviation);
-          const gamePk = g.gamePk;
-          const homeScore = g.teams?.home?.score ?? null;
-          const awayScore = g.teams?.away?.score ?? null;
-
-          console.log(`[fillFinalScores]   API game: ${aAbbr}@${hAbbr} pk=${gamePk} state="${state}"/"${detail}" score=${awayScore}-${homeScore} final=${isFinal}`);
+            || coded === "F"
+            || coded === "O";
 
           if (!isFinal) continue;
-          if (homeScore === null || awayScore === null) { console.log(`    → no score`); continue; }
+
+          const homeScore = g.teams?.home?.score ?? g.linescore?.teams?.home?.runs ?? null;
+          const awayScore = g.teams?.away?.score ?? g.linescore?.teams?.away?.runs ?? null;
+          if (homeScore === null || awayScore === null) continue;
+
+          const gamePk = g.gamePk;
+
+          // MLB API often omits team.abbreviation for spring training games.
+          // Use team.id → TEAMS lookup — always reliable for all 30 franchises.
+          // resolveStatTeamId maps split-squad IDs (4864) back to real team IDs (147).
+          const rawHomeId = g.teams?.home?.team?.id;
+          const rawAwayId = g.teams?.away?.team?.id;
+          const homeId = resolveStatTeamId(rawHomeId, "") || rawHomeId;
+          const awayId = resolveStatTeamId(rawAwayId, "") || rawAwayId;
+          const hAbbr = normAbbr(teamIdToAbbr[homeId] || g.teams?.home?.team?.abbreviation || "");
+          const aAbbr = normAbbr(teamIdToAbbr[awayId] || g.teams?.away?.team?.abbreviation || "");
+
+          if (!hAbbr || !aAbbr) continue; // can't match without at least one identifier
 
           const matchedRow = rows.find(row => {
-            const pkMatch = row.game_pk && row.game_pk === gamePk;
-            const abbrMatch = normAbbr(row.home_team) === hAbbr && normAbbr(row.away_team) === aAbbr;
-            const fuzzyMatch = hAbbr.startsWith(normAbbr(row.home_team)) && aAbbr.startsWith(normAbbr(row.away_team));
-            console.log(`    → vs row ${row.away_team}@${row.home_team} pk=${row.game_pk}: pkMatch=${pkMatch} abbrMatch=${abbrMatch} fuzzy=${fuzzyMatch}`);
-            return pkMatch || abbrMatch || fuzzyMatch;
+            if (row.game_pk && row.game_pk === gamePk) return true;
+            const rh = normAbbr(row.home_team);
+            const ra = normAbbr(row.away_team);
+            return rh === hAbbr && ra === aAbbr;
           });
-
-          if (!matchedRow) { console.log(`    → NO MATCH`); continue; }
-          console.log(`    → MATCHED row id=${matchedRow.id}`);
+          if (!matchedRow) continue;
 
           const ml_correct = homeScore > awayScore;
           const rl_correct = (homeScore - awayScore) > 1.5 ? true
@@ -210,6 +211,9 @@ async function fillFinalScores(pendingRows) {
             actual_away_runs: awayScore,
             result_entered: true,
             ml_correct, rl_correct, ou_correct,
+            game_pk: gamePk,
+            home_team: hAbbr,
+            away_team: aAbbr,
           });
           filled++;
         }
