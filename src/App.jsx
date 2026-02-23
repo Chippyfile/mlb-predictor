@@ -897,6 +897,45 @@ async function fillFinalScores(pendingRows) {
   return filled;
 }
 
+// Regrade all already-recorded results using corrected ml_correct/rl_correct logic.
+// Needed when the grading formula changes (e.g. v9.1 fix: grade model's pick, not always home).
+async function regradeAllResults(onProgress) {
+  onProgress?.("⏳ Loading all graded records…");
+  const allGraded = await supabaseQuery(
+    `/mlb_predictions?result_entered=eq.true&select=id,win_pct_home,actual_home_runs,actual_away_runs,ou_total&limit=2000`
+  );
+  if (!allGraded?.length) { onProgress?.("No graded records found"); return 0; }
+
+  let fixed = 0;
+  for (const row of allGraded) {
+    const homeScore = row.actual_home_runs;
+    const awayScore = row.actual_away_runs;
+    if (homeScore === null || awayScore === null) continue;
+
+    // Correct logic: grade from model's pick perspective
+    const modelPickedHome = (row.win_pct_home ?? 0.5) >= 0.5;
+    const homeWon = homeScore > awayScore;
+    const ml_correct = modelPickedHome ? homeWon : !homeWon;
+
+    const spread = homeScore - awayScore;
+    const rl_correct = modelPickedHome
+      ? (spread > 1.5 ? true : spread < -1.5 ? false : null)
+      : (spread < -1.5 ? true : spread > 1.5 ? false : null);
+
+    const total = homeScore + awayScore;
+    const ou_correct = row.ou_total
+      ? (total > row.ou_total ? "OVER" : total < row.ou_total ? "UNDER" : "PUSH")
+      : null;
+
+    await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
+      ml_correct, rl_correct, ou_correct,
+    });
+    fixed++;
+  }
+  onProgress?.(`✅ Regraded ${fixed} result(s)`);
+  return fixed;
+}
+
 async function refreshPredictions(rows, onProgress) {
   if (!rows?.length) return 0;
   let updated=0;
@@ -1454,6 +1493,7 @@ function HistoryTab({refreshKey}) {
         <button onClick={load} style={{background:"#0d1117",color:"#58a6ff",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>↻ Refresh</button>
         <button onClick={async()=>{const p=records.filter(r=>!r.result_entered);if(!p.length)return alert("No pending games");const n=await fillFinalScores(p);load();if(!n)alert("No matched games yet");}} style={{background:"#0d1117",color:"#e3b341",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>⚡ Sync Results</button>
         <button onClick={async()=>{if(!records.length)return alert("No records");const n=await refreshPredictions(records,m=>console.log(m));load();alert(`Refreshed ${n} with v9 formula`);}} style={{background:"#0d1117",color:"#58a6ff",border:"1px solid #21262d",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11}}>🔁 Refresh v9</button>
+        <button onClick={async()=>{if(!window.confirm("Regrade all results with corrected pick logic? This fixes ml_correct/rl_correct for all existing records."))return;const n=await regradeAllResults(m=>setSyncMsg(m));load();alert(`Regraded ${n} records`);}} style={{background:"#1a0a2e",color:"#d2a8ff",border:"1px solid #3d1f6e",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,fontWeight:700}}>🔧 Regrade All Results</button>
       </div>
       {loading&&<div style={{color:"#484f58",textAlign:"center",marginTop:40}}>Loading…</div>}
       {!loading&&records.length===0&&<div style={{color:"#484f58",textAlign:"center",marginTop:40}}>No predictions yet</div>}
