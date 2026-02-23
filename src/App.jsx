@@ -64,6 +64,104 @@ function decimalToML(dec) { return dec >= 2 ? `+${Math.round((dec - 1) * 100)}` 
 function combinedParlayOdds(legs) { return legs.reduce((acc, l) => acc * mlToDecimal(l.ml), 1); }
 function combinedParlayProb(legs) { return legs.reduce((acc, l) => acc * l.prob, 1); }
 const EDGE_THRESHOLD = 0.035;
+const OU_EDGE_THRESHOLD = 0.04; // model total must differ from market by 4%+ of total
+const CONF_BET_THRESHOLD = "HIGH";
+
+// Returns individual bet signals for ML, O/U, spread, and confidence
+// Used to green-highlight banner pills and populate the BET SIGNALS panel
+function getBetSignals({ pred, odds, sport = "ncaa" }) {
+  if (!pred) return { ml: null, ou: null, spread: null, conf: null, anyEdge: false };
+
+  const homeWin = pred.homeWinPct;
+  const awayWin = 1 - homeWin;
+
+  // ── ML SIGNAL ──────────────────────────────────────────────
+  // Edge = model win% minus market implied win% (vig-removed)
+  let mlSignal = null;
+  if (odds?.homeML && odds?.awayML) {
+    const market = trueImplied(odds.homeML, odds.awayML);
+    const homeEdge = homeWin - market.home;
+    const awayEdge = awayWin - market.away;
+    const bestEdge = Math.abs(homeEdge) >= Math.abs(awayEdge) ? homeEdge : -awayEdge;
+    const side = homeEdge >= 0 ? "HOME" : "AWAY";
+    const edgePct = Math.abs(bestEdge) * 100;
+    if (Math.abs(bestEdge) >= EDGE_THRESHOLD) {
+      mlSignal = {
+        verdict: edgePct >= 7 ? "GO" : "LEAN",
+        side, edgePct: edgePct.toFixed(1),
+        ml: homeEdge >= 0 ? (odds.homeML > 0 ? `+${odds.homeML}` : odds.homeML) : (odds.awayML > 0 ? `+${odds.awayML}` : odds.awayML),
+        reason: `Model gives ${side === "HOME" ? "home" : "away"} ${edgePct.toFixed(1)}% more chance than market`,
+      };
+    } else {
+      mlSignal = { verdict: "SKIP", edgePct: edgePct.toFixed(1), reason: `Only ${edgePct.toFixed(1)}% edge — below ${(EDGE_THRESHOLD * 100).toFixed(1)}% threshold` };
+    }
+  } else {
+    // No market odds — use model confidence as proxy
+    const winPct = Math.max(homeWin, awayWin);
+    if (winPct >= 0.65) {
+      mlSignal = { verdict: "LEAN", side: homeWin >= 0.65 ? "HOME" : "AWAY", edgePct: ((winPct - 0.5) * 100).toFixed(1), reason: `Strong model win probability (${(winPct * 100).toFixed(1)}%) — no market to compare` };
+    } else {
+      mlSignal = { verdict: "SKIP", reason: "No market odds and model win% < 65%" };
+    }
+  }
+
+  // ── O/U SIGNAL ─────────────────────────────────────────────
+  // Compare model projected total vs market O/U line
+  let ouSignal = null;
+  const projTotal = sport === "mlb" ? (pred.homeRuns + pred.awayRuns) : (pred.homeScore + pred.awayScore);
+  const mktTotal = odds?.ouLine ?? null;
+  if (mktTotal) {
+    const diff = projTotal - mktTotal;
+    const diffPct = Math.abs(diff) / mktTotal;
+    if (diffPct >= OU_EDGE_THRESHOLD) {
+      ouSignal = {
+        verdict: diffPct >= 0.08 ? "GO" : "LEAN",
+        side: diff > 0 ? "OVER" : "UNDER",
+        diff: Math.abs(diff).toFixed(1),
+        reason: `Model projects ${projTotal.toFixed(1)} vs market ${mktTotal} — ${Math.abs(diff).toFixed(1)} pt gap`,
+      };
+    } else {
+      ouSignal = { verdict: "SKIP", reason: `Model total (${projTotal.toFixed(1)}) within ${(OU_EDGE_THRESHOLD * 100).toFixed(0)}% of market (${mktTotal})` };
+    }
+  } else {
+    ouSignal = { verdict: "NO LINE", reason: "No market O/U line available" };
+  }
+
+  // ── SPREAD SIGNAL ──────────────────────────────────────────
+  // Compare model spread vs market spread
+  let spreadSignal = null;
+  const projSpread = sport === "mlb" ? pred.runLineHome : pred.projectedSpread;
+  const mktSpread = odds?.homeSpread ?? null;
+  if (mktSpread !== null && mktSpread !== undefined) {
+    const spreadDiff = projSpread - mktSpread;
+    if (Math.abs(spreadDiff) >= (sport === "mlb" ? 0.5 : 3.0)) {
+      spreadSignal = {
+        verdict: "LEAN",
+        side: spreadDiff > 0 ? "HOME -" : "AWAY +",
+        diff: Math.abs(spreadDiff).toFixed(1),
+        reason: `Model spread ${projSpread > 0 ? "-" : "+"}${Math.abs(projSpread).toFixed(1)} vs market ${mktSpread > 0 ? "-" : "+"}${Math.abs(mktSpread).toFixed(1)}`,
+      };
+    } else {
+      spreadSignal = { verdict: "SKIP", reason: `Spread difference (${Math.abs(spreadDiff).toFixed(1)} pts) too small` };
+    }
+  }
+
+  // ── CONFIDENCE SIGNAL ──────────────────────────────────────
+  const confSignal = {
+    verdict: pred.confidence === "HIGH" ? "GO" : pred.confidence === "MEDIUM" ? "LEAN" : "SKIP",
+    reason: pred.confidence === "HIGH"
+      ? `High confidence — large EM gap and decisive win probability`
+      : pred.confidence === "MEDIUM"
+      ? `Medium confidence — moderate signal strength`
+      : `Low confidence — small sample or near-even matchup`,
+  };
+
+  const anyEdge = mlSignal?.verdict === "GO" || mlSignal?.verdict === "LEAN" ||
+                  ouSignal?.verdict === "GO" || ouSignal?.verdict === "LEAN" ||
+                  spreadSignal?.verdict === "LEAN";
+
+  return { ml: mlSignal, ou: ouSignal, spread: spreadSignal, conf: confSignal, anyEdge };
+}
 
 let _oddsCache = {}, _oddsCacheTime = {};
 async function fetchOdds(sport = "baseball_mlb") {
@@ -1481,6 +1579,72 @@ function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
   );
 }
 
+// ── BET SIGNALS PANEL (shared by MLB + NCAA expanded card) ──────
+function BetSignalsPanel({ signals, pred, odds, sport, homeName, awayName }) {
+  if (!signals) return null;
+  const verdictStyle = v => ({
+    GO:       { bg: "#0d2818", border: "#2ea043", color: C.green,  icon: "🟢" },
+    LEAN:     { bg: "#1a1200", border: "#d29922", color: C.yellow, icon: "🟡" },
+    SKIP:     { bg: "#111",    border: C.border,  color: C.dim,    icon: "⚪" },
+    "NO LINE":{ bg: "#111",    border: C.border,  color: C.dim,    icon: "—"  },
+  }[v] || { bg: "#111", border: C.border, color: C.dim, icon: "?" });
+
+  const Row = ({ label, signal }) => {
+    if (!signal) return null;
+    const s = verdictStyle(signal.verdict);
+    return (
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 10px", background: s.bg, border: `1px solid ${s.border}`, borderRadius: 7, marginBottom: 6 }}>
+        <div style={{ fontSize: 14, lineHeight: 1 }}>{s.icon}</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: s.color }}>{label}</span>
+            <span style={{ fontSize: 11, fontWeight: 800, color: s.color, letterSpacing: 1 }}>{signal.verdict}</span>
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 2, lineHeight: 1.5 }}>{signal.reason}</div>
+          {signal.side && signal.verdict !== "SKIP" && (
+            <div style={{ fontSize: 11, fontWeight: 700, color: s.color, marginTop: 3 }}>
+              → Bet: {signal.side}{signal.ml ? ` (${signal.ml})` : ""}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 8 }}>BET SIGNALS</div>
+      <Row label="⚾ MONEYLINE" signal={signals.ml} />
+      <Row label="📊 OVER/UNDER" signal={signals.ou} />
+      {signals.spread && <Row label="📏 SPREAD/RUN LINE" signal={signals.spread} />}
+      <Row label="🎯 CONFIDENCE" signal={signals.conf} />
+
+      {/* Edge Analysis */}
+      {odds?.homeML && odds?.awayML && (() => {
+        const market = trueImplied(odds.homeML, odds.awayML);
+        const homeWin = pred.homeWinPct;
+        const awayWin = 1 - homeWin;
+        const hEdge = ((homeWin - market.home) * 100).toFixed(1);
+        const aEdge = ((awayWin - market.away) * 100).toFixed(1);
+        return (
+          <div style={{ padding: "10px 12px", background: "#0a0f14", borderRadius: 6, marginTop: 10 }}>
+            <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 6 }}>EDGE ANALYSIS</div>
+            <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginBottom: 8 }}>
+              <div><span style={{ color: parseFloat(hEdge) >= 3.5 ? C.green : parseFloat(hEdge) < 0 ? C.red : C.muted, fontWeight: 700 }}>{parseFloat(hEdge) > 0 ? "+" : ""}{hEdge}%</span> <span style={{ fontSize: 10, color: C.dim }}>{homeName}</span></div>
+              <div><span style={{ color: parseFloat(aEdge) >= 3.5 ? C.green : parseFloat(aEdge) < 0 ? C.red : C.muted, fontWeight: 700 }}>{parseFloat(aEdge) > 0 ? "+" : ""}{aEdge}%</span> <span style={{ fontSize: 10, color: C.dim }}>{awayName}</span></div>
+              <div style={{ fontSize: 10, color: C.dim }}>Mkt: {(market.home * 100).toFixed(1)}% / {(market.away * 100).toFixed(1)}%</div>
+            </div>
+            <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.6, borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+              <strong style={{ color: C.blue }}>What is Edge Analysis?</strong><br/>
+              The market sets a price (e.g. {homeName} -145) that implies a {(market.home * 100).toFixed(1)}% win probability after removing the sportsbook's vig (built-in profit margin). Our model independently calculates win probability using efficiency stats, tempo, and scoring trends. <strong>Edge</strong> is the gap between these two numbers — if the model gives {homeName} {(homeWin * 100).toFixed(1)}% but the market only prices them at {(market.home * 100).toFixed(1)}%, that is a <strong>{Math.abs(parseFloat(hEdge)).toFixed(1)}% edge</strong> on the {homeName} moneyline. A consistent edge of 3.5%+ is statistically exploitable over a large sample. Below 3.5% the edge is within the noise of normal variance.
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════
 // ⚾ MLB CALENDAR TAB
 // ═══════════════════════════════════════════════════════════════
@@ -1566,14 +1730,18 @@ function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                   </div>
                 </div>
                 {game.loading ? <div style={{ color: C.dim, fontSize: 11 }}>Calculating…</div>
-                  : game.pred ? <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
-                    <Pill label="PROJ" value={`${away.abbr} ${game.pred.awayRuns.toFixed(1)} — ${home.abbr} ${game.pred.homeRuns.toFixed(1)}`} />
-                    <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} />
-                    {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                    <Pill label="O/U" value={game.pred.ouTotal} />
-                    <Pill label="WIN%" value={`${Math.round(game.pred.homeWinPct * 100)}%`} color={game.pred.homeWinPct >= 0.55 ? C.green : "#e2e8f0"} />
-                    <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} />
-                  </div> : <div style={{ color: C.dim, fontSize: 11 }}>⚠ Data unavailable</div>}
+                  : game.pred ? (() => {
+                    const mlbOddsWithSpread = game.odds ? { ...game.odds, ouLine: game.odds.ouLine ?? null, homeSpread: game.odds.homeSpread ?? null } : null;
+                    const sigs = getBetSignals({ pred: game.pred, odds: mlbOddsWithSpread, sport: "mlb" });
+                    return <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                      <Pill label="PROJ" value={`${away.abbr} ${game.pred.awayRuns.toFixed(1)} — ${home.abbr} ${game.pred.homeRuns.toFixed(1)}`} />
+                      <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN"} />
+                      {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
+                      <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO" || sigs.ou?.verdict === "LEAN"} />
+                      <Pill label="WIN%" value={`${Math.round(game.pred.homeWinPct * 100)}%`} color={game.pred.homeWinPct >= 0.55 ? C.green : "#e2e8f0"} />
+                      <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={sigs.conf?.verdict === "GO"} />
+                    </div>;
+                  })() : <div style={{ color: C.dim, fontSize: 11 }}>⚠ Data unavailable</div>}
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
                   {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE {game.inningHalf} {game.inning}</span>}
@@ -1597,19 +1765,11 @@ function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
                     {game.venue && <Kv k="Venue" v={game.venue} />}
                   </div>
-                  {game.odds?.homeML && game.odds?.awayML && (() => {
-                    const market = trueImplied(game.odds.homeML, game.odds.awayML);
-                    const hEdge = ((game.pred.homeWinPct - market.home) * 100).toFixed(1);
-                    const aEdge = ((game.pred.awayWinPct - market.away) * 100).toFixed(1);
-                    return <div style={{ padding: "10px 12px", background: "#0a0f14", borderRadius: 6, marginTop: 8 }}>
-                      <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 6 }}>EDGE ANALYSIS</div>
-                      <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-                        <div><span style={{ color: parseFloat(hEdge) >= 3.5 ? C.green : parseFloat(hEdge) < 0 ? C.red : C.muted }}>{parseFloat(hEdge) > 0 ? "+" : ""}{hEdge}%</span> <span style={{ fontSize: 10, color: C.dim }}>{home.abbr} edge</span></div>
-                        <div><span style={{ color: parseFloat(aEdge) >= 3.5 ? C.green : parseFloat(aEdge) < 0 ? C.red : C.muted }}>{parseFloat(aEdge) > 0 ? "+" : ""}{aEdge}%</span> <span style={{ fontSize: 10, color: C.dim }}>{away.abbr} edge</span></div>
-                        <div style={{ fontSize: 10, color: C.dim }}>Mkt: {(market.home * 100).toFixed(1)}% / {(market.away * 100).toFixed(1)}%</div>
-                      </div>
-                    </div>;
-                  })()}
+                  <BetSignalsPanel
+                    signals={getBetSignals({ pred: game.pred, odds: game.odds, sport: "mlb" })}
+                    pred={game.pred} odds={game.odds} sport="mlb"
+                    homeName={home.abbr} awayName={away.abbr}
+                  />
                 </div>
               )}
             </div>
@@ -1699,14 +1859,17 @@ function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     <div style={{ fontSize: 9, color: C.dim }}>HOME{game.neutralSite ? " (N)" : ""}</div>
                   </div>
                 </div>
-                {game.pred ? <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
-                  <Pill label="PROJ" value={`${aName} ${game.pred.awayScore.toFixed(0)} — ${hName} ${game.pred.homeScore.toFixed(0)}`} />
-                  <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${hName} -${game.pred.projectedSpread.toFixed(1)}` : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
-                  <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} />
-                  {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                  <Pill label="O/U" value={game.pred.ouTotal} />
-                  <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} />
-                </div> : <div style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "⚠ Stats unavailable"}</div>}
+                {game.pred ? (() => {
+                  const sigs = getBetSignals({ pred: game.pred, odds: game.odds, sport: "ncaa" });
+                  return <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                    <Pill label="PROJ" value={`${aName} ${game.pred.awayScore.toFixed(0)} — ${hName} ${game.pred.homeScore.toFixed(0)}`} />
+                    <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${hName} -${game.pred.projectedSpread.toFixed(1)}` : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`} highlight={sigs.spread?.verdict === "LEAN"} />
+                    <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN"} />
+                    {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
+                    <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO" || sigs.ou?.verdict === "LEAN"} />
+                    <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={sigs.conf?.verdict === "GO"} />
+                  </div>;
+                })() : <div style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "⚠ Stats unavailable"}</div>}
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
                   {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
@@ -1730,19 +1893,11 @@ function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     {game.neutralSite && <Kv k="Site" v="Neutral" />}
                     {game.venue && <Kv k="Venue" v={game.venue} />}
                   </div>
-                  {game.odds?.homeML && game.odds?.awayML && (() => {
-                    const market = trueImplied(game.odds.homeML, game.odds.awayML);
-                    const hEdge = ((game.pred.homeWinPct - market.home) * 100).toFixed(1);
-                    const aEdge = ((game.pred.awayWinPct - market.away) * 100).toFixed(1);
-                    return <div style={{ padding: "10px 12px", background: "#0a0f14", borderRadius: 6, marginTop: 8 }}>
-                      <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 6 }}>EDGE ANALYSIS</div>
-                      <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-                        <div><span style={{ color: parseFloat(hEdge) >= 3.5 ? C.orange : parseFloat(hEdge) < 0 ? C.red : C.muted }}>{parseFloat(hEdge) > 0 ? "+" : ""}{hEdge}%</span> <span style={{ fontSize: 10, color: C.dim }}>{hName}</span></div>
-                        <div><span style={{ color: parseFloat(aEdge) >= 3.5 ? C.orange : parseFloat(aEdge) < 0 ? C.red : C.muted }}>{parseFloat(aEdge) > 0 ? "+" : ""}{aEdge}%</span> <span style={{ fontSize: 10, color: C.dim }}>{aName}</span></div>
-                        <div style={{ fontSize: 10, color: C.dim }}>Mkt: {(market.home * 100).toFixed(1)}% / {(market.away * 100).toFixed(1)}%</div>
-                      </div>
-                    </div>;
-                  })()}
+                  <BetSignalsPanel
+                    signals={getBetSignals({ pred: game.pred, odds: game.odds, sport: "ncaa" })}
+                    pred={game.pred} odds={game.odds} sport="ncaa"
+                    homeName={hName} awayName={aName}
+                  />
                 </div>
               )}
             </div>
