@@ -5,10 +5,12 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
-  const { path: rawPath, ...params } = req.query;
-  if (!rawPath) return res.status(400).json({ error: 'Missing path parameter' });
+  // Vercel pre-decodes query params, so path=teams%2F140%2Fstats arrives as "teams/140/stats"
+  // No need to decodeURIComponent — just use it directly
+  const { path, ...params } = req.query;
 
-  const path = decodeURIComponent(rawPath);
+  if (!path) return res.status(400).json({ error: 'Missing path', query: req.query });
+
   const qs = new URLSearchParams(params).toString();
   const mlbUrl = `https://statsapi.mlb.com/api/v1/${path}${qs ? '?' + qs : ''}`;
 
