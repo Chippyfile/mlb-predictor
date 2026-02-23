@@ -101,18 +101,18 @@ async function fillFinalScores(pendingRows) {
     byDate[row.game_date].push(row);
   }
 
+  // Normalize abbreviation: strip trailing digits (split-squad "BAL1" → "BAL")
+  const normAbbr = s => (s || "").replace(/\d+$/, "").toUpperCase();
+
   for (const [dateStr, rows] of Object.entries(byDate)) {
     try {
-      // Use Vercel proxy (/api/mlb) to avoid CORS
-      // Must pass correct gameType or MLB API returns empty — S=spring, R=regular, P=postseason
-      const d = new Date(dateStr);
-      const m = d.getMonth() + 1;
-      const gameType = (m <= 3) ? "S" : (m >= 10) ? "P,F,D,L,W" : "R";
+      const mo = new Date(dateStr).getMonth() + 1;
+      // No gameType filter — omitting it returns ALL game types for the date
+      // This is more reliable than guessing S vs R for edge dates
       const params = new URLSearchParams({
         path: "schedule",
         sportId: 1,
         date: dateStr,
-        gameType,
         hydrate: "linescore,teams",
       });
       const r = await fetch(`/api/mlb?${params}`);
@@ -121,15 +121,13 @@ async function fillFinalScores(pendingRows) {
 
       for (const dt of (data?.dates || [])) {
         for (const g of (dt.games || [])) {
-          const hA = g.teams?.home?.team?.abbreviation;
-          const aA = g.teams?.away?.team?.abbreviation;
           const state  = g.status?.abstractGameState || "";
           const detail = g.status?.detailedState || "";
-          // Accept any Final/Game Over variant from the MLB API
+          const coded  = g.status?.codedGameState || "";
           const isFinal = state === "Final"
             || detail === "Game Over"
             || detail.startsWith("Final")
-            || g.status?.codedGameState === "F";
+            || coded === "F";
 
           if (!isFinal) continue;
 
@@ -137,7 +135,15 @@ async function fillFinalScores(pendingRows) {
           const awayScore = g.teams?.away?.score ?? null;
           if (homeScore === null || awayScore === null) continue;
 
-          const matchedRow = rows.find(row => row.home_team === hA && row.away_team === aA);
+          const gamePk = g.gamePk;
+          const hAbbr  = normAbbr(g.teams?.home?.team?.abbreviation);
+          const aAbbr  = normAbbr(g.teams?.away?.team?.abbreviation);
+
+          // Match priority: 1) game_pk exact match  2) normalized abbreviation match
+          const matchedRow = rows.find(row =>
+            (row.game_pk && row.game_pk === gamePk) ||
+            (normAbbr(row.home_team) === hAbbr && normAbbr(row.away_team) === aAbbr)
+          );
           if (!matchedRow) continue;
 
           const ml_correct = homeScore > awayScore;
@@ -188,6 +194,16 @@ async function autoSync(onProgress) {
     if (filled) onProgress?.(`✓ ${filled} result(s) recorded`);
   }
 
+  // Step 1b: refresh predictions on rows from the last 7 days that have stale model values
+  // Detects stale rows by checking if model_ml_home is exactly -116 (the old default)
+  const staleRows = (existing || []).filter(r =>
+    r.model_ml_home === -116 || r.model_ml_home === null
+  );
+  if (staleRows.length) {
+    onProgress?.(`🔄 Refreshing ${staleRows.length} stale prediction(s)…`);
+    await refreshPredictions(staleRows, onProgress);
+  }
+
   // Step 2: save predictions for any unrecorded dates
   let newPredictions = 0;
   for (const dateStr of allDates) {
@@ -217,6 +233,90 @@ async function autoSync(onProgress) {
     : "✅ All games up to date";
   onProgress?.(msg);
   return { newPredictions };
+}
+
+// ── REFRESH STALE PREDICTIONS ─────────────────────────────────
+// Re-runs the prediction model on saved rows that haven't had results entered yet.
+// Also re-runs on ALL rows for a given date range when called manually (full refresh).
+async function refreshPredictions(rows, onProgress) {
+  if (!rows?.length) return 0;
+  let updated = 0;
+
+  // Group by date to batch schedule fetches
+  const byDate = {};
+  for (const row of rows) {
+    if (!byDate[row.game_date]) byDate[row.game_date] = [];
+    byDate[row.game_date].push(row);
+  }
+
+  for (const [dateStr, dateRows] of Object.entries(byDate)) {
+    onProgress?.(`🔄 Refreshing predictions for ${dateStr}…`);
+    // Fetch the schedule to get team IDs and starter IDs for this date
+    const schedData = await mlbFetch("schedule", {
+      sportId: 1, date: dateStr, hydrate: "probablePitcher,teams",
+    });
+    const schedGames = [];
+    for (const d of (schedData?.dates || [])) {
+      for (const g of (d.games || [])) {
+        schedGames.push(g);
+      }
+    }
+
+    for (const row of dateRows) {
+      try {
+        // Find matching schedule game by team name/abbr
+        const normAbbr = s => (s || "").replace(/\d+$/, "").toUpperCase();
+        const schedGame = schedGames.find(g => {
+          const hA = normAbbr(g.teams?.home?.team?.abbreviation);
+          const aA = normAbbr(g.teams?.away?.team?.abbreviation);
+          return (row.game_pk && g.gamePk === row.game_pk)
+            || (normAbbr(row.home_team) === hA && normAbbr(row.away_team) === aA);
+        });
+
+        const homeTeamId = schedGame?.teams?.home?.team?.id
+          || TEAMS.find(t => t.abbr === row.home_team)?.id;
+        const awayTeamId = schedGame?.teams?.away?.team?.id
+          || TEAMS.find(t => t.abbr === row.away_team)?.id;
+        if (!homeTeamId || !awayTeamId) continue;
+
+        const homeStarterId = schedGame?.teams?.home?.probablePitcher?.id || null;
+        const awayStarterId = schedGame?.teams?.away?.probablePitcher?.id || null;
+
+        const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] =
+          await Promise.all([
+            fetchTeamHitting(homeTeamId), fetchTeamHitting(awayTeamId),
+            fetchTeamPitching(homeTeamId), fetchTeamPitching(awayTeamId),
+            fetchStarterStats(homeStarterId), fetchStarterStats(awayStarterId),
+            fetchRecentForm(homeTeamId), fetchRecentForm(awayTeamId),
+          ]);
+
+        const homeGamesPlayed = homeForm?.gamesPlayed || 0;
+        const awayGamesPlayed = awayForm?.gamesPlayed || 0;
+        const pred = predictGame({
+          homeTeamId, awayTeamId,
+          homeHit, awayHit, homePitch, awayPitch,
+          homeStarterStats: homeStarter, awayStarterStats: awayStarter,
+          homeForm, awayForm, homeGamesPlayed, awayGamesPlayed,
+        });
+        if (!pred) continue;
+
+        await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
+          model_ml_home:   pred.modelML_home,
+          model_ml_away:   pred.modelML_away,
+          run_line_home:   pred.runLineHome,
+          run_line_away:   -pred.runLineHome,
+          ou_total:        pred.ouTotal,
+          win_pct_home:    parseFloat(pred.homeWinPct.toFixed(4)),
+          confidence:      pred.confidence,
+          pred_home_runs:  parseFloat(pred.homeRuns.toFixed(2)),
+          pred_away_runs:  parseFloat(pred.awayRuns.toFixed(2)),
+        });
+        updated++;
+      } catch (e) { console.warn("refreshPredictions error:", row.id, e); }
+    }
+  }
+  onProgress?.(`✅ Refreshed ${updated} prediction(s)`);
+  return updated;
 }
 
 // Supabase SQL to create the table (run once in Supabase SQL editor):
@@ -993,12 +1093,24 @@ function HistoryTab({ refreshKey }) {
           🔄 Refresh
         </button>
         <button onClick={async () => {
+          // Sync final scores for all pending rows visible in current filter
           const pending = records.filter(r => !r.result_entered);
           if (!pending.length) return alert("No pending games to update");
           const n = await fillFinalScores(pending);
-          if (n) { load(); } else { alert("No finished games found yet — try again later"); }
+          load();
+          if (!n) alert("No finished games matched — check that game_pk values are saved (re-save from Calendar if needed)");
         }} style={{ background: "#21262d", color: "#e3b341", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
-          ⚡ Sync Results Now
+          ⚡ Sync Results
+        </button>
+        <button onClick={async () => {
+          // Re-run prediction model on all visible rows and overwrite stale model values
+          if (!records.length) return alert("No records to refresh");
+          const msg = document.createElement("div");
+          const n = await refreshPredictions(records, (m) => console.log(m));
+          load();
+          alert(`Refreshed ${n} prediction(s) with current model`);
+        }} style={{ background: "#21262d", color: "#58a6ff", border: "1px solid #30363d", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12 }}>
+          🔁 Refresh Predictions
         </button>
       </div>
 
