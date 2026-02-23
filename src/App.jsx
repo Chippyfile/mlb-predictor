@@ -109,8 +109,8 @@ function computeAccuracy(records) {
     mlAcc: ml.length ? (ml.filter(r => r.ml_correct).length / ml.length * 100).toFixed(1) : null,
     rlAcc: rl.length ? (rl.filter(r => r.rl_correct).length / rl.length * 100).toFixed(1) : null,
     rlGames: rl.length, hasMarketSpreads,
-    ouAcc: ou.length ? (ou.filter(r => r.ou_correct === "OVER" || r.ou_correct === "UNDER").length / ou.length * 100).toFixed(1) : null,
-    ouGames: ou.length,
+    ouAcc: ou.length ? (ou.filter(r => r.ou_correct === "OVER").length / ou.filter(r => r.ou_correct !== "PUSH").length * 100).toFixed(1) : null,
+    ouGames: ou.filter(r => r.ou_correct !== "PUSH").length,
     tiers, roi: roi.toFixed(0), roiPct: ml.length ? (roi / (ml.length * 100) * 100).toFixed(1) : null,
     longestWin, longestLoss, currentStreak,
     byMonth: Object.values(byMonth).sort((a, b) => a.month.localeCompare(b.month)).map(m => ({ ...m, pct: m.total ? parseFloat((m.correct / m.total * 100).toFixed(1)) : 0 })),
@@ -810,11 +810,20 @@ async function ncaaFillFinalScores(pendingRows) {
         const total = homeScore + awayScore;
         // Grade O/U against market total when available, otherwise skip (null)
         // Never grade O/U against model's own projected total — that's circular
-        // Use market O/U line when available, fall back to model's projected total
+        // Grade O/U: did the model's predicted total land on the correct side?
+        // Model predicts OVER if pred_total > ou_line, UNDER if pred_total < ou_line
         const ouLine = matchedRow.market_ou_total ?? matchedRow.ou_total ?? null;
-        const ou_correct = ouLine !== null
-          ? (total > ouLine ? "OVER" : total < ouLine ? "UNDER" : "PUSH")
-          : null;
+        const predTotal = (matchedRow.pred_home_score ?? 0) + (matchedRow.pred_away_score ?? 0);
+        let ou_correct = null;
+        if (ouLine !== null && total !== ouLine) {
+          const actualOver = total > ouLine;
+          const modelPredictedOver = predTotal > ouLine;
+          ou_correct = (actualOver === modelPredictedOver) ? "OVER" : "UNDER";
+          // "OVER" = model was correct, "UNDER" = model was wrong (reusing field to avoid schema change)
+          // PUSH if total === ouLine
+        } else if (ouLine !== null && total === ouLine) {
+          ou_correct = "PUSH";
+        }
         await supabaseQuery(`/ncaa_predictions?id=eq.${matchedRow.id}`, "PATCH", { actual_home_score: homeScore, actual_away_score: awayScore, result_entered: true, ml_correct, rl_correct, ou_correct });
         filled++;
       }
@@ -830,7 +839,7 @@ async function ncaaFillFinalScores(pendingRows) {
 async function ncaaRegradeAllResults(onProgress) {
   onProgress?.("⏳ Loading all graded NCAA records…");
   const allGraded = await supabaseQuery(
-    `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,home_team_id,away_team_id,home_adj_em,away_adj_em&limit=5000`
+    `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em&limit=5000`
   );
   if (!allGraded?.length) { onProgress?.("No graded records found"); return 0; }
   onProgress?.(`⏳ Regrading ${allGraded.length} records…`);
@@ -863,11 +872,17 @@ async function ncaaRegradeAllResults(onProgress) {
 
     // O/U — only grade against market total, not model total (circular)
     const total = homeScore + awayScore;
-    // Use market O/U when stored, fall back to model projected total
+    // Grade O/U: did the model correctly predict the over/under?
     const ouLine = row.market_ou_total ?? row.ou_total ?? null;
-    const ou_correct = ouLine !== null
-      ? (total > ouLine ? "OVER" : total < ouLine ? "UNDER" : "PUSH")
-      : null;
+    const predTotal = (row.pred_home_score ?? 0) + (row.pred_away_score ?? 0);
+    let ou_correct = null;
+    if (ouLine !== null && total !== ouLine) {
+      const actualOver = total > ouLine;
+      const modelPredictedOver = predTotal > ouLine;
+      ou_correct = (actualOver === modelPredictedOver) ? "OVER" : "UNDER";
+    } else if (ouLine !== null && total === ouLine) {
+      ou_correct = "PUSH";
+    }
 
     // Recalculate confidence from stored EM values using new formula
     let confidence = "MEDIUM";
@@ -970,7 +985,7 @@ async function ncaaAutoSync(onProgress) {
       newPred += rows.length;
       // Immediately try to fill final scores for this date
       const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home`
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
       );
       if (ns?.length) await ncaaFillFinalScores(ns);
       // Update savedKeys so subsequent iterations skip these
@@ -1058,7 +1073,7 @@ async function ncaaFullBackfill(onProgress, signal) {
       await supabaseQuery("/ncaa_predictions", "UPSERT", rows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home`
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
       );
       if (ns?.length) await ncaaFillFinalScores(ns);
       rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
