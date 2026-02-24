@@ -1202,8 +1202,6 @@ function matchNCAAOddsToGame(oddsGame, schedGame) {
     (oAway.includes(aName.slice(0, 6)) || aName.includes(oAway.slice(0, 6)));
 }
 
-}
-
 // ═══════════════════════════════════════════════════════════════
 // 🏀 NBA ENGINE
 // ═══════════════════════════════════════════════════════════════
