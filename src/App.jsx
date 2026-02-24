@@ -32,7 +32,32 @@ async function supabaseQuery(path, method = "GET", body = null, onConflict = nul
     };
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(url, opts);
-    if (!res.ok) { console.error("Supabase error:", await res.text()); return null; }
+    if (!res.ok) {
+      const errText = await res.text();
+      // If UPSERT fails due to missing unique constraint (42P10), fall back to
+      // plain INSERT with ignore-duplicates so the app keeps working until
+      // the constraint is added in Supabase (run the SQL in the README).
+      if (isUpsert && onConflict && errText.includes("42P10")) {
+        console.warn(`[supabase] UPSERT on_conflict="${onConflict}" failed — constraint missing. Falling back to INSERT (duplicates ignored). Fix: CREATE UNIQUE INDEX on ${path.split("?")[0]} (${onConflict}) WHERE ${onConflict} IS NOT NULL;`);
+        const fallbackUrl = `${SUPABASE_URL}/rest/v1${path.split("?")[0]}`;
+        const fallbackOpts = {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+            "Prefer": "resolution=ignore-duplicates,return=representation",
+          },
+          body: JSON.stringify(body),
+        };
+        const fallbackRes = await fetch(fallbackUrl, fallbackOpts);
+        if (!fallbackRes.ok) { console.error("Supabase fallback error:", await fallbackRes.text()); return null; }
+        const fallbackText = await fallbackRes.text();
+        return fallbackText ? JSON.parse(fallbackText) : [];
+      }
+      console.error("Supabase error:", errText);
+      return null;
+    }
     const text = await res.text();
     return text ? JSON.parse(text) : [];
   } catch (e) { console.error("Supabase:", e); return null; }
