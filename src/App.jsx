@@ -825,9 +825,10 @@ async function fetchNCAATeamStats(teamId) {
     };
     const ppg = getStat("avgPoints") || getStat("pointsPerGame") || 75.0;
     const oppPpg = getStat("avgPointsAllowed") || getStat("opponentPointsPerGame") || 72.0;
-    const fgPct = getStat("fieldGoalPct") || 0.455;
-    const threePct = getStat("threePointFieldGoalPct") || 0.340;
-    const ftPct = getStat("freeThrowPct") || 0.720;
+    const normPct = (v, fallback) => { const p = (v != null && v !== 0) ? v : fallback; return p > 1 ? p / 100 : p; };
+    const fgPct = normPct(getStat("fieldGoalPct"), 0.455);
+    const threePct = normPct(getStat("threePointFieldGoalPct"), 0.340);
+    const ftPct = normPct(getStat("freeThrowPct"), 0.720);
     const assists = getStat("avgAssists") || 14.0;
     const turnovers = getStat("avgTurnovers") || 12.0;
     const estTempo = 68 + (assists * 0.3) - (turnovers * 0.2);
