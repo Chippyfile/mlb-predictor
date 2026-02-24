@@ -439,11 +439,10 @@ function mlbPredictGame({
   const homeWOBA = calcWOBA(homeHit, homeLineup, homeStatcast);
   const awayWOBA = calcWOBA(awayHit, awayLineup, awayStatcast);
 
-  // BaseRuns framework: 1 wOBA pt above .317 ≈ 1.0 extra runs/game (2024 calibration)
-  // wOBA_SCALE = 15.0 per Fangraphs linear weights (lgwOBA=.317, lgwOBAscale=1.157)
-  const BASE_RUNS = 4.52, wOBA_SCALE = 15.0;
-  let hr = BASE_RUNS + (homeWOBA - 0.317) * wOBA_SCALE;
-  let ar = BASE_RUNS + (awayWOBA - 0.317) * wOBA_SCALE;
+  // BaseRuns framework: 2025 MLB lg avg RS/G = 4.38; lgwOBA = .314 (pitching rebounded)
+  const BASE_RUNS = 4.38, wOBA_SCALE = 15.0;
+  let hr = BASE_RUNS + (homeWOBA - 0.314) * wOBA_SCALE;
+  let ar = BASE_RUNS + (awayWOBA - 0.314) * wOBA_SCALE;
 
   // Platoon advantage
   const homePlatoonDelta = platoonDelta(homeLineup?.lineupHand, awayStarterStats?.pitchHand);
@@ -949,7 +948,7 @@ function ncaaPredictGame({
 }) {
   if (!homeStats || !awayStats) return null;
   const possessions = (homeStats.tempo + awayStats.tempo) / 2;
-  const lgAvgOE = 106.8;  // 2024-25 NCAA D1 avg offensive efficiency (updated from 105.0)
+  const lgAvgOE = 107.4;  // 2024-25 NCAA D1 final avg offensive efficiency (KenPom calibrated)
 
   // ── SOS adjustment: upgrade efficiency for teams who played tougher schedules ──
   // Free proxy: calculate from ESPN schedule API (opponent win %)
@@ -1535,7 +1534,7 @@ function nbaPredictGame({
   const homeDefRtg = homeRealStats?.defRtg || homeStats.adjDE;
   const awayDefRtg = awayRealStats?.defRtg || awayStats.adjDE;
   const poss = (homePace + awayPace) / 2;
-  const lgAvg = 114.5;  // 2024-25 NBA avg PPG (updated from 112.0)
+  const lgAvg = 113.0;  // 2024-25 NBA final lg avg PPG (Cavs led at 121.9; league avg ~113.0)
 
   let homeScore = ((homeOffRtg/lgAvg)*(lgAvg/awayDefRtg)*lgAvg/100)*poss;
   let awayScore = ((awayOffRtg/lgAvg)*(lgAvg/homeDefRtg)*lgAvg/100)*poss;
@@ -1808,7 +1807,7 @@ async function fetchNFLTeamStats(abbr) {
     const turnoversForced = getStat("defensiveTurnovers","takeaways","totalTakeaways") || 1.5;
 
     // EPA proxy from scoring + efficiency differentials (calibrated to ~0.05–0.15 range)
-    const lgPpg=23.4, lgYpp=5.6;  // updated 2024 NFL averages
+    const lgPpg=22.9, lgYpp=5.6;  // 2025 NFL final averages (StatMuse confirmed)
     const offEPA = ((ppg-lgPpg)/lgPpg)*0.08 + ((ypPlay-lgYpp)/lgYpp)*0.06 + ((thirdPct-0.40)/0.40)*0.04 + ((rzPct-0.55)/0.55)*0.03;
     const defEPA = ((lgPpg-oppPpg)/lgPpg)*0.08 + ((lgYpp-oppYpPlay)/lgYpp)*0.06 + (sacks-2.0)*0.004;
 
@@ -1905,7 +1904,7 @@ function nflPredictGame({
   homeQBBackupTier=null, awayQBBackupTier=null,  // null = starter playing
 }) {
   if (!homeStats||!awayStats) return null;
-  const lgPpg=23.4;  // 2024 NFL season avg PPG (updated from 22.5)
+  const lgPpg=22.9;  // 2025 NFL season final avg PPG (StatMuse confirmed)
 
   // ── 1. Base scoring from PPG matchup ──
   // Off weight 3.2 / def weight 2.2: offense is slightly more predictive in modern NFL
@@ -3333,7 +3332,7 @@ function NFLSection({ nflGames, setNflGames, calibrationNFL, setCalibrationNFL, 
 const NCAAF_HOME_FIELD_ADV = 3.2;   // College HFA: 3.2 pts (2020-24 calibration, down from 4.0)
 const NCAAF_RANKED_BOOST   = 1.5;   // Extra pts for ranked team edge
 const NCAAF_NEUTRAL_REDUCTION = 0.0;
-const NCAAF_LG_AVG_PPG     = 28.8;  // FBS 2024 average (updated from 27.5)
+const NCAAF_LG_AVG_PPG     = 28.8;  // FBS 2024-25 season average (Indiana CFP champs season)
 
 // Known high-altitude / extreme environment stadiums
 const NCAAF_ALT_FACTOR = {
