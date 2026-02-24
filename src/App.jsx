@@ -816,7 +816,7 @@ async function mlbAutoSync(onProgress) {
       const row = await mlbBuildPredictionRow(g, dateStr).catch(() => null);
       if (row) rows.push(row);
     }
-    if (rows.length) { const withPk = rows.filter(r => r.game_pk != null); const withoutPk = rows.filter(r => r.game_pk == null); if (withPk.length) await supabaseQuery("/mlb_predictions", "UPSERT", withPk, "game_pk"); if (withoutPk.length) await supabaseQuery("/mlb_predictions", "POST", withoutPk); newPred += rows.length; const ns = await supabaseQuery(`/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`); if (ns?.length) await mlbFillFinalScores(ns); }
+    if (rows.length) { await supabaseQuery("/mlb_predictions", "POST", rows); newPred += rows.length; const ns = await supabaseQuery(`/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`); if (ns?.length) await mlbFillFinalScores(ns); }
   }
   onProgress?.(newPred ? `⚾ MLB sync complete — ${newPred} new` : "⚾ MLB up to date");
 }
