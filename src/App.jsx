@@ -6,8 +6,8 @@ import {
 } from "recharts";
 
 // ============================================================
-// MULTI-SPORT PREDICTOR v10
-// ⚾ MLB  +  🏀 NCAA Men's Basketball
+// MULTI-SPORT PREDICTOR v11
+// ⚾ MLB  +  🏀 NCAA Men's Basketball  +  🏀 NBA
 // ============================================================
 
 const SUPABASE_URL = "https://lxaaqtqvlwjvyuedyauo.supabase.co";
@@ -1203,6 +1203,423 @@ function matchNCAAOddsToGame(oddsGame, schedGame) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 🏀 NBA ENGINE
+// ═══════════════════════════════════════════════════════════════
+
+/*
+  SUPABASE SCHEMA — run once in Supabase SQL editor:
+
+  create table if not exists nba_predictions (
+    id serial primary key,
+    sport varchar(5) default 'NBA',
+    game_date date not null,
+    game_id varchar(30),
+    home_team varchar(10) not null,
+    away_team varchar(10) not null,
+    home_team_name varchar(100),
+    away_team_name varchar(100),
+    model_ml_home integer,
+    model_ml_away integer,
+    spread_home numeric(5,1),
+    ou_total numeric(5,1),
+    market_spread_home numeric(5,1),
+    market_ou_total numeric(5,1),
+    win_pct_home numeric(6,4),
+    confidence varchar(10),
+    pred_home_score numeric(5,1),
+    pred_away_score numeric(5,1),
+    home_net_rtg numeric(6,2),
+    away_net_rtg numeric(6,2),
+    actual_home_score integer,
+    actual_away_score integer,
+    result_entered boolean default false,
+    ml_correct boolean,
+    rl_correct boolean,
+    ou_correct varchar(10),
+    created_at timestamptz default now()
+  );
+*/
+
+const NBA_TEAMS_LIST = [
+  { id: "ATL", name: "Atlanta Hawks", conference: "East" },
+  { id: "BOS", name: "Boston Celtics", conference: "East" },
+  { id: "BKN", name: "Brooklyn Nets", conference: "East" },
+  { id: "CHA", name: "Charlotte Hornets", conference: "East" },
+  { id: "CHI", name: "Chicago Bulls", conference: "East" },
+  { id: "CLE", name: "Cleveland Cavaliers", conference: "East" },
+  { id: "DAL", name: "Dallas Mavericks", conference: "West" },
+  { id: "DEN", name: "Denver Nuggets", conference: "West" },
+  { id: "DET", name: "Detroit Pistons", conference: "East" },
+  { id: "GSW", name: "Golden State Warriors", conference: "West" },
+  { id: "HOU", name: "Houston Rockets", conference: "West" },
+  { id: "IND", name: "Indiana Pacers", conference: "East" },
+  { id: "LAC", name: "LA Clippers", conference: "West" },
+  { id: "LAL", name: "Los Angeles Lakers", conference: "West" },
+  { id: "MEM", name: "Memphis Grizzlies", conference: "West" },
+  { id: "MIA", name: "Miami Heat", conference: "East" },
+  { id: "MIL", name: "Milwaukee Bucks", conference: "East" },
+  { id: "MIN", name: "Minnesota Timberwolves", conference: "West" },
+  { id: "NOP", name: "New Orleans Pelicans", conference: "West" },
+  { id: "NYK", name: "New York Knicks", conference: "East" },
+  { id: "OKC", name: "Oklahoma City Thunder", conference: "West" },
+  { id: "ORL", name: "Orlando Magic", conference: "East" },
+  { id: "PHI", name: "Philadelphia 76ers", conference: "East" },
+  { id: "PHX", name: "Phoenix Suns", conference: "West" },
+  { id: "POR", name: "Portland Trail Blazers", conference: "West" },
+  { id: "SAC", name: "Sacramento Kings", conference: "West" },
+  { id: "SAS", name: "San Antonio Spurs", conference: "West" },
+  { id: "TOR", name: "Toronto Raptors", conference: "East" },
+  { id: "UTA", name: "Utah Jazz", conference: "West" },
+  { id: "WAS", name: "Washington Wizards", conference: "East" },
+];
+
+const nbaTeamByAbbr = (abbr) =>
+  NBA_TEAMS_LIST.find(t => t.id === abbr || t.name.toLowerCase().includes((abbr || "").toLowerCase())) ||
+  { id: abbr, name: abbr, conference: "?" };
+
+// ESPN NBA team ID map (abbr → ESPN team ID for API calls)
+const NBA_ESPN_IDS = {
+  ATL:1,BOS:2,BKN:17,CHA:30,CHI:4,CLE:5,DAL:6,DEN:7,DET:8,GSW:9,
+  HOU:10,IND:11,LAC:12,LAL:13,MEM:29,MIA:14,MIL:15,MIN:16,NOP:3,NYK:18,
+  OKC:25,ORL:19,PHI:20,PHX:21,POR:22,SAC:23,SAS:24,TOR:28,UTA:26,WAS:27,
+};
+
+const _nbaStatsCache = {};
+
+async function fetchNBATeamStats(abbr) {
+  if (_nbaStatsCache[abbr]) return _nbaStatsCache[abbr];
+  const espnId = NBA_ESPN_IDS[abbr];
+  if (!espnId) return null;
+  try {
+    const [teamData, statsData] = await Promise.all([
+      fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}`).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/statistics`).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+
+    const stats = statsData?.results?.stats?.categories || [];
+    const getStat = (name) => {
+      for (const cat of stats) {
+        const s = cat.stats?.find(s => s.name === name || s.displayName === name);
+        if (s) return parseFloat(s.value) || null;
+      }
+      return null;
+    };
+
+    const ppg = getStat("avgPoints") || getStat("pointsPerGame") || 112.0;
+    const oppPpg = getStat("avgPointsAllowed") || getStat("opponentPointsPerGame") || 112.0;
+    const fgPct = getStat("fieldGoalPct") || 0.460;
+    const assists = getStat("avgAssists") || 25.0;
+    const turnovers = getStat("avgTurnovers") || 14.0;
+
+    // Estimate pace from assists/turnovers/scoring signature
+    const estPace = 96 + (ppg - 110) * 0.3 + (assists - 25) * 0.2;
+    const pace = Math.max(92, Math.min(105, estPace));
+
+    // Adjusted efficiency per 100 possessions
+    const adjOE = (ppg / pace) * 100;
+    const adjDE = (oppPpg / pace) * 100;
+    const netRtg = adjOE - adjDE;
+
+    // Recent form from schedule
+    let formScore = 0;
+    try {
+      const schedData = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/schedule`).then(r => r.ok ? r.json() : null).catch(() => null);
+      const events = schedData?.events || [];
+      const recent = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(-10);
+      if (recent.length) {
+        formScore = recent.slice(-5).reduce((s, e, i) => {
+          const comp = e.competitions?.[0];
+          const teamComp = comp?.competitors?.find(c => c.team?.id === String(espnId));
+          return s + ((teamComp?.winner || false) ? 1 : -0.6) * (i + 1);
+        }, 0) / 15;
+      }
+    } catch {}
+
+    const wins = teamData?.team?.record?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
+    const losses = teamData?.team?.record?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
+
+    const result = {
+      abbr, espnId,
+      name: teamData?.team?.displayName || abbr,
+      ppg, oppPpg, pace, adjOE, adjDE, netRtg,
+      fgPct, assists, turnovers, formScore,
+      wins, losses, totalGames: wins + losses,
+    };
+    _nbaStatsCache[abbr] = result;
+    return result;
+  } catch (e) {
+    console.warn("fetchNBATeamStats error:", abbr, e);
+    return null;
+  }
+}
+
+async function fetchNBAGamesForDate(dateStr) {
+  try {
+    const compact = dateStr.replace(/-/g, "");
+    const data = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${compact}&limit=50`)
+      .then(r => r.ok ? r.json() : null).catch(() => null);
+    if (!data?.events) return [];
+    return data.events.map(event => {
+      const comp = event.competitions?.[0];
+      const home = comp?.competitors?.find(c => c.homeAway === "home");
+      const away = comp?.competitors?.find(c => c.homeAway === "away");
+      const status = comp?.status?.type;
+      // Map ESPN team abbr to our abbr system
+      const mapAbbr = a => {
+        const mapping = { "GS": "GSW", "NY": "NYK", "NO": "NOP", "SA": "SAS", "OKC": "OKC", "LAL": "LAL", "LAC": "LAC" };
+        return mapping[a] || a;
+      };
+      const homeAbbr = mapAbbr(home?.team?.abbreviation || "");
+      const awayAbbr = mapAbbr(away?.team?.abbreviation || "");
+      return {
+        gameId: event.id,
+        gameDate: event.date,
+        status: status?.completed ? "Final" : status?.state === "in" ? "Live" : "Preview",
+        detailedState: status?.detail || "",
+        homeTeamId: home?.team?.id,
+        awayTeamId: away?.team?.id,
+        homeAbbr,
+        awayAbbr,
+        homeTeamName: home?.team?.displayName || home?.team?.name,
+        awayTeamName: away?.team?.displayName || away?.team?.name,
+        homeScore: status?.completed ? parseInt(home?.score) : null,
+        awayScore: status?.completed ? parseInt(away?.score) : null,
+        neutralSite: comp?.neutralSite || false,
+      };
+    }).filter(g => g.homeAbbr && g.awayAbbr);
+  } catch (e) {
+    console.warn("fetchNBAGamesForDate error:", dateStr, e);
+    return [];
+  }
+}
+
+const NBA_HOME_COURT_ADV = 2.8;
+const NBA_BACK_TO_BACK_PENALTY = 3.2;
+
+function nbaPredictGame({ homeStats, awayStats, neutralSite = false,
+  homeDaysRest = 2, awayDaysRest = 2,
+  homeInjuryAdj = 0, awayInjuryAdj = 0,
+  calibrationFactor = 1.0 }) {
+  if (!homeStats || !awayStats) return null;
+
+  const possessions = (homeStats.pace + awayStats.pace) / 2;
+  const lgAvgOE = 112.0; // NBA league average ~112 pts/100 poss
+
+  // Possession-model scoring
+  const homeOffVsAwayDef = (homeStats.adjOE / lgAvgOE) * (lgAvgOE / awayStats.adjDE) * lgAvgOE;
+  const awayOffVsHomeDef = (awayStats.adjOE / lgAvgOE) * (lgAvgOE / homeStats.adjDE) * lgAvgOE;
+  let homeScore = (homeOffVsAwayDef / 100) * possessions;
+  let awayScore = (awayOffVsHomeDef / 100) * possessions;
+
+  // Home court
+  const hca = neutralSite ? 0 : NBA_HOME_COURT_ADV;
+  homeScore += hca / 2;
+  awayScore -= hca / 2;
+
+  // Back-to-back fatigue
+  if (homeDaysRest === 0) { homeScore -= NBA_BACK_TO_BACK_PENALTY / 2; awayScore += NBA_BACK_TO_BACK_PENALTY / 2; }
+  if (awayDaysRest === 0) { awayScore -= NBA_BACK_TO_BACK_PENALTY / 2; homeScore += NBA_BACK_TO_BACK_PENALTY / 2; }
+  else if (homeDaysRest - awayDaysRest >= 2) homeScore += 1.5;
+  else if (awayDaysRest - homeDaysRest >= 2) awayScore += 1.5;
+
+  // Injury adjustments
+  homeScore += homeInjuryAdj;
+  awayScore += awayInjuryAdj;
+
+  // Recent form (capped)
+  const formWeight = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames, 30) / 30));
+  homeScore += homeStats.formScore * formWeight * 3;
+  awayScore += awayStats.formScore * formWeight * 3;
+
+  homeScore = Math.max(85, Math.min(145, homeScore));
+  awayScore = Math.max(85, Math.min(145, awayScore));
+
+  const projectedSpread = parseFloat((homeScore - awayScore).toFixed(1));
+
+  // Win probability via logistic on spread
+  let homeWinPct = 1 / (1 + Math.pow(10, -projectedSpread / 12));
+  homeWinPct = Math.min(0.92, Math.max(0.08, homeWinPct));
+  if (calibrationFactor !== 1.0) homeWinPct = Math.min(0.92, Math.max(0.08, 0.5 + (homeWinPct - 0.5) * calibrationFactor));
+
+  const modelML_home = homeWinPct >= 0.5 ? -Math.round((homeWinPct / (1 - homeWinPct)) * 100) : +Math.round(((1 - homeWinPct) / homeWinPct) * 100);
+  const modelML_away = homeWinPct >= 0.5 ? +Math.round(((1 - homeWinPct) / homeWinPct) * 100) : -Math.round((homeWinPct / (1 - homeWinPct)) * 100);
+
+  // Confidence: net rating gap + win pct strength + sample size
+  const netGap = Math.abs(homeStats.netRtg - awayStats.netRtg);
+  const winPctStrength = Math.abs(homeWinPct - 0.5) * 2;
+  const minGames = Math.min(homeStats.totalGames, awayStats.totalGames);
+  const sampleWeight = Math.min(1.0, minGames / 20);
+  const confScore = Math.round(
+    (Math.min(netGap, 8) / 8) * 40 +
+    winPctStrength * 35 +
+    sampleWeight * 20 +
+    (minGames >= 10 ? 5 : 0)
+  );
+  const confidence = confScore >= 62 ? "HIGH" : confScore >= 35 ? "MEDIUM" : "LOW";
+
+  return {
+    homeScore: parseFloat(homeScore.toFixed(1)),
+    awayScore: parseFloat(awayScore.toFixed(1)),
+    homeWinPct, awayWinPct: 1 - homeWinPct,
+    projectedSpread,
+    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    modelML_home, modelML_away,
+    confidence, confScore,
+    possessions: parseFloat(possessions.toFixed(1)),
+    homeNetRtg: parseFloat(homeStats.netRtg?.toFixed(2)),
+    awayNetRtg: parseFloat(awayStats.netRtg?.toFixed(2)),
+    netRtgDiff: parseFloat((homeStats.netRtg - awayStats.netRtg).toFixed(2)),
+    neutralSite,
+  };
+}
+
+async function nbaBuildPredictionRow(game, dateStr, marketOdds = null) {
+  const [homeStats, awayStats] = await Promise.all([
+    fetchNBATeamStats(game.homeAbbr),
+    fetchNBATeamStats(game.awayAbbr),
+  ]);
+  if (!homeStats || !awayStats) return null;
+  const pred = nbaPredictGame({ homeStats, awayStats, neutralSite: game.neutralSite });
+  if (!pred) return null;
+  return {
+    game_date: dateStr,
+    game_id: game.gameId,
+    home_team: game.homeAbbr,
+    away_team: game.awayAbbr,
+    home_team_name: game.homeTeamName,
+    away_team_name: game.awayTeamName,
+    model_ml_home: pred.modelML_home,
+    model_ml_away: pred.modelML_away,
+    spread_home: pred.projectedSpread,
+    ou_total: pred.ouTotal,
+    win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)),
+    confidence: pred.confidence,
+    pred_home_score: pred.homeScore,
+    pred_away_score: pred.awayScore,
+    home_net_rtg: pred.homeNetRtg,
+    away_net_rtg: pred.awayNetRtg,
+    ...(marketOdds?.marketSpreadHome != null && { market_spread_home: marketOdds.marketSpreadHome }),
+    ...(marketOdds?.marketTotal != null && { market_ou_total: marketOdds.marketTotal }),
+  };
+}
+
+async function nbaFillFinalScores(pendingRows) {
+  if (!pendingRows.length) return 0;
+  let filled = 0;
+  const byDate = {};
+  for (const row of pendingRows) { if (!byDate[row.game_date]) byDate[row.game_date] = []; byDate[row.game_date].push(row); }
+  for (const [dateStr, rows] of Object.entries(byDate)) {
+    try {
+      const games = await fetchNBAGamesForDate(dateStr);
+      for (const g of games) {
+        if (g.status !== "Final" || g.homeScore === null || g.awayScore === null) continue;
+        const matchedRow = rows.find(row =>
+          (row.game_id && row.game_id === g.gameId) ||
+          (row.home_team === g.homeAbbr && row.away_team === g.awayAbbr)
+        );
+        if (!matchedRow) continue;
+        const homeScore = g.homeScore, awayScore = g.awayScore;
+        const modelPickedHome = (matchedRow.win_pct_home ?? 0.5) >= 0.5;
+        const homeWon = homeScore > awayScore;
+        const ml_correct = modelPickedHome ? homeWon : !homeWon;
+        const actualMargin = homeScore - awayScore;
+        const mktSpread = matchedRow.market_spread_home ?? null;
+        let rl_correct = null;
+        if (mktSpread !== null) {
+          if (actualMargin > mktSpread) rl_correct = true;
+          else if (actualMargin < mktSpread) rl_correct = false;
+          else rl_correct = null;
+        } else {
+          const projSpread = matchedRow.spread_home || 0;
+          const modelPickedHomeBySpread = projSpread > 0;
+          if (actualMargin === 0) rl_correct = null;
+          else if (actualMargin > 0 && modelPickedHomeBySpread) rl_correct = true;
+          else if (actualMargin < 0 && !modelPickedHomeBySpread) rl_correct = true;
+          else rl_correct = false;
+        }
+        const total = homeScore + awayScore;
+        const ouLine = matchedRow.market_ou_total ?? matchedRow.ou_total ?? null;
+        const predTotal = (matchedRow.pred_home_score ?? 0) + (matchedRow.pred_away_score ?? 0);
+        let ou_correct = null;
+        if (ouLine !== null && total !== ouLine) {
+          ou_correct = ((total > ouLine) === (predTotal > ouLine)) ? "OVER" : "UNDER";
+        } else if (ouLine !== null && total === ouLine) {
+          ou_correct = "PUSH";
+        }
+        await supabaseQuery(`/nba_predictions?id=eq.${matchedRow.id}`, "PATCH", {
+          actual_home_score: homeScore, actual_away_score: awayScore,
+          result_entered: true, ml_correct, rl_correct, ou_correct,
+        });
+        filled++;
+      }
+    } catch (e) { console.warn("nbaFillFinalScores error", dateStr, e); }
+  }
+  return filled;
+}
+
+function matchNBAOddsToGame(oddsGame, schedGame) {
+  if (!oddsGame || !schedGame) return false;
+  const norm = s => (s || "").toLowerCase().replace(/[\s\W]/g, "");
+  const hName = norm(schedGame.homeTeamName || "");
+  const aName = norm(schedGame.awayTeamName || "");
+  const oHome = norm(oddsGame.homeTeam || "");
+  const oAway = norm(oddsGame.awayTeam || "");
+  return (oHome.includes(hName.slice(0, 6)) || hName.includes(oHome.slice(0, 6))) &&
+    (oAway.includes(aName.slice(0, 6)) || aName.includes(oAway.slice(0, 6)));
+}
+
+const _nbaSeason = (() => {
+  const now = new Date();
+  const yr = now.getMonth() < 7 ? now.getFullYear() - 1 : now.getFullYear();
+  return `${yr}-10-01`;
+})();
+
+async function nbaAutoSync(onProgress) {
+  onProgress?.("🏀 Syncing NBA…");
+  const today = new Date().toISOString().split("T")[0];
+  const existing = await supabaseQuery(
+    `/nba_predictions?select=id,game_date,home_team,away_team,result_entered,game_id&order=game_date.asc&limit=10000`
+  );
+  const savedKeys = new Set((existing || []).map(r => r.game_id || `${r.game_date}|${r.home_team}|${r.away_team}`));
+  const pendingResults = (existing || []).filter(r => !r.result_entered);
+  if (pendingResults.length) {
+    const filled = await nbaFillFinalScores(pendingResults);
+    if (filled) onProgress?.(`🏀 ${filled} NBA result(s) recorded`);
+  }
+  const allDates = [];
+  const cur = new Date(_nbaSeason);
+  while (cur.toISOString().split("T")[0] <= today) {
+    allDates.push(cur.toISOString().split("T")[0]);
+    cur.setDate(cur.getDate() + 1);
+  }
+  const todayOdds = await fetchOdds("basketball_nba");
+  const todayOddsGames = todayOdds?.games || [];
+  let newPred = 0;
+  for (const dateStr of allDates) {
+    const games = await fetchNBAGamesForDate(dateStr);
+    if (!games.length) { await _sleep(60); continue; }
+    const unsaved = games.filter(g => !savedKeys.has(g.gameId || `${dateStr}|${g.homeAbbr}|${g.awayAbbr}`));
+    if (!unsaved.length) { await _sleep(60); continue; }
+    const isToday = dateStr === today;
+    const rows = (await Promise.all(unsaved.map(g => {
+      const gameOdds = isToday ? (todayOddsGames.find(o => matchNBAOddsToGame(o, g)) || null) : null;
+      return nbaBuildPredictionRow(g, dateStr, gameOdds);
+    }))).filter(Boolean);
+    if (rows.length) {
+      await supabaseQuery("/nba_predictions", "UPSERT", rows, "game_id");
+      newPred += rows.length;
+      const ns = await supabaseQuery(
+        `/nba_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team,away_team,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
+      );
+      if (ns?.length) await nbaFillFinalScores(ns);
+      rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team}|${r.away_team}`));
+    }
+    await _sleep(200);
+  }
+  onProgress?.(newPred ? `🏀 NBA sync complete — ${newPred} new` : "🏀 NBA up to date");
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SHARED UI COMPONENTS
 // ═══════════════════════════════════════════════════════════════
 
@@ -2038,6 +2455,215 @@ function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalibrationN
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 🏀 NBA CALENDAR TAB
+// ═══════════════════════════════════════════════════════════════
+
+function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
+  const todayStr = new Date().toISOString().split("T")[0];
+  const [dateStr, setDateStr] = useState(todayStr);
+  const [games, setGames] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const [oddsData, setOddsData] = useState(null);
+
+  const nbaColors = {
+    ATL:"#E03A3E",BOS:"#007A33",BKN:"#000",CHA:"#1D1160",CHI:"#CE1141",
+    CLE:"#860038",DAL:"#00538C",DEN:"#0E2240",DET:"#C8102E",GSW:"#1D428A",
+    HOU:"#CE1141",IND:"#002D62",LAC:"#C8102E",LAL:"#552583",MEM:"#5D76A9",
+    MIA:"#98002E",MIL:"#00471B",MIN:"#0C2340",NOP:"#0C2340",NYK:"#006BB6",
+    OKC:"#007AC1",ORL:"#0077C0",PHI:"#006BB6",PHX:"#1D1160",POR:"#E03A3E",
+    SAC:"#5A2D81",SAS:"#C4CED4",TOR:"#CE1141",UTA:"#002B5C",WAS:"#002B5C",
+  };
+
+  const loadGames = useCallback(async (d) => {
+    setLoading(true); setGames([]);
+    const [raw, odds] = await Promise.all([fetchNBAGamesForDate(d), fetchOdds("basketball_nba")]);
+    setOddsData(odds);
+    setGames(raw.map(g => ({ ...g, pred: null, loading: true })));
+    const enriched = await Promise.all(raw.map(async (g) => {
+      const [homeStats, awayStats] = await Promise.all([
+        fetchNBATeamStats(g.homeAbbr),
+        fetchNBATeamStats(g.awayAbbr),
+      ]);
+      const pred = homeStats && awayStats
+        ? nbaPredictGame({ homeStats, awayStats, neutralSite: g.neutralSite, calibrationFactor })
+        : null;
+      const gameOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
+      return { ...g, homeStats, awayStats, pred, loading: false, odds: gameOdds };
+    }));
+    setGames(enriched);
+    onGamesLoaded?.(enriched);
+    setLoading(false);
+  }, [calibrationFactor]);
+
+  useEffect(() => { loadGames(dateStr); }, [dateStr, calibrationFactor]);
+
+  const getBannerInfo = (pred, odds) => {
+    if (!pred) return { color: "yellow", label: "⚠ No prediction" };
+    if (odds?.homeML && odds?.awayML) {
+      const market = trueImplied(odds.homeML, odds.awayML);
+      const homeEdge = pred.homeWinPct - market.home;
+      if (Math.abs(homeEdge) >= EDGE_THRESHOLD)
+        return { color: "green", edge: homeEdge, label: homeEdge >= EDGE_THRESHOLD ? `+${(homeEdge * 100).toFixed(1)}% HOME edge` : `+${((-homeEdge) * 100).toFixed(1)}% AWAY edge` };
+      return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge` };
+    }
+    if (pred.homeWinPct >= 0.65 || pred.homeWinPct <= 0.35) return { color: "green", label: "Strong signal" };
+    return { color: "neutral", label: "Close matchup" };
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <input type="date" value={dateStr} onChange={e => setDateStr(e.target.value)}
+          style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "inherit" }} />
+        <button onClick={() => loadGames(dateStr)}
+          style={{ background: "#161b22", color: "#58a6ff", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+          ↻ REFRESH
+        </button>
+        {!loading && oddsData?.games?.length > 0 && <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsData.games.length})</span>}
+        {!loading && oddsData?.noKey && <span style={{ fontSize: 11, color: C.dim }}>⚠ Add ODDS_API_KEY for live lines</span>}
+        {loading && <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading NBA games…</span>}
+        <span style={{ fontSize: 10, color: C.dim }}>NBA · ESPN API</span>
+      </div>
+      {!loading && games.length === 0 && (
+        <div style={{ color: C.dim, textAlign: "center", marginTop: 40 }}>No NBA games scheduled for {dateStr}</div>
+      )}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {games.map(game => {
+          const bannerInfo = game.loading ? { color: "yellow", label: "Calculating…" } : getBannerInfo(game.pred, game.odds);
+          const color = bannerInfo.color;
+          const isOpen = expanded === game.gameId;
+          const homeCol = nbaColors[game.homeAbbr] || "#444";
+          const awayCol = nbaColors[game.awayAbbr] || "#444";
+          const bannerBg = color === "green" ? "linear-gradient(135deg,#0b2012,#0e2315)" : color === "yellow" ? "linear-gradient(135deg,#1a1200,#1a1500)" : `linear-gradient(135deg,${C.card},#111822)`;
+          const borderColor = color === "green" ? "#2ea043" : color === "yellow" ? "#4a3a00" : C.border;
+          const hName = game.homeAbbr || "";
+          const aName = game.awayAbbr || "";
+
+          return (
+            <div key={game.gameId} style={{ background: bannerBg, border: `1px solid ${borderColor}`, borderRadius: 10, overflow: "hidden" }}>
+              {/* Color bar across top */}
+              <div style={{ height: 3, background: `linear-gradient(90deg, ${awayCol}, ${homeCol})` }} />
+              <div onClick={() => setExpanded(isOpen ? null : game.gameId)}
+                style={{ padding: "14px 18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 200 }}>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: awayCol, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{aName}</div>
+                    <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
+                  </div>
+                  <div style={{ fontSize: 13, color: C.dim }}>@</div>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: homeCol, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{hName}</div>
+                    <div style={{ fontSize: 9, color: C.dim }}>HOME{game.neutralSite ? " (N)" : ""}</div>
+                  </div>
+                </div>
+                {game.pred ? (() => {
+                  const sigs = getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" });
+                  return (
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                      <Pill label="PROJ" value={`${aName} ${game.pred.awayScore.toFixed(0)} — ${hName} ${game.pred.homeScore.toFixed(0)}`} />
+                      <Pill label="SPREAD" value={game.pred.projectedSpread > 0
+                        ? `${hName} -${game.pred.projectedSpread.toFixed(1)}`
+                        : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`}
+                        highlight={sigs.spread?.verdict === "LEAN"} />
+                      <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN"} />
+                      {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
+                      <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO" || sigs.ou?.verdict === "LEAN"} />
+                      <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={sigs.conf?.verdict === "GO"} />
+                    </div>
+                  );
+                })() : (
+                  <div style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "⚠ Stats unavailable"}</div>
+                )}
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
+                  {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
+                  {bannerInfo.edge != null && <span style={{ fontSize: 10, color: Math.abs(bannerInfo.edge) >= EDGE_THRESHOLD ? C.green : C.dim }}>{bannerInfo.label}</span>}
+                  <span style={{ color: C.dim, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+                </div>
+              </div>
+              {isOpen && game.pred && (
+                <div style={{ borderTop: `1px solid ${borderColor}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8, marginBottom: 10 }}>
+                    <Kv k="Projected Score" v={`${aName} ${game.pred.awayScore.toFixed(1)} — ${hName} ${game.pred.homeScore.toFixed(1)}`} />
+                    <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
+                    <Kv k="O/U Total" v={game.pred.ouTotal} />
+                    <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${hName} -${game.pred.projectedSpread.toFixed(1)}` : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
+                    <Kv k="Possessions" v={game.pred.possessions.toFixed(1)} />
+                    {game.homeStats && <Kv k={`${hName} Net Rtg`} v={game.pred.homeNetRtg > 0 ? `+${game.pred.homeNetRtg}` : game.pred.homeNetRtg} />}
+                    {game.awayStats && <Kv k={`${aName} Net Rtg`} v={game.pred.awayNetRtg > 0 ? `+${game.pred.awayNetRtg}` : game.pred.awayNetRtg} />}
+                    {game.homeStats && <Kv k={`${hName} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${aName} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
+                    {game.homeStats && <Kv k={`${hName} Opp PPG`} v={game.homeStats.oppPpg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${aName} Opp PPG`} v={game.awayStats.oppPpg?.toFixed(1)} />}
+                    <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
+                    {game.neutralSite && <Kv k="Site" v="Neutral" />}
+                  </div>
+                  <BetSignalsPanel
+                    signals={getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" })}
+                    pred={game.pred} odds={game.odds} sport="nba"
+                    homeName={hName} awayName={aName}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function NBASection({ nbaGames, setNbaGames, calibrationNBA, setCalibrationNBA, refreshKey, setRefreshKey }) {
+  const [tab, setTab] = useState("calendar");
+  const [syncMsg, setSyncMsg] = useState("");
+  const TABS = ["calendar", "accuracy", "history", "parlay"];
+
+  const handleAutoSync = async () => {
+    setSyncMsg("🏀 Syncing NBA…");
+    await nbaAutoSync(msg => setSyncMsg(msg));
+    setRefreshKey(k => k + 1);
+    setTimeout(() => setSyncMsg(""), 4000);
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {TABS.map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{
+            padding: "6px 16px", borderRadius: 7, border: `1px solid ${tab === t ? "#30363d" : "transparent"}`,
+            background: tab === t ? "#161b22" : "transparent", color: tab === t ? "#58a6ff" : C.dim,
+            cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+          }}>
+            {t === "calendar" ? "📅" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎯"} {t}
+          </button>
+        ))}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <button onClick={handleAutoSync}
+            style={{ background: "#161b22", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 10 }}>
+            ⟳ Sync
+          </button>
+        </div>
+      </div>
+      {syncMsg && (
+        <div style={{ background: "#0d1a10", border: "1px solid #1a3a1a", borderRadius: 7, padding: "8px 14px", marginBottom: 12, fontSize: 11, color: C.green, fontFamily: "monospace" }}>
+          {syncMsg}
+        </div>
+      )}
+      {!syncMsg && (
+        <div style={{ fontSize: 10, color: C.dim, marginBottom: 12, letterSpacing: 1 }}>
+          NBA · Season starts {_nbaSeason} · ESPN API (free, no key)
+        </div>
+      )}
+      {tab === "calendar" && <NBACalendarTab calibrationFactor={calibrationNBA} onGamesLoaded={setNbaGames} />}
+      {tab === "accuracy" && <AccuracyDashboard table="nba_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNBA} spreadLabel="Spread" />}
+      {tab === "history" && <HistoryTab table="nba_predictions" refreshKey={refreshKey} />}
+      {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={nbaGames} />}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ROOT APP
 // ═══════════════════════════════════════════════════════════════
 
@@ -2045,25 +2671,31 @@ export default function App() {
   const [sport, setSport] = useState("MLB");
   const [mlbGames, setMlbGames] = useState([]);
   const [ncaaGames, setNcaaGames] = useState([]);
+  const [nbaGames, setNbaGames] = useState([]);
   const [calibrationMLB, setCalibrationMLB] = useState(() => {
     try { const v = parseFloat(localStorage.getItem("cal_mlb")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
   });
   const [calibrationNCAA, setCalibrationNCAA] = useState(() => {
     try { const v = parseFloat(localStorage.getItem("cal_ncaa")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
   });
+  const [calibrationNBA, setCalibrationNBA] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem("cal_nba")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
+  });
 
-  // Persist calibration factors across reloads
   useEffect(() => { try { localStorage.setItem("cal_mlb", calibrationMLB); } catch {} }, [calibrationMLB]);
   useEffect(() => { try { localStorage.setItem("cal_ncaa", calibrationNCAA); } catch {} }, [calibrationNCAA]);
+  useEffect(() => { try { localStorage.setItem("cal_nba", calibrationNBA); } catch {} }, [calibrationNBA]);
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncMsg, setSyncMsg] = useState("");
 
-  // Auto-sync on load (background)
   useEffect(() => {
     (async () => {
-      setSyncMsg("⚾ Syncing…");
+      setSyncMsg("⚾ Syncing MLB…");
       await mlbAutoSync(m => setSyncMsg(m));
+      setSyncMsg("🏀 Syncing NCAA…");
       await ncaaAutoSync(m => setSyncMsg(m));
+      setSyncMsg("🏀 Syncing NBA…");
+      await nbaAutoSync(m => setSyncMsg(m));
       setSyncMsg("");
       setRefreshKey(k => k + 1);
     })();
@@ -2082,28 +2714,42 @@ export default function App() {
       `}</style>
 
       {/* TOP NAV */}
-      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "0 20px", display: "flex", alignItems: "center", gap: 16, height: 52, position: "sticky", top: 0, background: "#0d1117", zIndex: 100 }}>
+      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "0 20px", display: "flex", alignItems: "center", gap: 16, height: 52, position: "sticky", top: 0, background: "#0d1117", zIndex: 100, flexWrap: "wrap" }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: "#e2e8f0", letterSpacing: 2 }}>
-          <span style={{ color: C.blue }}>⚾</span> MLB <span style={{ color: C.dim, margin: "0 6px" }}>+</span> <span style={{ color: C.orange }}>🏀</span> NCAA
+          <span style={{ color: C.blue }}>⚾</span> MLB <span style={{ color: C.dim, margin: "0 4px" }}>+</span>
+          <span style={{ color: C.orange }}>🏀</span> NCAA <span style={{ color: C.dim, margin: "0 4px" }}>+</span>
+          <span style={{ color: "#58a6ff" }}>🏀</span> NBA
         </div>
-        <div style={{ fontSize: 9, color: C.dim, letterSpacing: 2 }}>PREDICTOR v10</div>
+        <div style={{ fontSize: 9, color: C.dim, letterSpacing: 2 }}>PREDICTOR v11</div>
 
         {/* Sport Toggle */}
         <div style={{ display: "flex", gap: 2, background: "#080c10", border: `1px solid ${C.border}`, borderRadius: 8, padding: 3, marginLeft: "auto" }}>
-          {[["MLB", "⚾", C.blue], ["NCAA", "🏀", C.orange]].map(([s, icon, col]) => (
-            <button key={s} onClick={() => setSport(s)} style={{ padding: "5px 18px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 800, background: sport === s ? col : "transparent", color: sport === s ? C.bg : C.dim, transition: "all 0.15s", letterSpacing: 1 }}>
+          {[["MLB", "⚾", C.blue], ["NCAA", "🏀", C.orange], ["NBA", "🏀", "#58a6ff"]].map(([s, icon, col]) => (
+            <button key={s} onClick={() => setSport(s)} style={{
+              padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer",
+              fontSize: 12, fontWeight: 800,
+              background: sport === s ? col : "transparent",
+              color: sport === s ? C.bg : C.dim,
+              transition: "all 0.15s", letterSpacing: 1,
+            }}>
               {icon} {s}
             </button>
           ))}
-          <button onClick={() => setSport("PARLAY")} style={{ padding: "5px 18px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 800, background: sport === "PARLAY" ? C.green : "transparent", color: sport === "PARLAY" ? C.bg : C.dim, transition: "all 0.15s" }}>
+          <button onClick={() => setSport("PARLAY")} style={{
+            padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer",
+            fontSize: 12, fontWeight: 800,
+            background: sport === "PARLAY" ? C.green : "transparent",
+            color: sport === "PARLAY" ? C.bg : C.dim,
+            transition: "all 0.15s",
+          }}>
             🎯 PARLAY
           </button>
         </div>
 
         {syncMsg && <div style={{ fontSize: 10, color: C.dim, animation: "pulse 1.5s ease infinite" }}>{syncMsg}</div>}
-        {(calibrationMLB !== 1.0 || calibrationNCAA !== 1.0) && (
+        {(calibrationMLB !== 1.0 || calibrationNCAA !== 1.0 || calibrationNBA !== 1.0) && (
           <div style={{ fontSize: 10, color: C.yellow, background: "#1a1200", border: `1px solid #3a2a00`, borderRadius: 5, padding: "3px 8px" }}>
-            Cal: {sport === "MLB" || sport === "PARLAY" ? `MLB×${calibrationMLB}` : ""}{sport === "NCAA" || sport === "PARLAY" ? ` NCAA×${calibrationNCAA}` : ""}
+            Cal: {calibrationMLB !== 1.0 ? `MLB×${calibrationMLB} ` : ""}{calibrationNCAA !== 1.0 ? `NCAA×${calibrationNCAA} ` : ""}{calibrationNBA !== 1.0 ? `NBA×${calibrationNBA}` : ""}
           </div>
         )}
       </div>
@@ -2116,17 +2762,20 @@ export default function App() {
         {sport === "NCAA" && (
           <NCAASection ncaaGames={ncaaGames} setNcaaGames={setNcaaGames} calibrationNCAA={calibrationNCAA} setCalibrationNCAA={setCalibrationNCAA} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />
         )}
+        {sport === "NBA" && (
+          <NBASection nbaGames={nbaGames} setNbaGames={setNbaGames} calibrationNBA={calibrationNBA} setCalibrationNBA={setCalibrationNBA} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />
+        )}
         {sport === "PARLAY" && (
           <div>
-            <div style={{ fontSize: 12, color: C.dim, marginBottom: 16, letterSpacing: 1 }}>Combined parlay builder — uses games loaded in both calendars above</div>
-            <ParlayBuilder mlbGames={mlbGames} ncaaGames={ncaaGames} />
+            <div style={{ fontSize: 12, color: C.dim, marginBottom: 16, letterSpacing: 1 }}>Combined parlay builder — uses games loaded in MLB, NCAA, and NBA calendars</div>
+            <ParlayBuilder mlbGames={mlbGames} ncaaGames={[...ncaaGames, ...nbaGames]} />
           </div>
         )}
       </div>
 
       {/* FOOTER */}
       <div style={{ textAlign: "center", padding: "16px", borderTop: `1px solid ${C.border}`, fontSize: 9, color: "#21262d", letterSpacing: 2 }}>
-        MULTI-SPORT PREDICTOR v10 · MLB (statsapi.mlb.com) · NCAA (ESPN API) · {SEASON}
+        MULTI-SPORT PREDICTOR v11 · MLB (statsapi.mlb.com) · NCAA + NBA (ESPN API) · {SEASON}
       </div>
     </div>
   );
