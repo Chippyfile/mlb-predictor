@@ -785,7 +785,12 @@ async function mlbAutoSync(onProgress) {
     if (!schedule.length) continue;
     const unsaved = schedule.filter(g => { const ha = normAbbr(g.homeAbbr || mlbTeamById(g.homeTeamId).abbr), aa = normAbbr(g.awayAbbr || mlbTeamById(g.awayTeamId).abbr); return !savedKeys.has(`${dateStr}|${aa}@${ha}`); });
     if (!unsaved.length) continue;
-    const rows = (await Promise.all(unsaved.map(g => mlbBuildPredictionRow(g, dateStr)))).filter(Boolean);
+    // Process sequentially per date to avoid bursting the weather API rate limit
+    const rows = [];
+    for (const g of unsaved) {
+      const row = await mlbBuildPredictionRow(g, dateStr).catch(() => null);
+      if (row) rows.push(row);
+    }
     if (rows.length) { const withPk = rows.filter(r => r.game_pk != null); const withoutPk = rows.filter(r => r.game_pk == null); if (withPk.length) await supabaseQuery("/mlb_predictions", "UPSERT", withPk, "game_pk"); if (withoutPk.length) await supabaseQuery("/mlb_predictions", "POST", withoutPk); newPred += rows.length; const ns = await supabaseQuery(`/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`); if (ns?.length) await mlbFillFinalScores(ns); }
   }
   onProgress?.(newPred ? `⚾ MLB sync complete — ${newPred} new` : "⚾ MLB up to date");
@@ -4144,24 +4149,32 @@ const PARK_COORDINATES = {
 };
 
 const _weatherCache = {};
+const _weatherInFlight = {};  // dedup concurrent requests for same team
 async function fetchParkWeather(homeTeamId) {
   if (!homeTeamId) return null;
   const coords = PARK_COORDINATES[homeTeamId];
   if (!coords) return null;
   const cacheKey = `wx_${homeTeamId}_${new Date().toISOString().slice(0,13)}`;
   if (_weatherCache[cacheKey]) return _weatherCache[cacheKey];
-  try {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lng}&current_weather=true&hourly=temperature_2m,windspeed_10m&forecast_days=1`;
-    const data = await fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
-    if (!data?.current_weather) return null;
-    const wx = {
-      tempF: Math.round(data.current_weather.temperature * 9/5 + 32),
-      windMph: Math.round(data.current_weather.windspeed * 0.621),
-      windDir: data.current_weather.winddirection,
-    };
-    _weatherCache[cacheKey] = wx;
-    return wx;
-  } catch { return null; }
+  // If a fetch for this team is already in-flight, wait for it instead of firing another request
+  if (_weatherInFlight[homeTeamId]) return _weatherInFlight[homeTeamId];
+  const promise = (async () => {
+    try {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lng}&current_weather=true&hourly=temperature_2m,windspeed_10m&forecast_days=1`;
+      const data = await fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (!data?.current_weather) return null;
+      const wx = {
+        tempF: Math.round(data.current_weather.temperature * 9/5 + 32),
+        windMph: Math.round(data.current_weather.windspeed * 0.621),
+        windDir: data.current_weather.winddirection,
+      };
+      _weatherCache[cacheKey] = wx;
+      return wx;
+    } catch { return null; }
+    finally { delete _weatherInFlight[homeTeamId]; }
+  })();
+  _weatherInFlight[homeTeamId] = promise;
+  return promise;
 }
 
 // Weather-adjusted park factor: warm temps boost HR, wind out boosts offense
