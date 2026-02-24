@@ -2899,6 +2899,719 @@ function NFLSection({ nflGames, setNflGames, calibrationNFL, setCalibrationNFL, 
 }
 
 // ═══════════════════════════════════════════════════════════════
+// 🏈 NCAAF ENGINE — College Football
+// ESPN API · college-football path
+// Model: adjEM from scoring/efficiency, SP+ proxy, home field,
+//        rankings, weather, rivalry/conference, form, rest
+// ═══════════════════════════════════════════════════════════════
+
+/*
+  SUPABASE SCHEMA — run once:
+
+  create table if not exists ncaaf_predictions (
+    id serial primary key,
+    sport varchar(10) default 'NCAAF',
+    game_date date not null,
+    game_id varchar(30),
+    home_team varchar(100),
+    away_team varchar(100),
+    home_team_name varchar(150),
+    away_team_name varchar(150),
+    home_team_id varchar(20),
+    away_team_id varchar(20),
+    home_rank integer,
+    away_rank integer,
+    home_conference varchar(60),
+    away_conference varchar(60),
+    week integer,
+    season integer,
+    model_ml_home integer,
+    model_ml_away integer,
+    spread_home numeric(5,1),
+    ou_total numeric(5,1),
+    market_spread_home numeric(5,1),
+    market_ou_total numeric(5,1),
+    win_pct_home numeric(6,4),
+    confidence varchar(10),
+    pred_home_score numeric(5,1),
+    pred_away_score numeric(5,1),
+    home_adj_em numeric(7,3),
+    away_adj_em numeric(7,3),
+    neutral_site boolean default false,
+    key_factors jsonb,
+    actual_home_score integer,
+    actual_away_score integer,
+    result_entered boolean default false,
+    ml_correct boolean,
+    rl_correct boolean,
+    ou_correct varchar(10),
+    created_at timestamptz default now()
+  );
+  create unique index if not exists ncaaf_predictions_game_id_key on ncaaf_predictions(game_id) where game_id is not null;
+  create index if not exists ncaaf_predictions_date_idx on ncaaf_predictions(game_date desc);
+  create index if not exists ncaaf_predictions_season_idx on ncaaf_predictions(season, week);
+*/
+
+// ── CFB CONSTANTS ─────────────────────────────────────────────
+const NCAAF_HOME_FIELD_ADV = 4.0;   // College HFA bigger than NFL
+const NCAAF_RANKED_BOOST   = 1.5;   // Extra pts for ranked team edge
+const NCAAF_NEUTRAL_REDUCTION = 0.0;
+const NCAAF_LG_AVG_PPG     = 27.5;  // FBS average
+
+// Known high-altitude / extreme environment stadiums
+const NCAAF_ALT_FACTOR = {
+  "Colorado Buffaloes":   1.05,  // Boulder, 5430 ft
+  "Utah Utes":            1.04,  // Salt Lake City
+  "Air Force Falcons":    1.06,  // Colorado Springs, highest in FBS
+  "Nevada Wolf Pack":     1.03,
+  "Wyoming Cowboys":      1.05,
+};
+
+// ESPN CFB base URL helper
+function cfbFetch(path) {
+  return fetch(`https://site.api.espn.com/apis/site/v2/sports/football/college-football/${path}`)
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+}
+
+const _ncaafStatsCache = {};
+
+async function fetchNCAAFTeamStats(teamId) {
+  if (!teamId) return null;
+  const key = String(teamId);
+  if (_ncaafStatsCache[key]) return _ncaafStatsCache[key];
+
+  try {
+    const [teamData, statsData, schedData, recordData] = await Promise.all([
+      cfbFetch(`teams/${teamId}`),
+      cfbFetch(`teams/${teamId}/statistics`),
+      cfbFetch(`teams/${teamId}/schedule`),
+      cfbFetch(`teams/${teamId}/record`),
+    ]);
+    if (!teamData) return null;
+
+    const team = teamData.team;
+    const cats = statsData?.results?.stats?.categories || [];
+    const getStat = (...names) => {
+      for (const cat of cats) {
+        for (const name of names) {
+          const s = cat.stats?.find(s => s.name === name || s.abbreviation === name || s.displayName?.toLowerCase() === name.toLowerCase());
+          if (s) return parseFloat(s.value) || null;
+        }
+      }
+      return null;
+    };
+
+    // Offense
+    const ppg         = getStat("avgPoints","pointsPerGame","scoringAverage") || NCAAF_LG_AVG_PPG;
+    const ypGame      = getStat("totalYardsPerGame","yardsPerGame","totalOffensiveYardsPerGame") || 380.0;
+    const rushYpGame  = getStat("rushingYardsPerGame","avgRushingYards") || 170.0;
+    const passYpGame  = getStat("passingYardsPerGame","avgPassingYards") || 210.0;
+    const yardsPerPlay= getStat("yardsPerPlay","offensiveYardsPerPlay") || 5.8;
+    const thirdPct    = getStat("thirdDownPct","thirdDownConversionPct") || 0.40;
+    const redZonePct  = getStat("redZonePct","redZoneScoringPct","redZoneTouchdownPct") || 0.60;
+    const turnoversLost = getStat("turnovers","totalTurnovers","offensiveTurnovers") || 1.3;
+
+    // Defense
+    const oppPpg      = getStat("avgPointsAllowed","opponentPointsPerGame","scoringDefenseAverage") || NCAAF_LG_AVG_PPG;
+    const oppYpGame   = getStat("opponentYardsPerGame","yardsAllowedPerGame") || 380.0;
+    const oppYpPlay   = getStat("opponentYardsPerPlay","defensiveYardsPerPlay") || 5.8;
+    const sacks       = getStat("sacks","totalSacks","defensiveSacks") || 2.0;
+    const turnoversForced = getStat("defensiveTurnovers","takeaways","totalTakeaways") || 1.3;
+
+    // SP+ proxy: blend of scoring margin, YPP differential, turnover margin
+    // Calibrated so ~35-point SP+ team scores ~17 pts over average vs average
+    const offEff  = ((ppg - NCAAF_LG_AVG_PPG) / NCAAF_LG_AVG_PPG) * 0.12
+                  + ((yardsPerPlay - 5.8) / 5.8) * 0.08
+                  + ((thirdPct - 0.40) / 0.40) * 0.04
+                  + ((redZonePct - 0.60) / 0.60) * 0.03;
+    const defEff  = ((NCAAF_LG_AVG_PPG - oppPpg) / NCAAF_LG_AVG_PPG) * 0.12
+                  + ((5.8 - oppYpPlay) / 5.8) * 0.08
+                  + (sacks - 2.0) * 0.005;
+    const toMargin = turnoversForced - turnoversLost;
+
+    // Record
+    const wins   = recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
+    const losses = recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
+    const totalGames = wins + losses;
+
+    // Recent form — last 5 games weighted with margin
+    let formScore = 0;
+    try {
+      const events  = schedData?.events || [];
+      const completed = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+      formScore = completed.slice(-5).reduce((s, e, i) => {
+        const comp   = e.competitions?.[0];
+        const teamC  = comp?.competitors?.find(c => c.team?.id === String(teamId));
+        const won    = teamC?.winner || false;
+        const myPts  = parseInt(teamC?.score) || 0;
+        const oppPts = parseInt(comp?.competitors?.find(c => c.team?.id !== String(teamId))?.score) || 0;
+        const margin = myPts - oppPts;
+        return s + (won ? 1 + Math.min(margin / 28, 0.6) : -0.6 - Math.min(Math.abs(margin) / 28, 0.4)) * (i + 1);
+      }, 0) / 15;
+    } catch {}
+
+    // Adjusted efficiency margin (adjEM) — normalized similar to KenPom/SP+ but simpler
+    const adjOE = ((ppg / NCAAF_LG_AVG_PPG) * 100);
+    const adjDE = ((oppPpg / NCAAF_LG_AVG_PPG) * 100);
+    const adjEM = adjOE - adjDE;   // positive = better team
+
+    const result = {
+      teamId: key,
+      name: team.displayName,
+      abbr: team.abbreviation || team.displayName?.slice(0, 4).toUpperCase(),
+      conference: team.conference?.name || team.groups?.name || null,
+      rank: parseInt(team.rank) || null,
+      ppg, oppPpg, ypGame, oppYpGame, yardsPerPlay, oppYpPlay,
+      rushYpGame, passYpGame, thirdPct, redZonePct,
+      turnoversLost, turnoversForced, toMargin,
+      sacks, offEff, defEff,
+      adjOE, adjDE, adjEM,
+      wins, losses, totalGames, formScore,
+      altFactor: NCAAF_ALT_FACTOR[team.displayName] || 1.0,
+    };
+    _ncaafStatsCache[key] = result;
+    return result;
+  } catch (e) {
+    console.warn("fetchNCAAFTeamStats error:", teamId, e);
+    return null;
+  }
+}
+
+async function fetchNCAAFGamesForDate(dateStr) {
+  try {
+    const compact = dateStr.replace(/-/g, "");
+    // CFB has games primarily Saturday — also include bowls, Army-Navy, Thursday rivalries
+    const data = await cfbFetch(`scoreboard?dates=${compact}&limit=50`);
+    if (!data?.events) return [];
+    return data.events.map(ev => {
+      const comp  = ev.competitions?.[0];
+      const home  = comp?.competitors?.find(c => c.homeAway === "home");
+      const away  = comp?.competitors?.find(c => c.homeAway === "away");
+      const status = comp?.status?.type;
+      const wx    = comp?.weather;
+      // conference game detection
+      const sameConf = home?.team?.conferenceId && home?.team?.conferenceId === away?.team?.conferenceId;
+      return {
+        gameId:       ev.id,
+        gameDate:     ev.date,
+        status:       status?.completed ? "Final" : status?.state === "in" ? "Live" : "Preview",
+        detailedState: status?.detail || "",
+        homeTeamId:   home?.team?.id,
+        awayTeamId:   away?.team?.id,
+        homeTeamName: home?.team?.displayName || home?.team?.name,
+        awayTeamName: away?.team?.displayName || away?.team?.name,
+        homeAbbr:     home?.team?.abbreviation || home?.team?.id,
+        awayAbbr:     away?.team?.abbreviation || away?.team?.id,
+        homeScore:    status?.completed ? parseInt(home?.score) : null,
+        awayScore:    status?.completed ? parseInt(away?.score) : null,
+        homeRank:     home?.curatedRank?.current <= 25 ? home.curatedRank.current : null,
+        awayRank:     away?.curatedRank?.current <= 25 ? away.curatedRank.current : null,
+        homeConf:     home?.team?.conferenceId,
+        awayConf:     away?.team?.conferenceId,
+        week:         ev.week?.number || null,
+        season:       ev.season?.year || new Date().getFullYear(),
+        neutralSite:  comp?.neutralSite || false,
+        conferenceGame: sameConf || false,
+        weather: { desc: wx?.displayValue || null, temp: wx?.temperature || null, wind: parseInt(wx?.wind) || 0 },
+      };
+    }).filter(g => g.homeTeamId && g.awayTeamId);
+  } catch (e) {
+    console.warn("fetchNCAAFGamesForDate error:", dateStr, e);
+    return [];
+  }
+}
+
+// Weather affects CFB scoring more than NFL (fewer pro adjustments)
+function ncaafWeatherAdj(wx) {
+  if (!wx) return { pts: 0, note: null };
+  const temp = wx.temp || 65, wind = wx.wind || 0;
+  let pts = 0, notes = [];
+  if (temp < 20)      { pts -= 6; notes.push(`❄ ${temp}°F`); }
+  else if (temp < 32) { pts -= 4; notes.push(`🥶 ${temp}°F`); }
+  else if (temp < 40) { pts -= 2; notes.push(`🥶 ${temp}°F`); }
+  if (wind > 25)      { pts -= 5; notes.push(`💨 ${wind}mph`); }
+  else if (wind > 20) { pts -= 3.5; notes.push(`💨 ${wind}mph`); }
+  else if (wind > 15) { pts -= 2; notes.push(`💨 ${wind}mph`); }
+  return { pts, note: notes.join(" ") || null };
+}
+
+function ncaafPredictGame({
+  homeStats, awayStats,
+  neutralSite = false,
+  weather = {},
+  homeRestDays = 7, awayRestDays = 7,
+  calibrationFactor = 1.0
+}) {
+  if (!homeStats || !awayStats) return null;
+
+  // ── Base scoring from PPG matchup ────────────────────────────
+  // Each team's offense vs opponent's defense, normalized to league average
+  const homeOff = (homeStats.ppg - NCAAF_LG_AVG_PPG) / 7;
+  const awayDef = (awayStats.oppPpg - NCAAF_LG_AVG_PPG) / 7;  // positive = weak D
+  const awayOff = (awayStats.ppg - NCAAF_LG_AVG_PPG) / 7;
+  const homeDef = (homeStats.oppPpg - NCAAF_LG_AVG_PPG) / 7;
+
+  let homeScore = NCAAF_LG_AVG_PPG + homeOff * 3.5 + awayDef * 2.5;
+  let awayScore = NCAAF_LG_AVG_PPG + awayOff * 3.5 + homeDef * 2.5;
+
+  // ── SP+ efficiency overlay ────────────────────────────────────
+  homeScore += homeStats.offEff * 15 + awayStats.defEff * 12;
+  awayScore += awayStats.offEff * 15 + homeStats.defEff * 12;
+
+  // ── Yards per play differential ───────────────────────────────
+  const yppAdj = (homeStats.yardsPerPlay - awayStats.oppYpPlay) * 2;
+  homeScore += yppAdj * 0.25; awayScore -= yppAdj * 0.1;
+
+  // ── Turnover margin (~4 pts per turnover in CFB) ──────────────
+  const toAdj = (homeStats.toMargin - awayStats.toMargin) * 2.0;
+  homeScore += toAdj * 0.5; awayScore -= toAdj * 0.5;
+
+  // ── Red zone efficiency ───────────────────────────────────────
+  const rzAdj = (homeStats.redZonePct - awayStats.redZonePct) * 14;
+  homeScore += rzAdj * 0.3; awayScore -= rzAdj * 0.1;
+
+  // ── Third down efficiency ─────────────────────────────────────
+  const tdAdj = (homeStats.thirdPct - awayStats.thirdPct) * 20;
+  homeScore += tdAdj * 0.2; awayScore -= tdAdj * 0.08;
+
+  // ── Rankings bonus — ranked teams tend to be underrated by basic stats ──
+  if (homeStats.rank && homeStats.rank <= 10 && (!awayStats.rank || awayStats.rank > 10))
+    homeScore += NCAAF_RANKED_BOOST;
+  if (awayStats.rank && awayStats.rank <= 10 && (!homeStats.rank || homeStats.rank > 10))
+    awayScore += NCAAF_RANKED_BOOST;
+
+  // ── Recent form ───────────────────────────────────────────────
+  const fw = Math.min(0.12, 0.12 * Math.sqrt(Math.min(homeStats.totalGames, 12) / 12));
+  homeScore += homeStats.formScore * fw * 5;
+  awayScore += awayStats.formScore * fw * 5;
+
+  // ── Home field advantage (4 pts in CFB) ──────────────────────
+  if (!neutralSite) { homeScore += NCAAF_HOME_FIELD_ADV / 2; awayScore -= NCAAF_HOME_FIELD_ADV / 2; }
+
+  // ── Rest / short week ────────────────────────────────────────
+  if (homeRestDays >= 14) homeScore += 2.5;  // bye week in CFB = 10-14 days
+  if (awayRestDays >= 14) awayScore += 2.5;
+  else if (homeRestDays - awayRestDays >= 4) homeScore += 1.0;
+  else if (awayRestDays - homeRestDays >= 4) awayScore += 1.0;
+
+  // ── Altitude factor (Air Force, Colorado, Utah) ───────────────
+  if (homeStats.altFactor > 1.0 && !neutralSite) {
+    homeScore *= homeStats.altFactor;
+    awayScore *= (1 / homeStats.altFactor); // Visitors struggle more
+  }
+
+  // ── Weather (hits both teams' scoring) ───────────────────────
+  const wxAdj = ncaafWeatherAdj(weather);
+  homeScore += wxAdj.pts / 2; awayScore += wxAdj.pts / 2;
+
+  // Clamp — CFB spreads range from blowouts (40+) to close (1-3)
+  homeScore = Math.max(3, Math.min(70, homeScore));
+  awayScore = Math.max(3, Math.min(70, awayScore));
+
+  const spread = parseFloat((homeScore - awayScore).toFixed(1));
+
+  // Win probability — CFB uses slightly wider logistic scale than NFL due to larger spread variance
+  let hwp = 1 / (1 + Math.pow(10, -spread / 13));
+  hwp = Math.min(0.96, Math.max(0.04, hwp));
+  if (calibrationFactor !== 1.0) hwp = Math.min(0.96, Math.max(0.04, 0.5 + (hwp - 0.5) * calibrationFactor));
+
+  const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);
+  const aml = hwp >= 0.5 ? +Math.round(((1 - hwp) / hwp) * 100) : -Math.round((hwp / (1 - hwp)) * 100);
+
+  // Confidence
+  const emGap = Math.abs(homeStats.adjEM - awayStats.adjEM);
+  const wps   = Math.abs(hwp - 0.5) * 2;
+  const minG  = Math.min(homeStats.totalGames, awayStats.totalGames);
+  const samp  = Math.min(1.0, minG / 8);   // 8 games = full weight in CFB (shorter season)
+  const effQ  = Math.min(1, (Math.abs(homeStats.offEff) + Math.abs(homeStats.defEff) + Math.abs(awayStats.offEff) + Math.abs(awayStats.defEff)) / 0.3);
+  const cs    = Math.round((Math.min(emGap, 20) / 20) * 35 + wps * 30 + samp * 22 + effQ * 8 + (minG >= 4 ? 5 : 0));
+  const confidence = cs >= 62 ? "HIGH" : cs >= 35 ? "MEDIUM" : "LOW";
+
+  // Key factors
+  const factors = [];
+  if (Math.abs(toAdj) > 1.5) factors.push({ label: "Turnover Margin", val: toAdj > 0 ? `HOME +${toAdj.toFixed(1)}` : `AWAY +${(-toAdj).toFixed(1)}`, type: toAdj > 0 ? "home" : "away" });
+  if (Math.abs(homeStats.adjEM - awayStats.adjEM) > 5) factors.push({ label: "Efficiency Gap", val: homeStats.adjEM > awayStats.adjEM ? `HOME +${(homeStats.adjEM - awayStats.adjEM).toFixed(1)} adjEM` : `AWAY +${(awayStats.adjEM - homeStats.adjEM).toFixed(1)} adjEM`, type: homeStats.adjEM > awayStats.adjEM ? "home" : "away" });
+  if (homeStats.rank && homeStats.rank <= 25) factors.push({ label: "Ranked", val: `HOME #${homeStats.rank}`, type: "home" });
+  if (awayStats.rank && awayStats.rank <= 25) factors.push({ label: "Ranked", val: `AWAY #${awayStats.rank}`, type: "away" });
+  if (Math.abs(homeStats.formScore - awayStats.formScore) > 0.15) factors.push({ label: "Recent Form", val: homeStats.formScore > awayStats.formScore ? "HOME hot" : "AWAY hot", type: homeStats.formScore > awayStats.formScore ? "home" : "away" });
+  if (homeRestDays >= 14) factors.push({ label: "Bye Week", val: "HOME rested", type: "home" });
+  if (awayRestDays >= 14) factors.push({ label: "Bye Week", val: "AWAY rested", type: "away" });
+  if (!neutralSite) factors.push({ label: "Home Field", val: `+${NCAAF_HOME_FIELD_ADV} pts`, type: "home" });
+  if (homeStats.altFactor > 1.0) factors.push({ label: "Altitude", val: `+${((homeStats.altFactor - 1) * 100).toFixed(0)}% home boost`, type: "home" });
+  if (wxAdj.note) factors.push({ label: "Weather", val: wxAdj.note, type: "neutral" });
+
+  return {
+    homeScore: parseFloat(homeScore.toFixed(1)),
+    awayScore: parseFloat(awayScore.toFixed(1)),
+    homeWinPct: hwp, awayWinPct: 1 - hwp,
+    projectedSpread: spread,
+    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    modelML_home: mml, modelML_away: aml,
+    confidence, confScore: cs,
+    homeAdjEM: parseFloat(homeStats.adjEM?.toFixed(2)),
+    awayAdjEM: parseFloat(awayStats.adjEM?.toFixed(2)),
+    weather: wxAdj, factors, neutralSite,
+  };
+}
+
+function matchNCAAFOddsToGame(o, g) {
+  if (!o || !g) return false;
+  const n = s => (s || "").toLowerCase().replace(/[\s\W]/g, "");
+  const hN = n(g.homeTeamName || "");
+  const aN = n(g.awayTeamName || "");
+  const oH = n(o.homeTeam || "");
+  const oA = n(o.awayTeam || "");
+  return (oH.includes(hN.slice(0, 6)) || hN.includes(oH.slice(0, 6))) &&
+         (oA.includes(aN.slice(0, 6)) || aN.includes(oA.slice(0, 6)));
+}
+
+async function ncaafFillFinalScores(pendingRows) {
+  if (!pendingRows.length) return 0;
+  let filled = 0;
+  const byDate = {};
+  for (const r of pendingRows) { if (!byDate[r.game_date]) byDate[r.game_date] = []; byDate[r.game_date].push(r); }
+  for (const [dateStr, rows] of Object.entries(byDate)) {
+    try {
+      const games = await fetchNCAAFGamesForDate(dateStr);
+      for (const g of games) {
+        if (g.status !== "Final" || g.homeScore === null) continue;
+        const row = rows.find(r => (r.game_id && r.game_id === g.gameId) ||
+          (r.home_team_id && r.home_team_id === g.homeTeamId && r.away_team_id === g.awayTeamId));
+        if (!row) continue;
+        const hW = g.homeScore > g.awayScore;
+        const mH = (row.win_pct_home ?? 0.5) >= 0.5;
+        const ml = mH ? hW : !hW;
+        const margin = g.homeScore - g.awayScore;
+        const mktSpr = row.market_spread_home ?? null;
+        let rl = null;
+        if (mktSpr !== null) { if (margin > mktSpr) rl = true; else if (margin < mktSpr) rl = false; }
+        else { const ps = row.spread_home || 0; if (margin === 0) rl = null; else rl = (margin > 0 && ps > 0) || (margin < 0 && ps < 0); }
+        const total = g.homeScore + g.awayScore;
+        const ouL = row.market_ou_total ?? row.ou_total ?? null;
+        const predT = (row.pred_home_score ?? 0) + (row.pred_away_score ?? 0);
+        let ou = null;
+        if (ouL !== null && total !== ouL) ou = ((total > ouL) === (predT > ouL)) ? "OVER" : "UNDER";
+        else if (ouL !== null && total === ouL) ou = "PUSH";
+        await supabaseQuery(`/ncaaf_predictions?id=eq.${row.id}`, "PATCH", {
+          actual_home_score: g.homeScore, actual_away_score: g.awayScore,
+          result_entered: true, ml_correct: ml, rl_correct: rl, ou_correct: ou,
+        });
+        filled++;
+      }
+    } catch (e) { console.warn("ncaafFillFinalScores:", dateStr, e); }
+  }
+  return filled;
+}
+
+async function ncaafAutoSync(onProgress) {
+  onProgress?.("🏈 Syncing NCAAF…");
+  const today = new Date().toISOString().split("T")[0];
+  const yr = new Date().getFullYear();
+  const seasonStart = `${yr}-08-15`;  // CFB starts late August
+
+  const existing = await supabaseQuery(
+    `/ncaaf_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=10000`
+  );
+  const savedKeys = new Set((existing || []).map(r => r.game_id || `${r.game_date}|${r.home_team_id}|${r.away_team_id}`));
+  const pending = (existing || []).filter(r => !r.result_entered);
+  if (pending.length) {
+    const f = await ncaafFillFinalScores(pending);
+    if (f) onProgress?.(`🏈 ${f} NCAAF result(s) recorded`);
+  }
+
+  // CFB: scan only Saturdays + Thursdays + Fridays (games primarily weekends)
+  const dates = [];
+  const cur = new Date(seasonStart);
+  const todayDate = new Date(today);
+  while (cur <= todayDate) {
+    const day = cur.getDay(); // 0=Sun,1=Mon...6=Sat
+    if (day === 6 || day === 4 || day === 5 || day === 0) { // Sat, Thu, Fri, Sun (bowl games)
+      dates.push(cur.toISOString().split("T")[0]);
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  const todayOdds = (await fetchOdds("americanfootball_ncaaf"))?.games || [];
+  let newPred = 0;
+
+  for (const dateStr of dates) {
+    const games = await fetchNCAAFGamesForDate(dateStr);
+    if (!games.length) { await _sleep(80); continue; }
+    const unsaved = games.filter(g => !savedKeys.has(g.gameId || `${dateStr}|${g.homeTeamId}|${g.awayTeamId}`));
+    if (!unsaved.length) { await _sleep(80); continue; }
+    const isToday = dateStr === today;
+    const rows = (await Promise.all(unsaved.map(async g => {
+      const [hs, as_] = await Promise.all([fetchNCAAFTeamStats(g.homeTeamId), fetchNCAAFTeamStats(g.awayTeamId)]);
+      if (!hs || !as_) return null;
+      const pred = ncaafPredictGame({ homeStats: hs, awayStats: as_, neutralSite: g.neutralSite, weather: g.weather });
+      if (!pred) return null;
+      const odds = isToday ? (todayOdds.find(o => matchNCAAFOddsToGame(o, g)) || null) : null;
+      return {
+        game_date: dateStr, game_id: g.gameId,
+        home_team: g.homeAbbr || g.homeTeamName, away_team: g.awayAbbr || g.awayTeamName,
+        home_team_name: g.homeTeamName, away_team_name: g.awayTeamName,
+        home_team_id: g.homeTeamId, away_team_id: g.awayTeamId,
+        home_rank: g.homeRank, away_rank: g.awayRank,
+        home_conference: hs.conference, away_conference: as_.conference,
+        week: g.week, season: g.season,
+        model_ml_home: pred.modelML_home, model_ml_away: pred.modelML_away,
+        spread_home: pred.projectedSpread, ou_total: pred.ouTotal,
+        win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)), confidence: pred.confidence,
+        pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
+        home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
+        neutral_site: g.neutralSite || false,
+        key_factors: pred.factors,
+        ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
+        ...(odds?.marketTotal != null && { market_ou_total: odds.marketTotal }),
+      };
+    }))).filter(Boolean);
+
+    if (rows.length) {
+      await supabaseQuery("/ncaaf_predictions", "UPSERT", rows, "game_id");
+      newPred += rows.length;
+      const ns = await supabaseQuery(
+        `/ncaaf_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
+      );
+      if (ns?.length) await ncaafFillFinalScores(ns);
+      rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
+    }
+    await _sleep(200);
+  }
+  onProgress?.(newPred ? `🏈 NCAAF sync complete — ${newPred} new` : "🏈 NCAAF up to date");
+}
+
+// ── NCAAF CALENDAR TAB ────────────────────────────────────────
+function NCAAFCalendarTab({ calibrationFactor, onGamesLoaded }) {
+  const todayStr = new Date().toISOString().split("T")[0];
+  // Default to most recent Saturday
+  const defaultDate = (() => {
+    const d = new Date();
+    const day = d.getDay();
+    d.setDate(d.getDate() - (day === 0 ? 1 : day === 6 ? 0 : day));
+    return d.toISOString().split("T")[0];
+  })();
+  const [dateStr, setDateStr] = useState(defaultDate);
+  const [games, setGames] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const [oddsInfo, setOddsInfo] = useState(null);
+  const [filterConf, setFilterConf] = useState("All");
+
+  const load = useCallback(async (d) => {
+    setLoading(true); setGames([]);
+    const [raw, odds] = await Promise.all([
+      fetchNCAAFGamesForDate(d),
+      fetchOdds("americanfootball_ncaaf"),
+    ]);
+    setOddsInfo(odds);
+    setGames(raw.map(g => ({ ...g, loading: true })));
+    const enriched = await Promise.all(raw.map(async g => {
+      const [hs, as_] = await Promise.all([fetchNCAAFTeamStats(g.homeTeamId), fetchNCAAFTeamStats(g.awayTeamId)]);
+      const pred = hs && as_
+        ? ncaafPredictGame({ homeStats: hs, awayStats: as_, neutralSite: g.neutralSite, weather: g.weather, calibrationFactor })
+        : null;
+      const gameOdds = odds?.games?.find(o => matchNCAAFOddsToGame(o, g)) || null;
+      return { ...g, homeStats: hs, awayStats: as_, pred, loading: false, odds: gameOdds };
+    }));
+    setGames(enriched);
+    onGamesLoaded?.(enriched);
+    setLoading(false);
+  }, [calibrationFactor]);
+
+  useEffect(() => { load(dateStr); }, [dateStr, calibrationFactor]);
+
+  // Conference filter options
+  const conferences = ["All", ...new Set(games.flatMap(g => [g.homeStats?.conference, g.awayStats?.conference].filter(Boolean)))].sort();
+  const filteredGames = filterConf === "All" ? games : games.filter(g => g.homeStats?.conference === filterConf || g.awayStats?.conference === filterConf);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+        <input type="date" value={dateStr} onChange={e => setDateStr(e.target.value)}
+          style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "inherit" }} />
+        <button onClick={() => load(dateStr)}
+          style={{ background: "#161b22", color: "#f97316", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+          ↻ REFRESH
+        </button>
+        {conferences.length > 2 && (
+          <select value={filterConf} onChange={e => setFilterConf(e.target.value)}
+            style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "inherit" }}>
+            {conferences.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
+        {!loading && oddsInfo?.games?.length > 0 && <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsInfo.games.length})</span>}
+        {!loading && oddsInfo?.noKey && <span style={{ fontSize: 11, color: C.dim }}>⚠ Add ODDS_API_KEY for live lines</span>}
+        {loading && <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading {games.length > 0 ? `${games.length} games` : "CFB games"}…</span>}
+        {!loading && filteredGames.length === 0 && <span style={{ color: C.dim, fontSize: 11 }}>No games on {dateStr} — CFB plays Sat/Thu/Fri</span>}
+        {!loading && filteredGames.length > 0 && <span style={{ fontSize: 10, color: C.dim }}>Week {filteredGames[0]?.week || "?"} · {filteredGames.length} game{filteredGames.length !== 1 ? "s" : ""}</span>}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {filteredGames.map(game => {
+          const isOpen = expanded === game.gameId;
+          const sigs = game.pred ? getBetSignals({ pred: game.pred, odds: game.odds, sport: "ncaaf" }) : null;
+          const hasBet = sigs && (sigs.ml?.verdict === "GO" || sigs.spread?.verdict === "LEAN" || sigs.ou?.verdict === "GO");
+
+          // Team color from NFL_TEAMS if abbr matches, else generic
+          const hCol = NFL_TEAMS.find(t => t.abbr === game.homeAbbr)?.color || "#1e3050";
+          const aCol = NFL_TEAMS.find(t => t.abbr === game.awayAbbr)?.color || "#1e3050";
+
+          return (
+            <div key={game.gameId} style={{
+              background: hasBet ? "linear-gradient(135deg,#0b2012,#0e2315)" : "linear-gradient(135deg,#0d1117,#111822)",
+              border: `1px solid ${hasBet ? "#2ea043" : C.border}`,
+              borderRadius: 10, overflow: "hidden",
+            }}>
+              <div style={{ height: 3, background: `linear-gradient(90deg,${aCol},${hCol})` }} />
+              <div onClick={() => setExpanded(isOpen ? null : game.gameId)}
+                style={{ padding: "12px 18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+
+                {/* Teams */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 200 }}>
+                  <div style={{ textAlign: "center" }}>
+                    {game.awayRank && <div style={{ fontSize: 8, color: C.yellow, fontWeight: 700 }}>#{game.awayRank}</div>}
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: aCol, border: `2px solid ${aCol}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 800, color: "#fff", margin: "0 auto 2px", textAlign: "center", overflow: "hidden", padding: 2 }}>
+                      {(game.awayAbbr || "?").slice(0, 4)}
+                    </div>
+                    <div style={{ fontSize: 8, color: C.dim, maxWidth: 50, textAlign: "center", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{game.awayTeamName?.split(" ").pop()}</div>
+                  </div>
+                  <span style={{ color: C.dim, fontSize: 12 }}>@</span>
+                  <div style={{ textAlign: "center" }}>
+                    {game.homeRank && <div style={{ fontSize: 8, color: C.yellow, fontWeight: 700 }}>#{game.homeRank}</div>}
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: hCol, border: `2px solid ${hCol}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 800, color: "#fff", margin: "0 auto 2px", textAlign: "center", overflow: "hidden", padding: 2 }}>
+                      {(game.homeAbbr || "?").slice(0, 4)}
+                    </div>
+                    <div style={{ fontSize: 8, color: C.dim, maxWidth: 50, textAlign: "center", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{game.homeTeamName?.split(" ").pop()}</div>
+                    {game.neutralSite && <div style={{ fontSize: 7, color: C.dim }}>(N)</div>}
+                  </div>
+                  {game.weather?.note && <span style={{ fontSize: 9, color: C.dim }}>{game.weather.note}</span>}
+                  {game.conferenceGame && <span style={{ fontSize: 8, color: "#58a6ff", background: "#0c1a2e", borderRadius: 4, padding: "1px 5px" }}>CONF</span>}
+                </div>
+
+                {/* Pills */}
+                {game.pred ? (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <Pill label="PROJ" value={`${game.pred.awayScore.toFixed(0)}–${game.pred.homeScore.toFixed(0)}`} />
+                    <Pill label="SPREAD" value={game.pred.projectedSpread > 0
+                      ? `${(game.homeAbbr||"").slice(0,4)} -${game.pred.projectedSpread}`
+                      : `${(game.awayAbbr||"").slice(0,4)} -${-game.pred.projectedSpread}`}
+                      highlight={sigs?.spread?.verdict === "LEAN"} />
+                    <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs?.ml?.verdict === "GO" || sigs?.ml?.verdict === "LEAN"} />
+                    {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
+                    <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs?.ou?.verdict === "GO"} />
+                    <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={game.pred.confidence === "HIGH"} />
+                  </div>
+                ) : (
+                  <span style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "Stats unavailable"}</span>
+                )}
+
+                {/* Status */}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}–{game.homeScore}</span>}
+                  {game.status === "Live" && <span style={{ fontSize: 10, color: "#f97316", fontWeight: 700 }}>LIVE</span>}
+                  <span style={{ color: C.dim, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+                </div>
+              </div>
+
+              {/* Expanded detail */}
+              {isOpen && game.pred && (
+                <div style={{ borderTop: `1px solid ${C.border}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(145px,1fr))", gap: 8, marginBottom: 10 }}>
+                    <Kv k="Projected Score" v={`${game.pred.awayScore.toFixed(1)} – ${game.pred.homeScore.toFixed(1)}`} />
+                    <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
+                    <Kv k="O/U Total" v={game.pred.ouTotal} />
+                    <Kv k="Spread" v={game.pred.projectedSpread > 0
+                      ? `${(game.homeAbbr||"").slice(0,6)} -${game.pred.projectedSpread}`
+                      : `${(game.awayAbbr||"").slice(0,6)} -${-game.pred.projectedSpread}`} />
+                    {game.homeStats && <Kv k={`${(game.homeAbbr||"").slice(0,6)} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${(game.awayAbbr||"").slice(0,6)} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
+                    {game.homeStats && <Kv k={`${(game.homeAbbr||"").slice(0,6)} Opp PPG`} v={game.homeStats.oppPpg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${(game.awayAbbr||"").slice(0,6)} Opp PPG`} v={game.awayStats.oppPpg?.toFixed(1)} />}
+                    {game.homeStats && <Kv k={`${(game.homeAbbr||"").slice(0,6)} adjEM`} v={game.pred.homeAdjEM > 0 ? `+${game.pred.homeAdjEM}` : game.pred.homeAdjEM} />}
+                    {game.awayStats && <Kv k={`${(game.awayAbbr||"").slice(0,6)} adjEM`} v={game.pred.awayAdjEM > 0 ? `+${game.pred.awayAdjEM}` : game.pred.awayAdjEM} />}
+                    {game.homeStats && <Kv k={`${(game.homeAbbr||"").slice(0,6)} TO Margin`} v={game.homeStats.toMargin > 0 ? `+${game.homeStats.toMargin?.toFixed(1)}` : game.homeStats.toMargin?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${(game.awayAbbr||"").slice(0,6)} TO Margin`} v={game.awayStats.toMargin > 0 ? `+${game.awayStats.toMargin?.toFixed(1)}` : game.awayStats.toMargin?.toFixed(1)} />}
+                    {game.homeStats?.conference && <Kv k="Home Conf" v={game.homeStats.conference} />}
+                    {game.awayStats?.conference && <Kv k="Away Conf" v={game.awayStats.conference} />}
+                    <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
+                    {game.week && <Kv k="CFB Week" v={game.week} />}
+                    {game.weather?.note && <Kv k="Weather" v={game.weather.note} />}
+                    {game.neutralSite && <Kv k="Site" v="Neutral" />}
+                  </div>
+
+                  {game.pred.factors?.length > 0 && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 6 }}>KEY FACTORS</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {game.pred.factors.map((f, i) => (
+                          <div key={i} style={{
+                            background: f.type === "home" ? "#001a0f" : f.type === "away" ? "#1a0008" : "#1a1200",
+                            border: `1px solid ${f.type === "home" ? "#003820" : f.type === "away" ? "#330011" : "#3a2a00"}`,
+                            borderRadius: 6, padding: "4px 10px", fontSize: 11,
+                            color: f.type === "home" ? C.green : f.type === "away" ? "#ff4466" : C.yellow,
+                          }}>{f.label}: {f.val}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <BetSignalsPanel signals={sigs} pred={game.pred} odds={game.odds} sport="ncaaf"
+                    homeName={(game.homeAbbr || "HOME").slice(0, 6)} awayName={(game.awayAbbr || "AWAY").slice(0, 6)} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function NCAAFSection({ ncaafGames, setNcaafGames, calibrationNCAAF, setCalibrationNCAAF, refreshKey, setRefreshKey }) {
+  const [tab, setTab] = useState("calendar");
+  const [syncMsg, setSyncMsg] = useState("");
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {["calendar", "accuracy", "history", "parlay"].map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{
+            padding: "6px 16px", borderRadius: 7, border: `1px solid ${tab === t ? "#30363d" : "transparent"}`,
+            background: tab === t ? "#161b22" : "transparent",
+            color: tab === t ? "#f97316" : C.dim,
+            cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+          }}>
+            {t === "calendar" ? "📅" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎯"} {t}
+          </button>
+        ))}
+        <div style={{ marginLeft: "auto" }}>
+          <button onClick={async () => {
+            setSyncMsg("Syncing NCAAF…");
+            await ncaafAutoSync(m => setSyncMsg(m));
+            setRefreshKey(k => k + 1);
+            setTimeout(() => setSyncMsg(""), 4000);
+          }} style={{ background: "#161b22", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 10 }}>
+            ⟳ Sync
+          </button>
+        </div>
+      </div>
+      {syncMsg && (
+        <div style={{ background: "#0d1a10", border: "1px solid #1a3a1a", borderRadius: 7, padding: "8px 14px", marginBottom: 12, fontSize: 11, color: C.green, fontFamily: "monospace" }}>
+          {syncMsg}
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: C.dim, marginBottom: 12, letterSpacing: 1 }}>
+        NCAAF · ESPN API (free) · ~130 FBS teams · Games Sat/Thu/Fri · SP+ proxy + weather + rankings
+      </div>
+      {tab === "calendar" && <NCAAFCalendarTab calibrationFactor={calibrationNCAAF} onGamesLoaded={setNcaafGames} />}
+      {tab === "accuracy" && <AccuracyDashboard table="ncaaf_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNCAAF} spreadLabel="Spread" />}
+      {tab === "history" && <HistoryTab table="ncaaf_predictions" refreshKey={refreshKey} />}
+      {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={ncaafGames} />}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ROOT APP
 // ═══════════════════════════════════════════════════════════════
 
@@ -2908,47 +3621,52 @@ export default function App() {
   const [ncaaGames, setNcaaGames] = useState([]);
   const [nbaGames, setNbaGames] = useState([]);
   const [nflGames, setNflGames] = useState([]);
-  const [calibrationMLB, setCalibrationMLB] = useState(() => {
-    try { const v = parseFloat(localStorage.getItem("cal_mlb")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
+  const [ncaafGames, setNcaafGames] = useState([]);
+
+  const mkCal = (key, def = 1.0) => useState(() => {
+    try { const v = parseFloat(localStorage.getItem(key)); return isNaN(v) ? def : v; } catch { return def; }
   });
-  const [calibrationNCAA, setCalibrationNCAA] = useState(() => {
-    try { const v = parseFloat(localStorage.getItem("cal_ncaa")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
-  });
-  const [calibrationNBA, setCalibrationNBA] = useState(() => {
-    try { const v = parseFloat(localStorage.getItem("cal_nba")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
-  });
-  const [calibrationNFL, setCalibrationNFL] = useState(() => {
-    try { const v = parseFloat(localStorage.getItem("cal_nfl")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
-  });
-  useEffect(() => { try { localStorage.setItem("cal_mlb", calibrationMLB); } catch {} }, [calibrationMLB]);
-  useEffect(() => { try { localStorage.setItem("cal_ncaa", calibrationNCAA); } catch {} }, [calibrationNCAA]);
-  useEffect(() => { try { localStorage.setItem("cal_nba", calibrationNBA); } catch {} }, [calibrationNBA]);
-  useEffect(() => { try { localStorage.setItem("cal_nfl", calibrationNFL); } catch {} }, [calibrationNFL]);
+  const [calibrationMLB,   setCalibrationMLB]   = mkCal("cal_mlb");
+  const [calibrationNCAA,  setCalibrationNCAA]  = mkCal("cal_ncaa");
+  const [calibrationNBA,   setCalibrationNBA]   = mkCal("cal_nba");
+  const [calibrationNFL,   setCalibrationNFL]   = mkCal("cal_nfl");
+  const [calibrationNCAAF, setCalibrationNCAAF] = mkCal("cal_ncaaf");
+
+  useEffect(() => { try { localStorage.setItem("cal_mlb",   calibrationMLB);   } catch {} }, [calibrationMLB]);
+  useEffect(() => { try { localStorage.setItem("cal_ncaa",  calibrationNCAA);  } catch {} }, [calibrationNCAA]);
+  useEffect(() => { try { localStorage.setItem("cal_nba",   calibrationNBA);   } catch {} }, [calibrationNBA]);
+  useEffect(() => { try { localStorage.setItem("cal_nfl",   calibrationNFL);   } catch {} }, [calibrationNFL]);
+  useEffect(() => { try { localStorage.setItem("cal_ncaaf", calibrationNCAAF); } catch {} }, [calibrationNCAAF]);
 
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncMsg, setSyncMsg] = useState("");
 
   useEffect(() => {
     (async () => {
-      setSyncMsg("⚾ Syncing MLB…");
-      await mlbAutoSync(m => setSyncMsg(m));
-      setSyncMsg("🏀 Syncing NCAA…");
-      await ncaaAutoSync(m => setSyncMsg(m));
-      setSyncMsg("🏀 Syncing NBA…");
-      await nbaAutoSync(m => setSyncMsg(m));
-      setSyncMsg("🏈 Syncing NFL…");
-      await nflAutoSync(m => setSyncMsg(m));
-      setSyncMsg("");
-      setRefreshKey(k => k + 1);
+      setSyncMsg("⚾ Syncing MLB…");   await mlbAutoSync(m => setSyncMsg(m));
+      setSyncMsg("🏀 Syncing NCAA…");  await ncaaAutoSync(m => setSyncMsg(m));
+      setSyncMsg("🏀 Syncing NBA…");   await nbaAutoSync(m => setSyncMsg(m));
+      setSyncMsg("🏈 Syncing NFL…");   await nflAutoSync(m => setSyncMsg(m));
+      setSyncMsg("🏈 Syncing NCAAF…"); await ncaafAutoSync(m => setSyncMsg(m));
+      setSyncMsg(""); setRefreshKey(k => k + 1);
     })();
   }, []);
 
   const calActive = [
-    calibrationMLB !== 1.0 && `MLB×${calibrationMLB}`,
-    calibrationNCAA !== 1.0 && `NCAA×${calibrationNCAA}`,
-    calibrationNBA !== 1.0 && `NBA×${calibrationNBA}`,
-    calibrationNFL !== 1.0 && `NFL×${calibrationNFL}`,
+    calibrationMLB   !== 1.0 && `MLB×${calibrationMLB}`,
+    calibrationNCAA  !== 1.0 && `NCAAB×${calibrationNCAA}`,
+    calibrationNBA   !== 1.0 && `NBA×${calibrationNBA}`,
+    calibrationNFL   !== 1.0 && `NFL×${calibrationNFL}`,
+    calibrationNCAAF !== 1.0 && `NCAAF×${calibrationNCAAF}`,
   ].filter(Boolean);
+
+  const SPORTS = [
+    ["MLB",   "⚾", C.blue],
+    ["NCAA",  "🏀", C.orange],
+    ["NBA",   "🏀", "#58a6ff"],
+    ["NFL",   "🏈", "#f97316"],
+    ["NCAAF", "🏈", "#22c55e"],
+  ];
 
   return (
     <div style={{ background: C.bg, minHeight: "100vh", color: "#e2e8f0", fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" }}>
@@ -2963,27 +3681,27 @@ export default function App() {
       `}</style>
 
       {/* NAV */}
-      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "0 16px", display: "flex", alignItems: "center", gap: 12, height: 52, position: "sticky", top: 0, background: "#0d1117", zIndex: 100, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 11, fontWeight: 800, color: "#e2e8f0", letterSpacing: 1, whiteSpace: "nowrap" }}>
-          ⚾🏀🏀🏈 <span style={{ fontSize: 9, color: C.dim, letterSpacing: 2 }}>PREDICTOR v12</span>
+      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "0 12px", display: "flex", alignItems: "center", gap: 10, height: 52, position: "sticky", top: 0, background: "#0d1117", zIndex: 100, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 10, fontWeight: 800, color: "#e2e8f0", letterSpacing: 1, whiteSpace: "nowrap" }}>
+          ⚾🏀🏀🏈🏈 <span style={{ fontSize: 8, color: C.dim, letterSpacing: 2 }}>PREDICTOR v12</span>
         </div>
-        <div style={{ display: "flex", gap: 2, background: "#080c10", border: `1px solid ${C.border}`, borderRadius: 8, padding: 3, marginLeft: "auto" }}>
-          {[["MLB","⚾",C.blue],["NCAA","🏀",C.orange],["NBA","🏀","#58a6ff"],["NFL","🏈","#f97316"]].map(([s,icon,col]) => (
+        <div style={{ display: "flex", gap: 2, background: "#080c10", border: `1px solid ${C.border}`, borderRadius: 8, padding: 3, marginLeft: "auto", flexWrap: "wrap" }}>
+          {SPORTS.map(([s, icon, col]) => (
             <button key={s} onClick={() => setSport(s)} style={{
-              padding: "4px 12px", borderRadius: 6, border: "none", cursor: "pointer",
-              fontSize: 11, fontWeight: 800, background: sport === s ? col : "transparent",
-              color: sport === s ? C.bg : C.dim, transition: "all 0.15s",
+              padding: "4px 10px", borderRadius: 6, border: "none", cursor: "pointer",
+              fontSize: 10, fontWeight: 800, background: sport === s ? col : "transparent",
+              color: sport === s ? "#0d1117" : C.dim, transition: "all 0.15s",
             }}>{icon} {s}</button>
           ))}
           <button onClick={() => setSport("PARLAY")} style={{
-            padding: "4px 12px", borderRadius: 6, border: "none", cursor: "pointer",
-            fontSize: 11, fontWeight: 800, background: sport === "PARLAY" ? C.green : "transparent",
-            color: sport === "PARLAY" ? C.bg : C.dim, transition: "all 0.15s",
+            padding: "4px 10px", borderRadius: 6, border: "none", cursor: "pointer",
+            fontSize: 10, fontWeight: 800, background: sport === "PARLAY" ? C.green : "transparent",
+            color: sport === "PARLAY" ? "#0d1117" : C.dim, transition: "all 0.15s",
           }}>🎯 PARLAY</button>
         </div>
-        {syncMsg && <div style={{ fontSize: 10, color: C.dim, animation: "pulse 1.5s ease infinite", whiteSpace: "nowrap" }}>{syncMsg}</div>}
+        {syncMsg && <div style={{ fontSize: 9, color: C.dim, animation: "pulse 1.5s ease infinite", whiteSpace: "nowrap" }}>{syncMsg}</div>}
         {calActive.length > 0 && (
-          <div style={{ fontSize: 10, color: C.yellow, background: "#1a1200", border: `1px solid #3a2a00`, borderRadius: 5, padding: "3px 8px" }}>
+          <div style={{ fontSize: 9, color: C.yellow, background: "#1a1200", border: `1px solid #3a2a00`, borderRadius: 5, padding: "2px 7px", whiteSpace: "nowrap" }}>
             Cal: {calActive.join(" ")}
           </div>
         )}
@@ -2991,21 +3709,24 @@ export default function App() {
 
       {/* CONTENT */}
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
-        {sport === "MLB" && <MLBSection mlbGames={mlbGames} setMlbGames={setMlbGames} calibrationMLB={calibrationMLB} setCalibrationMLB={setCalibrationMLB} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
-        {sport === "NCAA" && <NCAASection ncaaGames={ncaaGames} setNcaaGames={setNcaaGames} calibrationNCAA={calibrationNCAA} setCalibrationNCAA={setCalibrationNCAA} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
-        {sport === "NBA" && <NBASection nbaGames={nbaGames} setNbaGames={setNbaGames} calibrationNBA={calibrationNBA} setCalibrationNBA={setCalibrationNBA} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
-        {sport === "NFL" && <NFLSection nflGames={nflGames} setNflGames={setNflGames} calibrationNFL={calibrationNFL} setCalibrationNFL={setCalibrationNFL} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
+        {sport === "MLB"   && <MLBSection   mlbGames={mlbGames}     setMlbGames={setMlbGames}     calibrationMLB={calibrationMLB}     setCalibrationMLB={setCalibrationMLB}     refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
+        {sport === "NCAA"  && <NCAASection  ncaaGames={ncaaGames}   setNcaaGames={setNcaaGames}   calibrationNCAA={calibrationNCAA}   setCalibrationNCAA={setCalibrationNCAA}   refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
+        {sport === "NBA"   && <NBASection   nbaGames={nbaGames}     setNbaGames={setNbaGames}     calibrationNBA={calibrationNBA}     setCalibrationNBA={setCalibrationNBA}     refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
+        {sport === "NFL"   && <NFLSection   nflGames={nflGames}     setNflGames={setNflGames}     calibrationNFL={calibrationNFL}     setCalibrationNFL={setCalibrationNFL}     refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
+        {sport === "NCAAF" && <NCAAFSection ncaafGames={ncaafGames} setNcaafGames={setNcaafGames} calibrationNCAAF={calibrationNCAAF} setCalibrationNCAAF={setCalibrationNCAAF} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
         {sport === "PARLAY" && (
           <div>
-            <div style={{ fontSize: 12, color: C.dim, marginBottom: 16, letterSpacing: 1 }}>Combined parlay builder — load games in each sport's calendar first, then build here</div>
-            <ParlayBuilder mlbGames={mlbGames} ncaaGames={[...ncaaGames, ...nbaGames, ...nflGames]} />
+            <div style={{ fontSize: 12, color: C.dim, marginBottom: 16, letterSpacing: 1 }}>
+              Combined parlay builder — load games in each sport's calendar first
+            </div>
+            <ParlayBuilder mlbGames={mlbGames} ncaaGames={[...ncaaGames, ...nbaGames, ...nflGames, ...ncaafGames]} />
           </div>
         )}
       </div>
 
       {/* FOOTER */}
       <div style={{ textAlign: "center", padding: "16px", borderTop: `1px solid ${C.border}`, fontSize: 9, color: "#21262d", letterSpacing: 2 }}>
-        MULTI-SPORT PREDICTOR v12 · MLB (statsapi.mlb.com) · NCAA + NBA + NFL (ESPN API) · {SEASON}
+        MULTI-SPORT PREDICTOR v12 · MLB · NCAAB · NBA · NFL · NCAAF · ESPN API · {SEASON}
       </div>
     </div>
   );
