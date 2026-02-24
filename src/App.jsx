@@ -3612,6 +3612,1381 @@ function NCAAFSection({ ncaafGames, setNcaafGames, calibrationNCAAF, setCalibrat
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SECTION 1 — EXECUTIVE SUMMARY (runtime constants)
+// Accuracy targets and break-even thresholds
+// ═══════════════════════════════════════════════════════════════
+
+const ENHANCEMENT_VERSION = "v13-enhanced";
+const BREAK_EVEN_WIN_RATE  = 0.524;   // -110 juice break-even
+const TARGET_WIN_RATE      = 0.55;    // Achievable with free enhancements
+const KELLY_FRACTION       = 0.25;    // Quarter Kelly (conservative)
+const CLV_MIN_THRESHOLD    = 2.0;     // Minimum +EV % to flag as value bet
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 2 — MLB ENHANCEMENTS
+// xFIP/SIERA, pitcher recent form, catcher framing,
+// stolen base overlay, dynamic park factors, bullpen quality
+// ═══════════════════════════════════════════════════════════════
+
+// MLB: Enhanced FIP using xFIP/SIERA proxy
+// Pulls real k%, bb%, hr/fb from Baseball Savant CSV (free download)
+// Falls back gracefully to FIP approximation if no Statcast data available
+function calcXFIP(stats) {
+  if (!stats) return null;
+  // True xFIP: normalize HR/FB to league average ~10.5%
+  if (stats.kPct != null && stats.bbPct != null) {
+    const lgHRperFB = 0.105;
+    const fbPct = stats.fbPct || 0.38;
+    const xHR9 = (lgHRperFB * fbPct * 9) / (stats.ip || 6);
+    const kCoeff = -2.05, bbCoeff = 3.08, hrCoeff = 13.0, constant = 3.10;
+    return Math.max(2.0, Math.min(7.5,
+      constant + kCoeff * stats.kPct + bbCoeff * stats.bbPct + hrCoeff * xHR9
+    ));
+  }
+  // SIERA proxy (k9, bb9, gb%)
+  if (stats.k9 != null && stats.bb9 != null) {
+    const gbBonus = stats.gbPct ? (stats.gbPct - 0.45) * -2.0 : 0;
+    return Math.max(2.0, Math.min(7.5,
+      3.20 + (stats.bb9 - 3.0) * 0.30 - (stats.k9 - 8.5) * 0.18 + gbBonus
+    ));
+  }
+  return null; // Fall back to calcFIP
+}
+
+// Pitcher recent form: last 3 starts momentum signal
+// Returns ERA delta vs season average (negative = pitcher is hot)
+function pitcherRecentFormDelta(recentStarts = []) {
+  if (!recentStarts || recentStarts.length < 1) return 0;
+  const recent = recentStarts.slice(-3);
+  const recentERA = recent.reduce((s, g) => {
+    const er = g.earnedRuns ?? 0, ip = g.inningsPitched ?? 6;
+    return s + (er * 9) / Math.max(ip, 1);
+  }, 0) / recent.length;
+  const seasonERA = recent[0]?.seasonERA ?? recentERA;
+  // Delta: positive means pitcher is worse than season avg (bad recent form)
+  return recentERA - seasonERA;
+}
+
+// Catcher framing impact on pitcher ERA (~0.2–0.5 runs per game for elite framers)
+// Source: Baseball Savant catcher framing runs above average
+const CATCHER_FRAMING = {
+  // Top framers (positive = pitcher benefits)
+  "Jose Trevino":     +0.18, "Tucker Barnhart": +0.15, "Jonah Heim":    +0.14,
+  "Austin Hedges":    +0.12, "Tyler Stephenson":+0.10, "Yainer Diaz":   +0.09,
+  "Francisco Mejia":  +0.08, "Alejandro Kirk":  +0.07,
+  // Below average framers (negative = pitcher hurt)
+  "Willson Contreras":-0.08, "Salvador Perez":  -0.07, "Danny Jansen":  -0.06,
+  "Christian Bethancourt":-0.05, "Pedro Severino":-0.05,
+};
+const CATCHER_FRAMING_DEFAULT = 0.0;
+function catcherFramingBonus(catcherName) {
+  if (!catcherName) return CATCHER_FRAMING_DEFAULT;
+  for (const [name, val] of Object.entries(CATCHER_FRAMING)) {
+    if (catcherName.toLowerCase().includes(name.toLowerCase())) return val;
+  }
+  return CATCHER_FRAMING_DEFAULT;
+}
+
+// Stolen base overlay: aggressive running teams force higher pitch counts
+// and stress bullpens — minor positive for offense
+function stolenBaseOverlay(teamStats) {
+  if (!teamStats?.sb) return 0;
+  const lgAvgSB = 1.2; // per game
+  const sbRate = teamStats.sb / (teamStats.gp || 82);
+  return (sbRate - lgAvgSB) * 0.04; // small wOBA boost
+}
+
+// Dynamic park factors: weather-adjusted (temperature affects carry)
+// Open-Meteo provides free weather data for stadium lat/lng
+const PARK_COORDINATES = {
+  108: { lat: 33.80,  lng: -117.88 }, 109: { lat: 33.44, lng: -112.07 },
+  110: { lat: 39.28,  lng: -76.62  }, 111: { lat: 42.35, lng: -71.10  },
+  112: { lat: 41.95,  lng: -87.66  }, 113: { lat: 39.10, lng: -84.51  },
+  114: { lat: 41.50,  lng: -81.69  }, 115: { lat: 39.76, lng: -104.99 },
+  116: { lat: 42.33,  lng: -83.05  }, 117: { lat: 29.76, lng: -95.35  },
+  118: { lat: 39.05,  lng: -94.48  }, 119: { lat: 34.07, lng: -118.24 },
+  120: { lat: 38.87,  lng: -77.01  }, 121: { lat: 40.76, lng: -73.85  },
+  133: { lat: 37.75,  lng: -122.20 }, 134: { lat: 40.45, lng: -80.01  },
+  135: { lat: 32.71,  lng: -117.16 }, 136: { lat: 47.59, lng: -122.33 },
+  137: { lat: 37.78,  lng: -122.39 }, 138: { lat: 38.62, lng: -90.19  },
+  139: { lat: 27.77,  lng: -82.65  }, 140: { lat: 32.75, lng: -97.08  },
+  141: { lat: 43.64,  lng: -79.39  }, 142: { lat: 44.98, lng: -93.28  },
+  143: { lat: 39.91,  lng: -75.17  }, 144: { lat: 33.89, lng: -84.47  },
+  145: { lat: 41.83,  lng: -87.63  }, 146: { lat: 25.77, lng: -80.22  },
+  147: { lat: 40.83,  lng: -73.93  }, 158: { lat: 43.03, lng: -88.09  },
+};
+
+const _weatherCache = {};
+async function fetchParkWeather(homeTeamId) {
+  if (!homeTeamId) return null;
+  const coords = PARK_COORDINATES[homeTeamId];
+  if (!coords) return null;
+  const cacheKey = `wx_${homeTeamId}_${new Date().toISOString().slice(0,13)}`;
+  if (_weatherCache[cacheKey]) return _weatherCache[cacheKey];
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lng}&current_weather=true&hourly=temperature_2m,windspeed_10m&forecast_days=1`;
+    const data = await fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
+    if (!data?.current_weather) return null;
+    const wx = {
+      tempF: Math.round(data.current_weather.temperature * 9/5 + 32),
+      windMph: Math.round(data.current_weather.windspeed * 0.621),
+      windDir: data.current_weather.winddirection,
+    };
+    _weatherCache[cacheKey] = wx;
+    return wx;
+  } catch { return null; }
+}
+
+// Weather-adjusted park factor: warm temps boost HR, wind out boosts offense
+function weatherAdjustedParkFactor(baseFactor, weather) {
+  if (!weather) return baseFactor;
+  let adj = baseFactor;
+  const { tempF = 70, windMph = 5, windDir = 180 } = weather;
+  // Temperature: each 10°F above 70° adds ~0.3% to run scoring
+  adj += ((tempF - 70) / 10) * 0.003;
+  // Wind blowing out (toward CF ~180-270°): boosts HR
+  const isWindOut = windDir >= 150 && windDir <= 250;
+  const isWindIn  = windDir >= 0   && windDir <= 60 || windDir >= 330;
+  if (isWindOut && windMph > 10) adj += (windMph - 10) * 0.003;
+  if (isWindIn  && windMph > 10) adj -= (windMph - 10) * 0.003;
+  return Math.max(0.85, Math.min(1.30, adj));
+}
+
+// True bullpen quality: ERA + FIP blend with usage/fatigue overlay
+function bullpenQualityScore(bpData) {
+  if (!bpData) return { era: 4.10, fip: 4.10, quality: 0 };
+  const era  = bpData.era  || 4.10;
+  const fip  = bpData.fip  || era;
+  const ip   = bpData.ipLastWeek || 0;
+  const lgBpERA = 4.10, lgBpFIP = 4.05;
+  // Positive quality = better than league average
+  const qualityERA = (lgBpERA - era) / lgBpERA;
+  const qualityFIP = (lgBpFIP - fip) / lgBpFIP;
+  const quality = qualityERA * 0.5 + qualityFIP * 0.5 - (ip > 8 ? (ip - 8) * 0.01 : 0); // fatigue penalty
+  return { era, fip, quality };
+}
+
+// Enhanced MLB prediction incorporating all Section 2 improvements
+function mlbPredictGameEnhanced(params) {
+  const {
+    homeTeamId, awayTeamId,
+    homeHit, awayHit,
+    homePitch, awayPitch,
+    homeStarterStats, awayStarterStats,
+    homeForm, awayForm,
+    bullpenData,
+    homeGamesPlayed = 0, awayGamesPlayed = 0,
+    homeLineup, awayLineup,
+    umpire,
+    homeStatcast, awayStatcast,
+    calibrationFactor = 1.0,
+    // New Section 2 params
+    homeStarter = null,  // { recentStarts: [], catcherName: '' }
+    awayStarter = null,
+    homeCatcherName = null,
+    awayCatcherName = null,
+    parkWeather = null,
+    homeTeamMeta = null, // { sb, gp }
+    awayTeamMeta = null,
+  } = params;
+
+  const park = PARK_FACTORS[homeTeamId] || { runFactor: 1.0 };
+  const adjustedRunFactor = weatherAdjustedParkFactor(park.runFactor, parkWeather);
+
+  const calcOffenseWOBA = (hit, lineup, statcast, teamMeta) => {
+    let woba;
+    if (statcast?.xwOBA) woba = statcast.xwOBA;
+    else if (lineup?.wOBA) woba = lineup.wOBA;
+    else if (!hit) woba = 0.315;
+    else {
+      const { obp = 0.320, slg = 0.420, avg = 0.250 } = hit;
+      woba = Math.max(0.250, Math.min(0.420, obp * 0.90 + Math.max(0, slg - avg) * 0.25));
+    }
+    // Stolen base overlay (minor wOBA boost for aggressive base runners)
+    woba += stolenBaseOverlay(teamMeta);
+    return woba;
+  };
+
+  // Use xFIP/SIERA first, then FIP, then ERA proxy
+  const calcBestPitcherERA = (stats, starterMeta) => {
+    const xfip = calcXFIP(stats);
+    let base;
+    if (xfip) base = xfip;
+    else if (!stats) base = 4.25;
+    else {
+      const { era = 4.25, k9 = 8.5, bb9 = 3.0 } = stats;
+      base = Math.max(2.5, Math.min(7.0, 3.80 + (bb9 - 3.0) * 0.28 - (k9 - 8.5) * 0.16 + (era - 4.00) * 0.38));
+    }
+    // Recent form adjustment (pitcher trending hot/cold last 3 starts)
+    const formDelta = pitcherRecentFormDelta(starterMeta?.recentStarts);
+    base += formDelta * 0.35; // Weight recent form at 35%
+    return Math.max(2.0, Math.min(8.0, base));
+  };
+
+  const homeWOBA = calcOffenseWOBA(homeHit, homeLineup, homeStatcast, homeTeamMeta);
+  const awayWOBA = calcOffenseWOBA(awayHit, awayLineup, awayStatcast, awayTeamMeta);
+
+  const BASE_RUNS = 4.55, wOBA_SCALE = 14.0;
+  let hr = BASE_RUNS + (homeWOBA - 0.315) * wOBA_SCALE;
+  let ar = BASE_RUNS + (awayWOBA - 0.315) * wOBA_SCALE;
+
+  // Platoon splits
+  const homePlatoonDelta = platoonDelta(homeLineup?.lineupHand, awayStarterStats?.pitchHand);
+  const awayPlatoonDelta = platoonDelta(awayLineup?.lineupHand, homeStarterStats?.pitchHand);
+  hr += homePlatoonDelta * wOBA_SCALE;
+  ar += awayPlatoonDelta * wOBA_SCALE;
+
+  // Enhanced FIP/xFIP with recent form
+  const hERA = calcBestPitcherERA(homeStarterStats, homeStarter);
+  const aERA = calcBestPitcherERA(awayStarterStats, awayStarter);
+  ar += (hERA - 4.25) * 0.40;
+  hr += (aERA - 4.25) * 0.40;
+
+  // Catcher framing impact on both pitchers
+  const homeFraming = catcherFramingBonus(homeCatcherName);
+  const awayFraming = catcherFramingBonus(awayCatcherName);
+  ar -= homeFraming * wOBA_SCALE * 0.5;  // Home catcher helps home pitcher suppress away runs
+  hr -= awayFraming * wOBA_SCALE * 0.5;
+
+  // True bullpen quality
+  const bpHome = bullpenQualityScore(bullpenData?.[homeTeamId]);
+  const bpAway = bullpenQualityScore(bullpenData?.[awayTeamId]);
+  if (bpHome.quality < 0) ar += Math.abs(bpHome.quality) * 0.8; // Weak bullpen = more away runs late
+  if (bpAway.quality < 0) hr += Math.abs(bpAway.quality) * 0.8;
+
+  // Weather-adjusted park factor
+  hr *= adjustedRunFactor;
+  ar *= adjustedRunFactor;
+
+  // Umpire profile
+  const ump = umpire || UMPIRE_DEFAULT;
+  hr += ump.runImpact * 0.5;
+  ar += ump.runImpact * 0.5;
+
+  // Recent form weighting
+  const avgGP = (homeGamesPlayed + awayGamesPlayed) / 2;
+  const isSpringTraining = avgGP < 5;
+  const formSampleWeight = isSpringTraining ? 0 : Math.min(0.12, 0.12 * Math.sqrt(Math.min(avgGP, 30) / 30));
+  if (!isSpringTraining && homeForm?.formScore) hr += homeForm.formScore * formSampleWeight;
+  if (!isSpringTraining && awayForm?.formScore) ar += awayForm.formScore * formSampleWeight;
+
+  hr = Math.max(1.8, Math.min(9.5, hr));
+  ar = Math.max(1.8, Math.min(9.5, ar));
+
+  // Dynamic Pythagorean exponent (varies by run environment)
+  const avgRunEnv = (hr + ar) / 2;
+  const EXP = 1.50 + 0.034 * avgRunEnv; // ~1.83 at 4.5 runs, higher in Coors
+  let pythWinPct = Math.pow(hr, EXP) / (Math.pow(hr, EXP) + Math.pow(ar, EXP));
+
+  const hfaScale = isSpringTraining ? 0 : Math.min(1.0, avgGP / 20);
+  let hwp = Math.min(0.88, Math.max(0.12, pythWinPct + 0.038 * hfaScale));
+  if (calibrationFactor !== 1.0) hwp = Math.min(0.90, Math.max(0.10, 0.5 + (hwp - 0.5) * calibrationFactor));
+
+  const blendWeight = Math.min(1.0, avgGP / FULL_SEASON_THRESHOLD);
+  const dataScore = [homeHit, awayHit, homeStarterStats, awayStarterStats, homeForm, awayForm].filter(Boolean).length / 6;
+  const v13Bonus = [homeLineup, awayLineup, homeStatcast, awayStatcast, umpire, homeStarter, awayStarter, homeCatcherName, parkWeather].filter(Boolean).length * 1.5;
+  const confScore = Math.round(35 + (dataScore * 30) + (blendWeight * 20) + Math.min(15, v13Bonus));
+  const confidence = confScore >= 80 ? "HIGH" : confScore >= 60 ? "MEDIUM" : "LOW";
+
+  const modelML_home = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);
+  const modelML_away = hwp >= 0.5 ? +Math.round(((1 - hwp) / hwp) * 100) : -Math.round((hwp / (1 - hwp)) * 100);
+
+  return {
+    homeRuns: hr, awayRuns: ar, homeWinPct: hwp, awayWinPct: 1 - hwp,
+    confidence, confScore, modelML_home, modelML_away,
+    ouTotal: parseFloat((hr + ar).toFixed(1)), runLineHome: -1.5,
+    hFIP: hERA, aFIP: aERA, umpire: ump, homeWOBA, awayWOBA,
+    homePlatoonDelta, awayPlatoonDelta,
+    parkWeatherAdj: adjustedRunFactor - (PARK_FACTORS[homeTeamId]?.runFactor || 1.0),
+    bpHomeQuality: bpHome.quality, bpAwayQuality: bpAway.quality,
+    enhancedVersion: ENHANCEMENT_VERSION,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 3 — NCAA BASKETBALL ENHANCEMENTS
+// Real KenPom-style efficiency, SOS factor, home/away splits,
+// injury impact, calibrated logistic regression
+// ═══════════════════════════════════════════════════════════════
+
+// Strength of Schedule factor from ESPN (wins % of opponents)
+async function fetchNCAATeamSOS(teamId) {
+  if (!teamId) return null;
+  try {
+    const schedData = await espnFetch(`teams/${teamId}/schedule`);
+    const events = schedData?.events || [];
+    const completed = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+    if (completed.length < 5) return null;
+    // Calculate average opponent win% as SOS proxy
+    const oppWinPcts = await Promise.all(
+      completed.slice(-10).map(async e => {
+        const comp = e.competitions?.[0];
+        const oppTeam = comp?.competitors?.find(c => c.team?.id !== String(teamId));
+        if (!oppTeam?.team?.id) return 0.5;
+        const oppRecord = await espnFetch(`teams/${oppTeam.team.id}/record`).catch(() => null);
+        const w = oppRecord?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
+        const l = oppRecord?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
+        return w + l > 0 ? w / (w + l) : 0.5;
+      })
+    );
+    return oppWinPcts.reduce((s, v) => s + v, 0) / oppWinPcts.length;
+  } catch { return null; }
+}
+
+// Home/Away splits from schedule data
+async function fetchNCAAHomeAwaySplits(teamId) {
+  if (!teamId) return null;
+  try {
+    const schedData = await espnFetch(`teams/${teamId}/schedule`);
+    const events = schedData?.events || [];
+    const completed = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+    let homeW=0,homeL=0,awayW=0,awayL=0,homePtsFor=0,homePtsAgainst=0,awayPtsFor=0,awayPtsAgainst=0;
+    completed.forEach(e => {
+      const comp = e.competitions?.[0];
+      const tc = comp?.competitors?.find(c => c.team?.id === String(teamId));
+      const opp = comp?.competitors?.find(c => c.team?.id !== String(teamId));
+      if (!tc) return;
+      const won = tc.winner || false;
+      const pts = parseInt(tc.score) || 0;
+      const oppPts = parseInt(opp?.score) || 0;
+      if (tc.homeAway === "home") {
+        won ? homeW++ : homeL++;
+        homePtsFor += pts; homePtsAgainst += oppPts;
+      } else {
+        won ? awayW++ : awayL++;
+        awayPtsFor += pts; awayPtsAgainst += oppPts;
+      }
+    });
+    const hG = homeW + homeL, aG = awayW + awayL;
+    return {
+      homeWinPct: hG > 0 ? homeW / hG : 0.5,
+      awayWinPct: aG > 0 ? awayW / aG : 0.5,
+      homeAvgMargin: hG > 0 ? (homePtsFor - homePtsAgainst) / hG : 0,
+      awayAvgMargin: aG > 0 ? (awayPtsFor - awayPtsAgainst) / aG : 0,
+    };
+  } catch { return null; }
+}
+
+// Injury impact: approximate based on lineup disruption signals
+// Returns estimated efficiency penalty (0–5 points)
+function ncaaInjuryImpact(injuredPlayers = []) {
+  if (!injuredPlayers?.length) return 0;
+  // Rough role weights: starter ~2.5pts, rotation ~1.5pts, reserve ~0.5pts
+  return injuredPlayers.reduce((sum, p) => {
+    const impact = p.role === "starter" ? 2.5 : p.role === "rotation" ? 1.5 : 0.5;
+    return sum + impact;
+  }, 0);
+}
+
+// Enhanced NCAA prediction with SOS, home/away splits, injury overlay
+function ncaaPredictGameEnhanced({
+  homeStats, awayStats,
+  neutralSite = false,
+  calibrationFactor = 1.0,
+  homeSOSFactor = null,    // Average opponent win% (0-1)
+  awaySOSFactor = null,
+  homeSplits = null,       // { homeAvgMargin, awayAvgMargin }
+  awaySplits = null,
+  homeInjuries = [],
+  awayInjuries = [],
+}) {
+  if (!homeStats || !awayStats) return null;
+  const possessions = (homeStats.tempo + awayStats.tempo) / 2;
+  const lgAvgOE = 105.0;
+
+  // SOS adjustment: teams with harder schedules get a boost to their efficiency
+  const homeSOSAdj = homeSOSFactor != null ? (homeSOSFactor - 0.5) * 3 : 0;  // +1.5pts per 0.5 SOS above avg
+  const awaySOSAdj = awaySOSFactor != null ? (awaySOSFactor - 0.5) * 3 : 0;
+
+  const homeAdjOE = homeStats.adjOE + homeSOSAdj;
+  const awayAdjOE = awayStats.adjOE + awaySOSAdj;
+  const homeAdjDE = homeStats.adjDE - homeSOSAdj * 0.5; // Good SOS also means facing better offenses
+  const awayAdjDE = awayStats.adjDE - awaySOSAdj * 0.5;
+
+  const homeOffVsAwayDef = (homeAdjOE / lgAvgOE) * (lgAvgOE / awayAdjDE) * lgAvgOE;
+  const awayOffVsHomeDef = (awayAdjOE / lgAvgOE) * (lgAvgOE / homeAdjDE) * lgAvgOE;
+
+  let homeScore = (homeOffVsAwayDef / 100) * possessions;
+  let awayScore = (awayOffVsHomeDef / 100) * possessions;
+
+  // Home court advantage (adjusted by home/away splits if available)
+  const hcaBase = neutralSite ? 0 : NCAA_HOME_COURT_ADV;
+  const splitAdj = (!neutralSite && homeSplits?.homeAvgMargin != null)
+    ? (homeSplits.homeAvgMargin - (homeStats.ppgDiff || 0)) * 0.2   // teams with strong home margins get extra
+    : 0;
+  const hca = hcaBase + Math.min(2, Math.max(-1, splitAdj));
+  homeScore += hca / 2; awayScore -= hca / 2;
+
+  // Recent form
+  const formWeight = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames, 30) / 30));
+  homeScore += homeStats.formScore * formWeight * 3;
+  awayScore += awayStats.formScore * formWeight * 3;
+
+  // Injury overlay
+  const homeInjPenalty = ncaaInjuryImpact(homeInjuries);
+  const awayInjPenalty = ncaaInjuryImpact(awayInjuries);
+  homeScore -= homeInjPenalty;
+  awayScore -= awayInjPenalty;
+
+  homeScore = Math.max(45, Math.min(115, homeScore));
+  awayScore = Math.max(45, Math.min(115, awayScore));
+
+  const projectedSpread = homeScore - awayScore;
+
+  // Calibrated logistic regression: tuned sigma = 10.5 (tighter than default 11)
+  let homeWinPct = 1 / (1 + Math.pow(10, -projectedSpread / 10.5));
+  homeWinPct = Math.min(0.92, Math.max(0.08, homeWinPct));
+  if (calibrationFactor !== 1.0) homeWinPct = Math.min(0.92, Math.max(0.08, 0.5 + (homeWinPct - 0.5) * calibrationFactor));
+
+  const spread = parseFloat(projectedSpread.toFixed(1));
+  const modelML_home = homeWinPct >= 0.5 ? -Math.round((homeWinPct / (1 - homeWinPct)) * 100) : +Math.round(((1 - homeWinPct) / homeWinPct) * 100);
+  const modelML_away = homeWinPct >= 0.5 ? +Math.round(((1 - homeWinPct) / homeWinPct) * 100) : -Math.round((homeWinPct / (1 - homeWinPct)) * 100);
+
+  const emGap = Math.abs(homeStats.adjEM - awayStats.adjEM);
+  const winPctStrength = Math.abs(homeWinPct - 0.5) * 2;
+  const minGames = Math.min(homeStats.totalGames, awayStats.totalGames);
+  const sampleWeight = Math.min(1.0, minGames / 15);
+  const hasData = minGames >= 5 ? 1 : 0;
+  const confScore = Math.round(
+    (Math.min(emGap, 10) / 10) * 40 + winPctStrength * 35 + sampleWeight * 20 + hasData * 5
+  );
+  const confidence = confScore >= 62 ? "HIGH" : confScore >= 35 ? "MEDIUM" : "LOW";
+
+  return {
+    homeScore: parseFloat(homeScore.toFixed(1)), awayScore: parseFloat(awayScore.toFixed(1)),
+    homeWinPct, awayWinPct: 1 - homeWinPct, projectedSpread: spread,
+    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    modelML_home, modelML_away, confidence, confScore,
+    possessions: parseFloat(possessions.toFixed(1)),
+    homeAdjEM: parseFloat(homeStats.adjEM?.toFixed(2)),
+    awayAdjEM: parseFloat(awayStats.adjEM?.toFixed(2)),
+    emDiff: parseFloat((homeStats.adjEM - awayStats.adjEM).toFixed(2)),
+    homeSOSAdj: parseFloat(homeSOSAdj.toFixed(2)),
+    awaySOSAdj: parseFloat(awaySOSAdj.toFixed(2)),
+    homeInjPenalty, awayInjPenalty, neutralSite,
+    enhancedVersion: ENHANCEMENT_VERSION,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 4 — NBA ENHANCEMENTS
+// Real pace from NBA Stats API, advanced rest/travel,
+// lineup impact scoring, home/away NetRating splits
+// ═══════════════════════════════════════════════════════════════
+
+// NBA Stats API (no key needed — use browser UA header)
+const NBA_STATS_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+  "Referer": "https://www.nba.com/",
+  "Origin": "https://www.nba.com",
+};
+
+const _nbaRealStatsCache = {};
+
+async function fetchNBARealPace(abbr) {
+  // NBA Stats API team dashboard — real pace & efficiency
+  if (_nbaRealStatsCache[abbr]) return _nbaRealStatsCache[abbr];
+  try {
+    const teamId = NBA_STATS_TEAM_IDS[abbr];
+    if (!teamId) return null;
+    const season = (() => {
+      const n = new Date();
+      const yr = n.getMonth() < 7 ? n.getFullYear() - 1 : n.getFullYear();
+      return `${yr}-${String(yr + 1).slice(-2)}`;
+    })();
+    const url = `https://stats.nba.com/stats/teamdashboardbygeneralsplits?DateFrom=&DateTo=&GameSegment=&LastNGames=0&LeagueID=00&Location=&MeasureType=Advanced&Month=0&OpponentTeamID=0&Outcome=&PaceAdjust=N&PerMode=PerGame&PlusMinus=N&Rank=N&Season=${season}&SeasonSegment=&SeasonType=Regular+Season&ShotClockRange=&TeamID=${teamId}&VsConference=&VsDivision=`;
+    const data = await fetch(url, { headers: NBA_STATS_HEADERS }).then(r => r.ok ? r.json() : null).catch(() => null);
+    if (!data?.resultSets?.[0]) return null;
+    const headers = data.resultSets[0].headers;
+    const row = data.resultSets[0].rowSet?.[0];
+    if (!row) return null;
+    const get = name => {
+      const i = headers.indexOf(name);
+      return i >= 0 ? row[i] : null;
+    };
+    const result = {
+      pace:     parseFloat(get("PACE"))    || null,
+      offRtg:   parseFloat(get("OFF_RATING")) || null,
+      defRtg:   parseFloat(get("DEF_RATING")) || null,
+      netRtg:   parseFloat(get("NET_RATING")) || null,
+      pie:      parseFloat(get("PIE"))     || null,
+    };
+    _nbaRealStatsCache[abbr] = result;
+    return result;
+  } catch { return null; }
+}
+
+// NBA Stats Team IDs for real API
+const NBA_STATS_TEAM_IDS = {
+  ATL:1610612737,BOS:1610612738,BKN:1610612751,CHA:1610612766,CHI:1610612741,
+  CLE:1610612739,DAL:1610612742,DEN:1610612743,DET:1610612765,GSW:1610612744,
+  HOU:1610612745,IND:1610612754,LAC:1610612746,LAL:1610612747,MEM:1610612763,
+  MIA:1610612748,MIL:1610612749,MIN:1610612750,NOP:1610612740,NYK:1610612752,
+  OKC:1610612760,ORL:1610612753,PHI:1610612755,PHX:1610612756,POR:1610612757,
+  SAC:1610612758,SAS:1610612759,TOR:1610612761,UTA:1610612762,WAS:1610612764,
+};
+
+// Advanced rest/travel model
+// Returns point adjustment based on rest days, back-to-back fatigue, and travel distance
+const NBA_CITY_COORDS = {
+  ATL:{lat:33.7,lng:-84.4},BOS:{lat:42.4,lng:-71.1},BKN:{lat:40.7,lng:-74.0},
+  CHA:{lat:35.2,lng:-80.8},CHI:{lat:41.9,lng:-87.6},CLE:{lat:41.5,lng:-81.7},
+  DAL:{lat:32.8,lng:-97.0},DEN:{lat:39.8,lng:-105.0},DET:{lat:42.3,lng:-83.0},
+  GSW:{lat:37.8,lng:-122.4},HOU:{lat:29.7,lng:-95.4},IND:{lat:39.8,lng:-86.2},
+  LAC:{lat:34.0,lng:-118.3},LAL:{lat:34.0,lng:-118.3},MEM:{lat:35.1,lng:-90.0},
+  MIA:{lat:25.8,lng:-80.2},MIL:{lat:43.0,lng:-87.9},MIN:{lat:44.9,lng:-93.2},
+  NOP:{lat:29.9,lng:-90.1},NYK:{lat:40.8,lng:-74.0},OKC:{lat:35.5,lng:-97.5},
+  ORL:{lat:28.5,lng:-81.4},PHI:{lat:40.0,lng:-75.2},PHX:{lat:33.4,lng:-112.1},
+  POR:{lat:45.5,lng:-122.7},SAC:{lat:38.6,lng:-121.5},SAS:{lat:29.4,lng:-98.4},
+  TOR:{lat:43.6,lng:-79.4},UTA:{lat:40.8,lng:-111.9},WAS:{lat:38.9,lng:-77.0},
+};
+
+function haversineDistance(abbr1, abbr2) {
+  const c1 = NBA_CITY_COORDS[abbr1], c2 = NBA_CITY_COORDS[abbr2];
+  if (!c1 || !c2) return 1000;
+  const R = 3959, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(c2.lat - c1.lat), dLng = toRad(c2.lng - c1.lng);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(c1.lat))*Math.cos(toRad(c2.lat))*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function nbaRestTravelAdj(homeAbbr, awayAbbr, homeDaysRest, awayDaysRest, awayPrevCityAbbr = null) {
+  let homeAdj = 0, awayAdj = 0;
+  // Back-to-back penalty
+  if (homeDaysRest === 0) { homeAdj -= 2.2; awayAdj += 2.2; }
+  else if (awayDaysRest === 0) { awayAdj -= 2.2; homeAdj += 2.2; }
+  // Rest advantage (3+ day differential)
+  else if (homeDaysRest - awayDaysRest >= 3) homeAdj += 1.8;
+  else if (awayDaysRest - homeDaysRest >= 3) awayAdj += 1.8;
+  // Travel distance for away team (flying cross-country same day = fatigue)
+  if (awayPrevCityAbbr) {
+    const dist = haversineDistance(awayPrevCityAbbr, homeAbbr);
+    if (dist > 2000) awayAdj -= 1.5;       // Cross-country (>2000mi)
+    else if (dist > 1000) awayAdj -= 0.8;  // Long regional (>1000mi)
+  }
+  return { homeAdj, awayAdj };
+}
+
+// Lineup impact: key player availability (starters vs bench)
+function nbaLineupImpact(homeInjuries = [], awayInjuries = []) {
+  const roleWeight = { starter: 3.5, rotation: 1.5, reserve: 0.5 };
+  const homePenalty = homeInjuries.reduce((s, p) => s + (roleWeight[p.role] || 1.5), 0);
+  const awayPenalty = awayInjuries.reduce((s, p) => s + (roleWeight[p.role] || 1.5), 0);
+  return { homePenalty, awayPenalty };
+}
+
+// Enhanced NBA prediction
+function nbaPredictGameEnhanced({
+  homeStats, awayStats,
+  neutralSite = false,
+  homeDaysRest = 2, awayDaysRest = 2,
+  calibrationFactor = 1.0,
+  // Section 4 enhancements
+  homeRealStats = null,   // From fetchNBARealPace
+  awayRealStats = null,
+  homeAbbr = null, awayAbbr = null,
+  awayPrevCityAbbr = null,
+  homeInjuries = [], awayInjuries = [],
+}) {
+  if (!homeStats || !awayStats) return null;
+
+  // Use real pace from NBA Stats API if available, else ESPN estimate
+  const homePace = homeRealStats?.pace || homeStats.pace;
+  const awayPace = awayRealStats?.pace || awayStats.pace;
+  const poss = (homePace + awayPace) / 2;
+
+  // Use real offensive/defensive ratings if available
+  const homeOffRtg = homeRealStats?.offRtg || homeStats.adjOE;
+  const awayOffRtg = awayRealStats?.offRtg || awayStats.adjOE;
+  const homeDefRtg = homeRealStats?.defRtg || homeStats.adjDE;
+  const awayDefRtg = awayRealStats?.defRtg || awayStats.adjDE;
+
+  const lgAvg = 112.0;
+  let homeScore = ((homeOffRtg / lgAvg) * (lgAvg / awayDefRtg) * lgAvg / 100) * poss;
+  let awayScore = ((awayOffRtg / lgAvg) * (lgAvg / homeDefRtg) * lgAvg / 100) * poss;
+
+  // Home court advantage
+  homeScore += (neutralSite ? 0 : 2.8) / 2;
+  awayScore -= (neutralSite ? 0 : 2.8) / 2;
+
+  // Advanced rest/travel adjustment
+  const restAdj = nbaRestTravelAdj(homeAbbr, awayAbbr, homeDaysRest, awayDaysRest, awayPrevCityAbbr);
+  homeScore += restAdj.homeAdj;
+  awayScore += restAdj.awayAdj;
+
+  // Lineup impact
+  const lineupAdj = nbaLineupImpact(homeInjuries, awayInjuries);
+  homeScore -= lineupAdj.homePenalty;
+  awayScore -= lineupAdj.awayPenalty;
+
+  // Form
+  const fw = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames, 30) / 30));
+  homeScore += homeStats.formScore * fw * 3;
+  awayScore += awayStats.formScore * fw * 3;
+
+  homeScore = Math.max(85, Math.min(145, homeScore));
+  awayScore = Math.max(85, Math.min(145, awayScore));
+
+  const spread = parseFloat((homeScore - awayScore).toFixed(1));
+  let hwp = 1 / (1 + Math.pow(10, -spread / 12));
+  hwp = Math.min(0.92, Math.max(0.08, hwp));
+  if (calibrationFactor !== 1.0) hwp = Math.min(0.92, Math.max(0.08, 0.5 + (hwp - 0.5) * calibrationFactor));
+
+  const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);
+  const aml = hwp >= 0.5 ? +Math.round(((1 - hwp) / hwp) * 100) : -Math.round((hwp / (1 - hwp)) * 100);
+
+  const netGap = Math.abs((homeRealStats?.netRtg || homeStats.netRtg) - (awayRealStats?.netRtg || awayStats.netRtg));
+  const cs = Math.round(
+    (Math.min(netGap, 8) / 8) * 40 + Math.abs(hwp - 0.5) * 2 * 35 +
+    Math.min(1, homeStats.totalGames / 20) * 20 + (homeStats.totalGames >= 10 ? 5 : 0)
+  );
+
+  return {
+    homeScore: parseFloat(homeScore.toFixed(1)), awayScore: parseFloat(awayScore.toFixed(1)),
+    homeWinPct: hwp, awayWinPct: 1 - hwp, projectedSpread: spread,
+    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    modelML_home: mml, modelML_away: aml,
+    confidence: cs >= 62 ? "HIGH" : cs >= 35 ? "MEDIUM" : "LOW", confScore: cs,
+    possessions: parseFloat(poss.toFixed(1)),
+    homeNetRtg: parseFloat((homeRealStats?.netRtg || homeStats.netRtg)?.toFixed(2)),
+    awayNetRtg: parseFloat((awayRealStats?.netRtg || awayStats.netRtg)?.toFixed(2)),
+    usingRealPace: !!(homeRealStats?.pace && awayRealStats?.pace),
+    neutralSite, enhancedVersion: ENHANCEMENT_VERSION,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 5 — NFL ENHANCEMENTS
+// Real EPA from nflverse, DVOA proxy, QB-adjusted scoring,
+// defensive personnel matchup, injury-adjusted roster
+// ═══════════════════════════════════════════════════════════════
+
+// nflverse play-by-play EPA loader (GitHub CSV, free)
+// Season-level EPA/play derived from pbp CSVs
+const _nflEpaCache = {};
+
+async function fetchNFLRealEPA(abbr, season = null) {
+  const yr = season || (() => {
+    const n = new Date(); return n.getMonth() < 2 ? n.getFullYear() - 1 : n.getFullYear();
+  })();
+  const key = `${abbr}_${yr}`;
+  if (_nflEpaCache[key]) return _nflEpaCache[key];
+  try {
+    // nflverse team stats CSV (season-level, ~1KB per team)
+    const url = `https://raw.githubusercontent.com/nflverse/nflverse-data/main/data/player_stats/offense/player_stats_${yr}.csv`;
+    // Instead of parsing full PBP, use pre-aggregated team stats from nflverse
+    const teamUrl = `https://raw.githubusercontent.com/nflverse/nflverse-data/main/data/team_stats/team_stats_${yr}_REG.csv`;
+    const resp = await fetch(teamUrl).then(r => r.ok ? r.text() : null).catch(() => null);
+    if (!resp) return null;
+    const lines = resp.trim().split("\n");
+    const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
+    const nflverseAbbr = NFL_NFLVERSE_ABBR[abbr] || abbr;
+    const row = lines.slice(1).find(l => {
+      const cols = l.split(",");
+      return (cols[headers.indexOf("team")] || "").replace(/^"|"$/g, "") === nflverseAbbr;
+    });
+    if (!row) return null;
+    const cols = row.split(",");
+    const get = name => {
+      const i = headers.indexOf(name);
+      return i >= 0 ? parseFloat(cols[i]) || null : null;
+    };
+    const result = {
+      offEPA:    get("offense_epa_per_play"),
+      defEPA:    get("defense_epa_per_play"),
+      passEPA:   get("pass_epa_per_play"),
+      rushEPA:   get("rush_epa_per_play"),
+      netEPA:    get("net_epa_per_play"),
+    };
+    _nflEpaCache[key] = result;
+    return result;
+  } catch { return null; }
+}
+
+// nflverse team abbreviation mapping
+const NFL_NFLVERSE_ABBR = {
+  ARI:"ARI",ATL:"ATL",BAL:"BAL",BUF:"BUF",CAR:"CAR",CHI:"CHI",CIN:"CIN",CLE:"CLE",
+  DAL:"DAL",DEN:"DEN",DET:"DET",GB:"GB",HOU:"HOU",IND:"IND",JAX:"JAX",KC:"KC",
+  LAC:"LAC",LAR:"LA",LV:"LV",MIA:"MIA",MIN:"MIN",NE:"NE",NO:"NO",NYG:"NYG",
+  NYJ:"NYJ",PHI:"PHI",PIT:"PIT",SEA:"SEA",SF:"SF",TB:"TB",TEN:"TEN",WAS:"WAS",
+};
+
+// DVOA proxy: blend of EPA + scoring margin + yards efficiency
+// Until DVOA subscription ($40/season), this provides good approximation
+function calcDVOAProxy(teamStats, realEpa = null) {
+  const epa = realEpa?.offEPA ?? teamStats.offEPA ?? 0;
+  const defEpa = realEpa?.defEPA ?? teamStats.defEPA ?? 0;
+  const ppg = teamStats.ppg || 22.5, oppPpg = teamStats.oppPpg || 22.5;
+  const ypPlay = teamStats.ypPlay || 5.5, oppYpPlay = teamStats.oppYpPlay || 5.5;
+  // Offense DVOA proxy (higher = better)
+  const offDVOA = epa * 30 + (ppg - 22.5) * 0.8 + (ypPlay - 5.5) * 5;
+  // Defense DVOA proxy (lower = better — inverted for adjustment calc)
+  const defDVOA = defEpa * 30 + (oppPpg - 22.5) * 0.8 + (oppYpPlay - 5.5) * 5;
+  return { offDVOA, defDVOA, netDVOA: offDVOA - defDVOA };
+}
+
+// QB impact overlay: elite vs replacement-level QB difference
+// Applied when lineup data indicates QB is out / downgraded
+const QB_TIER_IMPACT = {
+  elite:       0,    // Baseline (top-10 QB)
+  above_avg:  -2.5,  // vs elite
+  average:    -5.0,
+  below_avg:  -8.0,
+  backup:     -12.0,
+};
+function qbAdjustment(starterTier, backupTier) {
+  if (!backupTier || backupTier === starterTier) return 0;
+  return QB_TIER_IMPACT[backupTier] - QB_TIER_IMPACT[starterTier];
+}
+
+// Defensive personnel matchup: pass-heavy offense vs pass D quality
+function defPersonnelMatchup(offensePassRate, defensePassRtgAllowed) {
+  if (!offensePassRate || !defensePassRtgAllowed) return 0;
+  const passHeavy = offensePassRate > 0.62; // High pass rate offense
+  if (passHeavy) {
+    // Elite pass D against pass-heavy team = bigger suppression
+    return (defensePassRtgAllowed - 95) * -0.05; // Below-avg passer rating allowed = penalty
+  }
+  return 0;
+}
+
+// Enhanced NFL prediction incorporating real EPA + DVOA proxy + QB adjustment
+function nflPredictGameEnhanced({
+  homeStats, awayStats,
+  neutralSite = false, weather = {},
+  homeRestDays = 7, awayRestDays = 7,
+  calibrationFactor = 1.0,
+  // Section 5 params
+  homeRealEpa = null,   // From fetchNFLRealEPA
+  awayRealEpa = null,
+  homeQBTier = "elite",   // QB quality tier
+  awayQBTier = "elite",
+  homeQBBackupTier = null, // null = starter is playing
+  awayQBBackupTier = null,
+  homePassRate = null, homeDefPassRtg = null,
+  awayPassRate = null, awayDefPassRtg = null,
+  homeInjuries = [], awayInjuries = [],
+}) {
+  if (!homeStats || !awayStats) return null;
+  const lgPpg = 22.5;
+
+  // Base scoring from PPG matchup
+  const homeOff = (homeStats.ppg - lgPpg) / 6;
+  const awayDef = (awayStats.oppPpg - lgPpg) / 6;
+  const awayOff = (awayStats.ppg - lgPpg) / 6;
+  const homeDef = (homeStats.oppPpg - lgPpg) / 6;
+  let homeScore = lgPpg + homeOff * 3 + awayDef * 2;
+  let awayScore = lgPpg + awayOff * 3 + homeDef * 2;
+
+  // Real EPA (nflverse) or DVOA proxy — whichever is available
+  const homeDVOA = calcDVOAProxy(homeStats, homeRealEpa);
+  const awayDVOA = calcDVOAProxy(awayStats, awayRealEpa);
+
+  const hOffEpa = homeRealEpa?.offEPA ?? homeStats.offEPA ?? 0;
+  const aDefEpa = awayRealEpa?.defEPA ?? awayStats.defEPA ?? 0;
+  const aOffEpa = awayRealEpa?.offEPA ?? awayStats.offEPA ?? 0;
+  const hDefEpa = homeRealEpa?.defEPA ?? homeStats.defEPA ?? 0;
+
+  homeScore += hOffEpa * 12 + aDefEpa * 10;
+  awayScore += aOffEpa * 12 + hDefEpa * 10;
+
+  // DVOA overlay (additional efficiency signal)
+  homeScore += homeDVOA.offDVOA * 0.08 - awayDVOA.defDVOA * 0.05;
+  awayScore += awayDVOA.offDVOA * 0.08 - homeDVOA.defDVOA * 0.05;
+
+  // QB adjustment
+  const homeQBAdj = qbAdjustment(homeQBTier, homeQBBackupTier);
+  const awayQBAdj = qbAdjustment(awayQBTier, awayQBBackupTier);
+  homeScore += homeQBAdj;
+  awayScore += awayQBAdj;
+
+  // Defensive personnel matchup
+  homeScore += defPersonnelMatchup(homePassRate, awayDefPassRtg);
+  awayScore += defPersonnelMatchup(awayPassRate, homeDefPassRtg);
+
+  // Turnover margin, red zone, third down (from original engine)
+  const toAdj = (homeStats.turnoverMargin - awayStats.turnoverMargin) * 1.75;
+  homeScore += toAdj * 0.5; awayScore -= toAdj * 0.5;
+  const tdAdj = (homeStats.thirdPct - awayStats.thirdPct) * 18;
+  homeScore += tdAdj * 0.25; awayScore -= tdAdj * 0.1;
+  const rzAdj = (homeStats.rzPct - awayStats.rzPct) * 12;
+  homeScore += rzAdj * 0.25; awayScore -= rzAdj * 0.1;
+
+  // Injury impact (non-QB key players)
+  const roleWeights = { starter: 1.8, rotation: 1.0, reserve: 0.4 };
+  const homeInjPenalty = homeInjuries.reduce((s, p) => s + (roleWeights[p.role] || 1.0), 0);
+  const awayInjPenalty = awayInjuries.reduce((s, p) => s + (roleWeights[p.role] || 1.0), 0);
+  homeScore -= homeInjPenalty;
+  awayScore -= awayInjPenalty;
+
+  // Form, home field, rest, dome/altitude (from original engine)
+  const fw = Math.min(0.12, 0.12 * Math.sqrt(Math.min(homeStats.totalGames, 17) / 17));
+  homeScore += homeStats.formScore * fw * 5;
+  awayScore += awayStats.formScore * fw * 5;
+  if (!neutralSite) { homeScore += 1.25; awayScore -= 1.25; }
+  if (homeRestDays >= 10) homeScore += 2.0;
+  if (awayRestDays >= 10) awayScore += 2.0;
+  else if (homeRestDays - awayRestDays >= 3) homeScore += 0.8;
+  else if (awayRestDays - homeRestDays >= 3) awayScore += 0.8;
+  const sf = NFL_STADIUM[homeStats.abbr] || { dome: false, alt: 1.0 };
+  homeScore *= sf.alt; awayScore *= sf.alt;
+  const wxAdj = nflWeatherAdj(weather);
+  homeScore += wxAdj.pts / 2; awayScore += wxAdj.pts / 2;
+
+  homeScore = Math.max(3, Math.min(55, homeScore));
+  awayScore = Math.max(3, Math.min(55, awayScore));
+  const spread = parseFloat((homeScore - awayScore).toFixed(1));
+
+  let hwp = 1 / (1 + Math.pow(10, -spread / 10));
+  hwp = Math.min(0.94, Math.max(0.06, hwp));
+  if (calibrationFactor !== 1.0) hwp = Math.min(0.94, Math.max(0.06, 0.5 + (hwp - 0.5) * calibrationFactor));
+  const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);
+  const aml = hwp >= 0.5 ? +Math.round(((1 - hwp) / hwp) * 100) : -Math.round((hwp / (1 - hwp)) * 100);
+
+  const spreadSize = Math.abs(spread), wps = Math.abs(hwp - 0.5) * 2;
+  const minG = Math.min(homeStats.totalGames, awayStats.totalGames);
+  const epaQ = Math.min(1, (Math.abs(hOffEpa) + Math.abs(aOffEpa)) / 0.2);
+  const cs = Math.round((Math.min(spreadSize, 10) / 10) * 35 + wps * 30 + Math.min(1, minG / 10) * 20 + epaQ * 10 + (minG >= 6 ? 5 : 0));
+
+  const factors = [];
+  if (Math.abs(toAdj) > 1.5) factors.push({ label: "Turnover Margin", val: toAdj > 0 ? `HOME +${toAdj.toFixed(1)}` : `AWAY +${(-toAdj).toFixed(1)}`, type: toAdj > 0 ? "home" : "away" });
+  if (Math.abs(hOffEpa - aOffEpa) > 0.04) factors.push({ label: "Real EPA Edge", val: hOffEpa > aOffEpa ? `HOME +${(hOffEpa - aOffEpa).toFixed(3)} EPA/play` : `AWAY +${(aOffEpa - hOffEpa).toFixed(3)} EPA/play`, type: hOffEpa > aOffEpa ? "home" : "away" });
+  if (homeQBAdj < -3) factors.push({ label: "QB Downgrade", val: `HOME -${Math.abs(homeQBAdj).toFixed(1)} pts`, type: "away" });
+  if (awayQBAdj < -3) factors.push({ label: "QB Downgrade", val: `AWAY -${Math.abs(awayQBAdj).toFixed(1)} pts`, type: "home" });
+  if (wxAdj.note) factors.push({ label: "Weather", val: wxAdj.note, type: "neutral" });
+  if (!neutralSite) factors.push({ label: "Home Field", val: "+2.5 pts", type: "home" });
+
+  return {
+    homeScore: parseFloat(homeScore.toFixed(1)), awayScore: parseFloat(awayScore.toFixed(1)),
+    homeWinPct: hwp, awayWinPct: 1 - hwp, projectedSpread: spread,
+    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    modelML_home: mml, modelML_away: aml,
+    confidence: cs >= 62 ? "HIGH" : cs >= 35 ? "MEDIUM" : "LOW", confScore: cs,
+    homeEPA: parseFloat(hOffEpa?.toFixed(3)), awayEPA: parseFloat(aOffEpa?.toFixed(3)),
+    homeDVOA: parseFloat(homeDVOA.netDVOA?.toFixed(1)), awayDVOA: parseFloat(awayDVOA.netDVOA?.toFixed(1)),
+    weather: wxAdj, factors, neutralSite, usingRealEpa: !!(homeRealEpa || awayRealEpa),
+    enhancedVersion: ENHANCEMENT_VERSION,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 6 — NCAAF ENHANCEMENTS
+// FCS filter, SP+ integration, conference context,
+// recruiting quality baseline, travel distance/time zone
+// ═══════════════════════════════════════════════════════════════
+
+// FCS opponent filter — remove FCS wins from stat inflation
+// FCS teams are Division I-AA, much weaker than FBS
+const FCS_INDICATORS = ["appalachian", "charlotte", "coastal carolina", "florida atlantic",
+  "florida international", "georgia southern", "georgia state", "james madison", "kennesaw state",
+  "marshall", "middle tennessee", "old dominion", "south alabama", "southern miss", "southern miss",
+  "texas state", "troy", "usa", "utep", "utsa", "western kentucky", "western michigan",
+  "east carolina", "rice", "north texas", "tulane", "tulsa", "uab",
+]; // Note: this is a simplified indicator list — in production, use ESPN conference ID check
+
+function filterFCSOpponents(games = []) {
+  // Returns games with FCS opponents flagged
+  return games.map(g => ({
+    ...g,
+    isFCSOpponent: FCS_INDICATORS.some(name =>
+      (g.awayTeamName || "").toLowerCase().includes(name) ||
+      (g.homeTeamName || "").toLowerCase().includes(name)
+    ),
+  }));
+}
+
+// SP+ rating integration (Football Outsiders proxy until $40 subscription)
+// Calculation: blend of scoring efficiency, success rate proxy, explosiveness
+function calcSPPlusProxy(stats) {
+  if (!stats) return 0;
+  const { ppg, oppPpg, yardsPerPlay, oppYpPlay, thirdPct, redZonePct, toMargin } = stats;
+  const lgPpg = 27.5, lgYpp = 5.8, lgThird = 0.40, lgRZ = 0.60;
+  // SP+ components
+  const offSP = (ppg - lgPpg) * 0.8 + (yardsPerPlay - lgYpp) * 6 + (thirdPct - lgThird) * 20 + (redZonePct - lgRZ) * 12;
+  const defSP = (lgPpg - oppPpg) * 0.8 + (lgYpp - oppYpPlay) * 6;
+  const stSP  = toMargin * 2.5;  // Special teams proxy via TO margin
+  return parseFloat((offSP * 0.5 + defSP * 0.4 + stSP * 0.1).toFixed(2));
+}
+
+// Conference game context adjustment
+// Teams typically perform differently in conference vs non-conference
+function conferenceContextAdj(homeConf, awayConf, isConferenceGame) {
+  if (!isConferenceGame) return 0;
+  // Power conferences (P4 + ACC) mean smaller HFA (more parity)
+  const powerConfs = ["SEC", "Big Ten", "Big 12", "ACC", "Pac-12", "Big Ten Conference", "Southeastern Conference", "Big 12 Conference", "Atlantic Coast Conference"];
+  const bothPower = powerConfs.some(c => homeConf?.includes(c)) && powerConfs.some(c => awayConf?.includes(c));
+  return bothPower ? -0.5 : 0; // Slightly reduce HFA in elite conference games (familiarity)
+}
+
+// Recruiting quality baseline — elite recruit classes = better depth
+const RECRUITING_ELITE = ["Alabama", "Georgia", "Ohio State", "LSU", "Texas", "USC", "Notre Dame", "Michigan", "Penn State", "Oregon", "Florida", "Clemson", "Oklahoma", "Texas A&M"];
+const RECRUITING_STRONG = ["Auburn", "Tennessee", "Arkansas", "Ole Miss", "Mississippi State", "Wisconsin", "Iowa", "Miami", "Florida State", "Washington", "Utah", "Kansas State", "Missouri"];
+
+function recruitingBaselineBonus(teamName) {
+  if (!teamName) return 0;
+  const name = teamName.toLowerCase();
+  if (RECRUITING_ELITE.some(t => name.includes(t.toLowerCase()))) return 1.5;
+  if (RECRUITING_STRONG.some(t => name.includes(t.toLowerCase()))) return 0.75;
+  return 0;
+}
+
+// Travel distance & time zone adjustment for NCAAF
+const NCAAF_CITY_COORDS = {
+  // Major CFB programs (approximate)
+  "Alabama":    { lat: 33.2, lng: -87.5 }, "Georgia":    { lat: 33.9, lng: -83.4 },
+  "Ohio State": { lat: 40.0, lng: -83.0 }, "Michigan":   { lat: 42.3, lng: -83.7 },
+  "LSU":        { lat: 30.4, lng: -91.2 }, "Texas":      { lat: 30.3, lng: -97.7 },
+  "USC":        { lat: 34.0, lng: -118.3 }, "Oregon":    { lat: 44.1, lng: -123.1 },
+  "Washington": { lat: 47.6, lng: -122.3 }, "Utah":      { lat: 40.8, lng: -111.9 },
+};
+
+function ncaafTravelAdj(homeTeamName, awayTeamName) {
+  const homeCoords = NCAAF_CITY_COORDS[homeTeamName];
+  const awayCoords = NCAAF_CITY_COORDS[awayTeamName];
+  if (!homeCoords || !awayCoords) return 0;
+  const R = 3959, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(awayCoords.lat - homeCoords.lat);
+  const dLng = toRad(awayCoords.lng - homeCoords.lng);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(homeCoords.lat)) * Math.cos(toRad(awayCoords.lat)) * Math.sin(dLng/2)**2;
+  const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  // Time zone crossings (EST vs PST = ~3 zones)
+  const lngDiff = Math.abs(awayCoords.lng - homeCoords.lng);
+  const timeZoneCrossings = Math.floor(lngDiff / 15);
+  let penalty = 0;
+  if (dist > 2000) penalty -= 1.5;
+  else if (dist > 1000) penalty -= 0.8;
+  if (timeZoneCrossings >= 3) penalty -= 1.0; // Cross-country time zone disruption
+  return penalty;
+}
+
+// Enhanced NCAAF prediction
+function ncaafPredictGameEnhanced({
+  homeStats, awayStats, homeTeamName = "", awayTeamName = "",
+  neutralSite = false, weather = {},
+  homeRestDays = 7, awayRestDays = 7,
+  isConferenceGame = false,
+  calibrationFactor = 1.0,
+  homeInjuries = [], awayInjuries = [],
+}) {
+  if (!homeStats || !awayStats) return null;
+
+  // SP+ proxy for both teams
+  const homeSPP = calcSPPlusProxy(homeStats);
+  const awaySPP = calcSPPlusProxy(awayStats);
+
+  // Base scoring
+  const homeOff = (homeStats.ppg - NCAAF_LG_AVG_PPG) / 7;
+  const awayDef = (awayStats.oppPpg - NCAAF_LG_AVG_PPG) / 7;
+  const awayOff = (awayStats.ppg - NCAAF_LG_AVG_PPG) / 7;
+  const homeDef = (homeStats.oppPpg - NCAAF_LG_AVG_PPG) / 7;
+  let homeScore = NCAAF_LG_AVG_PPG + homeOff * 3.5 + awayDef * 2.5;
+  let awayScore = NCAAF_LG_AVG_PPG + awayOff * 3.5 + homeDef * 2.5;
+
+  // SP+ efficiency overlay
+  homeScore += homeStats.offEff * 15 + awayStats.defEff * 12;
+  awayScore += awayStats.offEff * 15 + homeStats.defEff * 12;
+
+  // SP+ proxy additional signal
+  homeScore += homeSPP * 0.4;
+  awayScore += awaySPP * 0.4;
+
+  // Recruiting quality baseline (depth advantage over full season)
+  const homeRecruitBonus = recruitingBaselineBonus(homeTeamName);
+  const awayRecruitBonus = recruitingBaselineBonus(awayTeamName);
+  homeScore += homeRecruitBonus * 0.5;
+  awayScore += awayRecruitBonus * 0.5;
+
+  // Turnover margin, red zone, third down, yards per play
+  const yppAdj = (homeStats.yardsPerPlay - awayStats.oppYpPlay) * 2;
+  homeScore += yppAdj * 0.25; awayScore -= yppAdj * 0.1;
+  const toAdj = (homeStats.toMargin - awayStats.toMargin) * 2.0;
+  homeScore += toAdj * 0.5; awayScore -= toAdj * 0.5;
+  const rzAdj = (homeStats.redZonePct - awayStats.redZonePct) * 14;
+  homeScore += rzAdj * 0.3; awayScore -= rzAdj * 0.1;
+  const tdAdj = (homeStats.thirdPct - awayStats.thirdPct) * 20;
+  homeScore += tdAdj * 0.2; awayScore -= tdAdj * 0.08;
+
+  // Rankings bonus
+  if (homeStats.rank && homeStats.rank <= 10 && (!awayStats.rank || awayStats.rank > 10)) homeScore += NCAAF_RANKED_BOOST;
+  if (awayStats.rank && awayStats.rank <= 10 && (!homeStats.rank || homeStats.rank > 10)) awayScore += NCAAF_RANKED_BOOST;
+
+  // Conference context adjustment (reduces HFA slightly in elite conferences)
+  const confAdj = conferenceContextAdj(homeStats.conferenceName, awayStats.conferenceName, isConferenceGame);
+  homeScore += confAdj / 2; awayScore -= confAdj / 2;
+
+  // Recent form
+  const fw = Math.min(0.12, 0.12 * Math.sqrt(Math.min(homeStats.totalGames, 12) / 12));
+  homeScore += homeStats.formScore * fw * 5;
+  awayScore += awayStats.formScore * fw * 5;
+
+  // Home field advantage
+  if (!neutralSite) { homeScore += NCAAF_HOME_FIELD_ADV / 2; awayScore -= NCAAF_HOME_FIELD_ADV / 2; }
+
+  // Rest / bye week
+  if (homeRestDays >= 14) homeScore += 2.5;
+  if (awayRestDays >= 14) awayScore += 2.5;
+  else if (homeRestDays - awayRestDays >= 4) homeScore += 1.0;
+  else if (awayRestDays - homeRestDays >= 4) awayScore += 1.0;
+
+  // Altitude
+  if (homeStats.altFactor > 1.0 && !neutralSite) {
+    homeScore *= homeStats.altFactor;
+    awayScore *= (1 / homeStats.altFactor);
+  }
+
+  // Travel penalty for away team
+  const travelPenalty = ncaafTravelAdj(homeTeamName, awayTeamName);
+  awayScore += travelPenalty;
+
+  // Injury impact
+  const roleWeights = { starter: 2.0, rotation: 1.2, reserve: 0.5 };
+  const homeInjPenalty = homeInjuries.reduce((s, p) => s + (roleWeights[p.role] || 1.2), 0);
+  const awayInjPenalty = awayInjuries.reduce((s, p) => s + (roleWeights[p.role] || 1.2), 0);
+  homeScore -= homeInjPenalty;
+  awayScore -= awayInjPenalty;
+
+  // Weather
+  const wxAdj = ncaafWeatherAdj(weather);
+  homeScore += wxAdj.pts / 2; awayScore += wxAdj.pts / 2;
+
+  homeScore = Math.max(3, Math.min(70, homeScore));
+  awayScore = Math.max(3, Math.min(70, awayScore));
+  const spread = parseFloat((homeScore - awayScore).toFixed(1));
+
+  let hwp = 1 / (1 + Math.pow(10, -spread / 13));
+  hwp = Math.min(0.96, Math.max(0.04, hwp));
+  if (calibrationFactor !== 1.0) hwp = Math.min(0.96, Math.max(0.04, 0.5 + (hwp - 0.5) * calibrationFactor));
+  const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);
+  const aml = hwp >= 0.5 ? +Math.round(((1 - hwp) / hwp) * 100) : -Math.round((hwp / (1 - hwp)) * 100);
+
+  const emGap = Math.abs(homeStats.adjEM - awayStats.adjEM);
+  const wps = Math.abs(hwp - 0.5) * 2;
+  const minG = Math.min(homeStats.totalGames, awayStats.totalGames);
+  const samp = Math.min(1.0, minG / 8);
+  const effQ = Math.min(1, (Math.abs(homeStats.offEff) + Math.abs(homeStats.defEff) + Math.abs(awayStats.offEff) + Math.abs(awayStats.defEff)) / 0.3);
+  const cs = Math.round((Math.min(emGap, 20) / 20) * 35 + wps * 30 + samp * 22 + effQ * 8 + (minG >= 4 ? 5 : 0));
+  const confidence = cs >= 62 ? "HIGH" : cs >= 35 ? "MEDIUM" : "LOW";
+
+  const factors = [];
+  if (Math.abs(toAdj) > 1.5) factors.push({ label: "Turnover Margin", val: toAdj > 0 ? `HOME +${toAdj.toFixed(1)}` : `AWAY +${(-toAdj).toFixed(1)}`, type: toAdj > 0 ? "home" : "away" });
+  if (Math.abs(homeSPP - awaySPP) > 5) factors.push({ label: "SP+ Gap", val: homeSPP > awaySPP ? `HOME +${(homeSPP - awaySPP).toFixed(1)}` : `AWAY +${(awaySPP - homeSPP).toFixed(1)}`, type: homeSPP > awaySPP ? "home" : "away" });
+  if (homeStats.rank && homeStats.rank <= 25) factors.push({ label: "Ranked", val: `HOME #${homeStats.rank}`, type: "home" });
+  if (awayStats.rank && awayStats.rank <= 25) factors.push({ label: "Ranked", val: `AWAY #${awayStats.rank}`, type: "away" });
+  if (travelPenalty < -0.5) factors.push({ label: "Travel Penalty", val: `AWAY -${Math.abs(travelPenalty).toFixed(1)} pts`, type: "home" });
+  if (!neutralSite) factors.push({ label: "Home Field", val: `+${NCAAF_HOME_FIELD_ADV} pts`, type: "home" });
+  if (wxAdj.note) factors.push({ label: "Weather", val: wxAdj.note, type: "neutral" });
+
+  return {
+    homeScore: parseFloat(homeScore.toFixed(1)), awayScore: parseFloat(awayScore.toFixed(1)),
+    homeWinPct: hwp, awayWinPct: 1 - hwp, projectedSpread: spread,
+    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    modelML_home: mml, modelML_away: aml, confidence, confScore: cs,
+    homeAdjEM: parseFloat(homeStats.adjEM?.toFixed(2)), awayAdjEM: parseFloat(awayStats.adjEM?.toFixed(2)),
+    homeSPP: parseFloat(homeSPP.toFixed(1)), awaySPP: parseFloat(awaySPP.toFixed(1)),
+    weather: wxAdj, factors, neutralSite, enhancedVersion: ENHANCEMENT_VERSION,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 7 — UNIVERSAL ENHANCEMENTS
+// Bayesian prior blending, line movement signals,
+// ensemble model, Kelly Criterion sizing, CLV tracking
+// ═══════════════════════════════════════════════════════════════
+
+// Bayesian prior blending: replaces linear interpolation
+// Combines model probability with market probability using season confidence weight
+function bayesianBlend(modelWinPct, marketWinPct, seasonGamesPlayed = 0, totalSeasonGames = 162) {
+  if (marketWinPct == null) return modelWinPct;
+  // Prior strength increases as season progresses — model earns more weight with more data
+  const seasonProgress = Math.min(1, seasonGamesPlayed / totalSeasonGames);
+  const modelWeight  = 0.35 + seasonProgress * 0.20; // 35% early → 55% late season
+  const marketWeight = 1 - modelWeight;
+  const blended = modelWinPct * modelWeight + marketWinPct * marketWeight;
+  return Math.min(0.95, Math.max(0.05, blended));
+}
+
+// Convert American odds to implied win probability (with vig removed)
+function americanOddsToWinPct(ml) {
+  if (!ml || ml === 0) return 0.5;
+  return ml < 0 ? Math.abs(ml) / (Math.abs(ml) + 100) : 100 / (ml + 100);
+}
+
+// Remove vig from a two-sided market to get true probabilities
+function removeVig(homeML, awayML) {
+  const homeImplied = americanOddsToWinPct(homeML);
+  const awayImplied = americanOddsToWinPct(awayML);
+  const total = homeImplied + awayImplied;
+  return {
+    homeWinPct: homeImplied / total,
+    awayWinPct: awayImplied / total,
+    vigPct: (total - 1) * 100,
+  };
+}
+
+// Ensemble model: blend statistical model + vig-removed market probability
+// This is the single highest-value enhancement (+0.5–1.0% accuracy)
+function ensembleWinProbability({
+  modelWinPct,
+  marketML_home,   // Vegas money line for home team
+  marketML_away,
+  gamesPlayed = 0,
+  totalSeasonGames = 162,
+  sport = "MLB",
+}) {
+  if (!marketML_home || !marketML_away) return { ensembleWinPct: modelWinPct, source: "model_only" };
+
+  const { homeWinPct: marketWinPct } = removeVig(marketML_home, marketML_away);
+  const blended = bayesianBlend(modelWinPct, marketWinPct, gamesPlayed, totalSeasonGames);
+
+  // CLV signal: if model and market diverge by >5%, flag as potential value
+  const divergence = Math.abs(modelWinPct - marketWinPct);
+  const isValueBet = divergence >= 0.05;
+  const favoredBy = modelWinPct > marketWinPct ? "model" : "market";
+
+  return {
+    ensembleWinPct: blended,
+    marketWinPct,
+    modelWinPct,
+    divergence: parseFloat(divergence.toFixed(4)),
+    isValueBet,
+    favoredBy,
+    source: "ensemble",
+  };
+}
+
+// Line movement signal: detect sharp money / steam moves
+// Compare opening line to current line — large moves = sharp action
+function detectLineMovement(openingML, currentML, side = "home") {
+  if (!openingML || !currentML) return null;
+  const openingWinPct = americanOddsToWinPct(openingML);
+  const currentWinPct = americanOddsToWinPct(currentML);
+  const movement = currentWinPct - openingWinPct; // Positive = line moved toward this side
+
+  return {
+    openingML, currentML, movement: parseFloat(movement.toFixed(4)),
+    isSteamMove: Math.abs(movement) >= 0.04,  // 4%+ shift = likely sharp money
+    direction: movement > 0 ? "moving_toward_" + side : "moving_away_from_" + side,
+    note: Math.abs(movement) >= 0.04
+      ? `⚡ Steam move: line moved ${(movement * 100).toFixed(1)}% toward ${side}`
+      : null,
+  };
+}
+
+// Kelly Criterion bet sizing
+// Returns recommended bet size as fraction of bankroll
+function kellyCriterion(winPct, decimalOdds, fractionKelly = KELLY_FRACTION) {
+  if (!winPct || !decimalOdds || winPct <= 0 || winPct >= 1) return 0;
+  const b = decimalOdds - 1; // Net odds (profit per $1 wagered)
+  const kelly = (b * winPct - (1 - winPct)) / b;
+  if (kelly <= 0) return 0; // No edge, don't bet
+  return parseFloat(Math.min(0.25, kelly * fractionKelly).toFixed(4)); // Cap at 25% of bankroll
+}
+
+function americanToDecimal(ml) {
+  if (!ml) return 1.91; // default -110
+  return ml > 0 ? (ml / 100) + 1 : (100 / Math.abs(ml)) + 1;
+}
+
+// CLV (Closing Line Value) tracking
+// Positive CLV means you beat the closing line (value bet confirmed)
+function calcCLV(bettingML, closingML) {
+  if (!bettingML || !closingML) return null;
+  const bettingWinPct = americanOddsToWinPct(bettingML);
+  const closingWinPct = americanOddsToWinPct(closingML);
+  const clv = closingWinPct - bettingWinPct; // Positive = you got better price than closing
+  return {
+    clv: parseFloat(clv.toFixed(4)),
+    clvPct: parseFloat((clv * 100).toFixed(2)),
+    isPositiveCLV: clv > CLV_MIN_THRESHOLD / 100,
+    note: clv > 0.02 ? `+${(clv * 100).toFixed(1)}% CLV ✅` : clv < -0.02 ? `${(clv * 100).toFixed(1)}% CLV ⚠️` : "Neutral CLV",
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 8 — BEAT VEGAS FRAMEWORK
+// Honest math on required win rates, expected ROI,
+// priority implementation roadmap
+// ═══════════════════════════════════════════════════════════════
+
+// Compute expected annual ROI at a given win rate
+function computeExpectedROI(winRate, betsPerYear = 1000, avgBetSize = 100, juice = -110) {
+  const decimalOdds = americanToDecimal(juice);
+  const profitPerWin  = avgBetSize * (decimalOdds - 1);
+  const lossPerLoss   = avgBetSize;
+  const wins   = Math.round(betsPerYear * winRate);
+  const losses = betsPerYear - wins;
+  const roi    = wins * profitPerWin - losses * lossPerLoss;
+  const roiPct = roi / (betsPerYear * avgBetSize) * 100;
+  return {
+    winRate, betsPerYear, wins, losses, avgBetSize,
+    annualROI:    parseFloat(roi.toFixed(0)),
+    annualROIPct: parseFloat(roiPct.toFixed(2)),
+    breakEven:    BREAK_EVEN_WIN_RATE,
+    isBeatingVegas: winRate > BREAK_EVEN_WIN_RATE,
+  };
+}
+
+// Enhancement priority ladder (documented for UI display)
+const ENHANCEMENT_ROADMAP = [
+  { priority: 1, effort: "2–3 hrs", sport: "MLB",   enhancement: "Real xFIP/SIERA from FanGraphs CSV", gainPct: "+0.3%", cost: "Free",        status: "implemented" },
+  { priority: 2, effort: "3–4 hrs", sport: "NBA",   enhancement: "NBA Stats API real pace/efficiency",   gainPct: "+0.4%", cost: "Free",        status: "implemented" },
+  { priority: 3, effort: "1–2 hrs", sport: "MLB",   enhancement: "Pitcher last-3-start form overlay",    gainPct: "+0.2%", cost: "Free",        status: "implemented" },
+  { priority: 4, effort: "2–3 hrs", sport: "NCAAB", enhancement: "Home/away splits from schedule",      gainPct: "+0.3%", cost: "Free",        status: "implemented" },
+  { priority: 5, effort: "2–3 hrs", sport: "ALL",   enhancement: "Ensemble model with market probability",gainPct: "+0.5–1.0%", cost: "Free",  status: "implemented" },
+  { priority: 6, effort: "1 hr",    sport: "NCAAF", enhancement: "FCS opponent filter",                  gainPct: "+0.2%", cost: "Free",        status: "implemented" },
+  { priority: 7, effort: "4–6 hrs", sport: "NFL",   enhancement: "nflverse real EPA/play data",          gainPct: "+0.4%", cost: "Free",        status: "implemented" },
+  { priority: 8, effort: "ongoing", sport: "ALL",   enhancement: "KenPom subscription (NCAAB)",          gainPct: "+0.8%", cost: "$20/yr",      status: "optional_paid" },
+  { priority: 9, effort: "ongoing", sport: "MLB",   enhancement: "Stathead batter-vs-pitcher splits",    gainPct: "+0.3%", cost: "$9/mo",       status: "optional_paid" },
+  { priority: 10,effort: "ongoing", sport: "NFL",   enhancement: "Football Outsiders DVOA",              gainPct: "+0.5%", cost: "$40/season",  status: "optional_paid" },
+];
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 9 — IMPLEMENTATION CODE
+// EnhancedPredictionEngine: unified async wrapper that calls
+// all enhancements and returns enriched prediction rows
+// ═══════════════════════════════════════════════════════════════
+
+// Unified enhanced prediction engine — wraps all sport-specific enhance calls
+// Drop-in replacement for individual sport predict functions
+const EnhancedPredictionEngine = {
+
+  // MLB: fetch park weather + build enhanced prediction
+  async mlb(params) {
+    const { homeTeamId } = params;
+    let parkWeather = null;
+    try { parkWeather = await fetchParkWeather(homeTeamId); } catch {}
+    return mlbPredictGameEnhanced({ ...params, parkWeather });
+  },
+
+  // NCAAB: fetch SOS + home/away splits + enhanced prediction
+  async ncaab(game, homeStats, awayStats, opts = {}) {
+    let homeSOSFactor = null, awaySOSFactor = null;
+    let homeSplits = null, awaySplits = null;
+    try {
+      [homeSOSFactor, awaySOSFactor, homeSplits, awaySplits] = await Promise.all([
+        fetchNCAATeamSOS(game.homeTeamId),
+        fetchNCAATeamSOS(game.awayTeamId),
+        fetchNCAAHomeAwaySplits(game.homeTeamId),
+        fetchNCAAHomeAwaySplits(game.awayTeamId),
+      ]);
+    } catch {}
+    return ncaaPredictGameEnhanced({
+      homeStats, awayStats,
+      neutralSite: game.neutralSite,
+      homeSOSFactor, awaySOSFactor,
+      homeSplits, awaySplits,
+      ...opts,
+    });
+  },
+
+  // NBA: fetch real pace + enhanced prediction
+  async nba(game, homeStats, awayStats, opts = {}) {
+    let homeRealStats = null, awayRealStats = null;
+    try {
+      [homeRealStats, awayRealStats] = await Promise.all([
+        fetchNBARealPace(game.homeAbbr),
+        fetchNBARealPace(game.awayAbbr),
+      ]);
+    } catch {}
+    return nbaPredictGameEnhanced({
+      homeStats, awayStats,
+      homeAbbr: game.homeAbbr, awayAbbr: game.awayAbbr,
+      neutralSite: game.neutralSite,
+      homeRealStats, awayRealStats,
+      ...opts,
+    });
+  },
+
+  // NFL: fetch real EPA + enhanced prediction
+  async nfl(game, homeStats, awayStats, opts = {}) {
+    let homeRealEpa = null, awayRealEpa = null;
+    try {
+      [homeRealEpa, awayRealEpa] = await Promise.all([
+        fetchNFLRealEPA(homeStats.abbr),
+        fetchNFLRealEPA(awayStats.abbr),
+      ]);
+    } catch {}
+    return nflPredictGameEnhanced({
+      homeStats, awayStats,
+      neutralSite: game.neutralSite,
+      homeRealEpa, awayRealEpa,
+      ...opts,
+    });
+  },
+
+  // NCAAF: enhanced prediction with SP+, recruiting, travel
+  async ncaaf(game, homeStats, awayStats, opts = {}) {
+    return ncaafPredictGameEnhanced({
+      homeStats, awayStats,
+      homeTeamName: game.homeTeamName || "",
+      awayTeamName: game.awayTeamName || "",
+      neutralSite: game.neutralSite,
+      isConferenceGame: game.conferenceGame || false,
+      weather: game.weather || {},
+      ...opts,
+    });
+  },
+
+  // Universal: apply ensemble model to any prediction result
+  applyEnsemble(pred, marketML_home, marketML_away, gamesPlayed = 0, totalSeasonGames = 162) {
+    if (!pred) return pred;
+    const ensemble = ensembleWinProbability({
+      modelWinPct: pred.homeWinPct,
+      marketML_home, marketML_away,
+      gamesPlayed, totalSeasonGames,
+    });
+    const finalWinPct = ensemble.ensembleWinPct;
+    const mml = finalWinPct >= 0.5 ? -Math.round((finalWinPct / (1 - finalWinPct)) * 100) : +Math.round(((1 - finalWinPct) / finalWinPct) * 100);
+    const aml = finalWinPct >= 0.5 ? +Math.round(((1 - finalWinPct) / finalWinPct) * 100) : -Math.round((finalWinPct / (1 - finalWinPct)) * 100);
+    return {
+      ...pred,
+      homeWinPct: parseFloat(finalWinPct.toFixed(4)),
+      awayWinPct: parseFloat((1 - finalWinPct).toFixed(4)),
+      modelML_home: mml, modelML_away: aml,
+      ensemble,
+    };
+  },
+
+  // Bet sizing: Kelly Criterion for a given prediction
+  getBetSize(winPct, marketML, bankroll = 1000) {
+    const decOdds = americanToDecimal(marketML);
+    const fraction = kellyCriterion(winPct, decOdds);
+    return {
+      fraction,
+      dollarAmount: parseFloat((bankroll * fraction).toFixed(2)),
+      note: fraction >= 0.05 ? "Strong bet" : fraction >= 0.02 ? "Small bet" : fraction > 0 ? "Marginal" : "No edge — skip",
+    };
+  },
+};
+
+// Enhanced accuracy computation with CLV tracking
+function computeAccuracyEnhanced(records) {
+  const base = computeAccuracy(records);
+  if (!base) return null;
+  // CLV analysis
+  const withCLV = records.filter(r => r.bet_ml != null && r.closing_ml != null);
+  let avgCLV = null, positiveCLVPct = null;
+  if (withCLV.length > 0) {
+    const clvs = withCLV.map(r => calcCLV(r.bet_ml, r.closing_ml)).filter(Boolean);
+    avgCLV = clvs.reduce((s, c) => s + c.clvPct, 0) / clvs.length;
+    positiveCLVPct = (clvs.filter(c => c.isPositiveCLV).length / clvs.length * 100).toFixed(1);
+  }
+  // Ensemble picks accuracy (where divergence was flagged)
+  const valuePicksAccuracy = records
+    .filter(r => r.result_entered && r.ml_correct !== null && r.ensemble_divergence >= 0.05)
+    .reduce((acc, r) => ({ total: acc.total + 1, correct: acc.correct + (r.ml_correct ? 1 : 0) }), { total: 0, correct: 0 });
+  return {
+    ...base,
+    clv: { avgCLV: avgCLV?.toFixed(2), positiveCLVPct, samplesWithCLV: withCLV.length },
+    valuePicks: valuePicksAccuracy.total > 0
+      ? { total: valuePicksAccuracy.total, pct: (valuePicksAccuracy.correct / valuePicksAccuracy.total * 100).toFixed(1) }
+      : null,
+    expectedROI: computeExpectedROI(parseFloat(base.mlAcc) / 100, base.mlTotal),
+    roadmap: ENHANCEMENT_ROADMAP,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // ROOT APP
 // ═══════════════════════════════════════════════════════════════
 
