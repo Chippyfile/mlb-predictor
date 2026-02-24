@@ -801,6 +801,7 @@ function espnFetch(path) {
 }
 
 const NCAA_HOME_COURT_ADV = 3.5;
+const NCAA_AVG_TEMPO = 68.0; // NCAA men's basketball league-average possessions per 40 min
 const _ncaaStatsCache = {};
 
 async function fetchNCAATeamStats(teamId) {
@@ -831,8 +832,8 @@ async function fetchNCAATeamStats(teamId) {
     const turnovers = getStat("avgTurnovers") || 12.0;
     const estTempo = 68 + (assists * 0.3) - (turnovers * 0.2);
     const tempo = Math.max(58, Math.min(80, estTempo));
-    const adjOE = (ppg / tempo) * 100;
-    const adjDE = (oppPpg / tempo) * 100;
+    const adjOE = (ppg / NCAA_AVG_TEMPO) * 100;
+    const adjDE = (oppPpg / NCAA_AVG_TEMPO) * 100;
     const adjEM = adjOE - adjDE;
     const wins = recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
     const losses = recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
