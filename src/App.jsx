@@ -6,8 +6,8 @@ import {
 } from "recharts";
 
 // ============================================================
-// MULTI-SPORT PREDICTOR v11
-// ⚾ MLB  +  🏀 NCAA Men's Basketball  +  🏀 NBA
+// MULTI-SPORT PREDICTOR v12
+// ⚾ MLB  +  🏀 NCAA Basketball  +  🏀 NBA  +  🏈 NFL
 // ============================================================
 
 const SUPABASE_URL = "https://lxaaqtqvlwjvyuedyauo.supabase.co";
@@ -1202,86 +1202,43 @@ function matchNCAAOddsToGame(oddsGame, schedGame) {
     (oAway.includes(aName.slice(0, 6)) || aName.includes(oAway.slice(0, 6)));
 }
 
+}
+
 // ═══════════════════════════════════════════════════════════════
 // 🏀 NBA ENGINE
 // ═══════════════════════════════════════════════════════════════
 
-/*
-  SUPABASE SCHEMA — run once in Supabase SQL editor:
-
-  create table if not exists nba_predictions (
-    id serial primary key,
-    sport varchar(5) default 'NBA',
-    game_date date not null,
-    game_id varchar(30),
-    home_team varchar(10) not null,
-    away_team varchar(10) not null,
-    home_team_name varchar(100),
-    away_team_name varchar(100),
-    model_ml_home integer,
-    model_ml_away integer,
-    spread_home numeric(5,1),
-    ou_total numeric(5,1),
-    market_spread_home numeric(5,1),
-    market_ou_total numeric(5,1),
-    win_pct_home numeric(6,4),
-    confidence varchar(10),
-    pred_home_score numeric(5,1),
-    pred_away_score numeric(5,1),
-    home_net_rtg numeric(6,2),
-    away_net_rtg numeric(6,2),
-    actual_home_score integer,
-    actual_away_score integer,
-    result_entered boolean default false,
-    ml_correct boolean,
-    rl_correct boolean,
-    ou_correct varchar(10),
-    created_at timestamptz default now()
-  );
-*/
-
 const NBA_TEAMS_LIST = [
-  { id: "ATL", name: "Atlanta Hawks", conference: "East" },
-  { id: "BOS", name: "Boston Celtics", conference: "East" },
-  { id: "BKN", name: "Brooklyn Nets", conference: "East" },
-  { id: "CHA", name: "Charlotte Hornets", conference: "East" },
-  { id: "CHI", name: "Chicago Bulls", conference: "East" },
-  { id: "CLE", name: "Cleveland Cavaliers", conference: "East" },
-  { id: "DAL", name: "Dallas Mavericks", conference: "West" },
-  { id: "DEN", name: "Denver Nuggets", conference: "West" },
-  { id: "DET", name: "Detroit Pistons", conference: "East" },
-  { id: "GSW", name: "Golden State Warriors", conference: "West" },
-  { id: "HOU", name: "Houston Rockets", conference: "West" },
-  { id: "IND", name: "Indiana Pacers", conference: "East" },
-  { id: "LAC", name: "LA Clippers", conference: "West" },
-  { id: "LAL", name: "Los Angeles Lakers", conference: "West" },
-  { id: "MEM", name: "Memphis Grizzlies", conference: "West" },
-  { id: "MIA", name: "Miami Heat", conference: "East" },
-  { id: "MIL", name: "Milwaukee Bucks", conference: "East" },
-  { id: "MIN", name: "Minnesota Timberwolves", conference: "West" },
-  { id: "NOP", name: "New Orleans Pelicans", conference: "West" },
-  { id: "NYK", name: "New York Knicks", conference: "East" },
-  { id: "OKC", name: "Oklahoma City Thunder", conference: "West" },
-  { id: "ORL", name: "Orlando Magic", conference: "East" },
-  { id: "PHI", name: "Philadelphia 76ers", conference: "East" },
-  { id: "PHX", name: "Phoenix Suns", conference: "West" },
-  { id: "POR", name: "Portland Trail Blazers", conference: "West" },
-  { id: "SAC", name: "Sacramento Kings", conference: "West" },
-  { id: "SAS", name: "San Antonio Spurs", conference: "West" },
-  { id: "TOR", name: "Toronto Raptors", conference: "East" },
-  { id: "UTA", name: "Utah Jazz", conference: "West" },
-  { id: "WAS", name: "Washington Wizards", conference: "East" },
+  { id:"ATL",name:"Atlanta Hawks",conf:"East" },{ id:"BOS",name:"Boston Celtics",conf:"East" },
+  { id:"BKN",name:"Brooklyn Nets",conf:"East" },{ id:"CHA",name:"Charlotte Hornets",conf:"East" },
+  { id:"CHI",name:"Chicago Bulls",conf:"East" },{ id:"CLE",name:"Cleveland Cavaliers",conf:"East" },
+  { id:"DAL",name:"Dallas Mavericks",conf:"West" },{ id:"DEN",name:"Denver Nuggets",conf:"West" },
+  { id:"DET",name:"Detroit Pistons",conf:"East" },{ id:"GSW",name:"Golden State Warriors",conf:"West" },
+  { id:"HOU",name:"Houston Rockets",conf:"West" },{ id:"IND",name:"Indiana Pacers",conf:"East" },
+  { id:"LAC",name:"LA Clippers",conf:"West" },{ id:"LAL",name:"Los Angeles Lakers",conf:"West" },
+  { id:"MEM",name:"Memphis Grizzlies",conf:"West" },{ id:"MIA",name:"Miami Heat",conf:"East" },
+  { id:"MIL",name:"Milwaukee Bucks",conf:"East" },{ id:"MIN",name:"Minnesota Timberwolves",conf:"West" },
+  { id:"NOP",name:"New Orleans Pelicans",conf:"West" },{ id:"NYK",name:"New York Knicks",conf:"East" },
+  { id:"OKC",name:"Oklahoma City Thunder",conf:"West" },{ id:"ORL",name:"Orlando Magic",conf:"East" },
+  { id:"PHI",name:"Philadelphia 76ers",conf:"East" },{ id:"PHX",name:"Phoenix Suns",conf:"West" },
+  { id:"POR",name:"Portland Trail Blazers",conf:"West" },{ id:"SAC",name:"Sacramento Kings",conf:"West" },
+  { id:"SAS",name:"San Antonio Spurs",conf:"West" },{ id:"TOR",name:"Toronto Raptors",conf:"East" },
+  { id:"UTA",name:"Utah Jazz",conf:"West" },{ id:"WAS",name:"Washington Wizards",conf:"East" },
 ];
 
-const nbaTeamByAbbr = (abbr) =>
-  NBA_TEAMS_LIST.find(t => t.id === abbr || t.name.toLowerCase().includes((abbr || "").toLowerCase())) ||
-  { id: abbr, name: abbr, conference: "?" };
-
-// ESPN NBA team ID map (abbr → ESPN team ID for API calls)
 const NBA_ESPN_IDS = {
   ATL:1,BOS:2,BKN:17,CHA:30,CHI:4,CLE:5,DAL:6,DEN:7,DET:8,GSW:9,
   HOU:10,IND:11,LAC:12,LAL:13,MEM:29,MIA:14,MIL:15,MIN:16,NOP:3,NYK:18,
   OKC:25,ORL:19,PHI:20,PHX:21,POR:22,SAC:23,SAS:24,TOR:28,UTA:26,WAS:27,
+};
+
+const NBA_TEAM_COLORS = {
+  ATL:"#E03A3E",BOS:"#007A33",BKN:"#000",CHA:"#1D1160",CHI:"#CE1141",
+  CLE:"#860038",DAL:"#00538C",DEN:"#0E2240",DET:"#C8102E",GSW:"#1D428A",
+  HOU:"#CE1141",IND:"#002D62",LAC:"#C8102E",LAL:"#552583",MEM:"#5D76A9",
+  MIA:"#98002E",MIL:"#00471B",MIN:"#0C2340",NOP:"#0C2340",NYK:"#006BB6",
+  OKC:"#007AC1",ORL:"#0077C0",PHI:"#006BB6",PHX:"#1D1160",POR:"#E03A3E",
+  SAC:"#5A2D81",SAS:"#C4CED4",TOR:"#CE1141",UTA:"#002B5C",WAS:"#002B5C",
 };
 
 const _nbaStatsCache = {};
@@ -1291,332 +1248,518 @@ async function fetchNBATeamStats(abbr) {
   const espnId = NBA_ESPN_IDS[abbr];
   if (!espnId) return null;
   try {
-    const [teamData, statsData] = await Promise.all([
-      fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}`).then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/statistics`).then(r => r.ok ? r.json() : null).catch(() => null),
+    const [teamData, statsData, schedData] = await Promise.all([
+      fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}`).then(r=>r.ok?r.json():null).catch(()=>null),
+      fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/statistics`).then(r=>r.ok?r.json():null).catch(()=>null),
+      fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/schedule`).then(r=>r.ok?r.json():null).catch(()=>null),
     ]);
-
     const stats = statsData?.results?.stats?.categories || [];
-    const getStat = (name) => {
-      for (const cat of stats) {
-        const s = cat.stats?.find(s => s.name === name || s.displayName === name);
-        if (s) return parseFloat(s.value) || null;
+    const getStat = (...names) => {
+      for (const cat of stats) for (const name of names) {
+        const s = cat.stats?.find(s => s.name===name||s.displayName===name);
+        if (s) return parseFloat(s.value)||null;
       }
       return null;
     };
-
-    const ppg = getStat("avgPoints") || getStat("pointsPerGame") || 112.0;
-    const oppPpg = getStat("avgPointsAllowed") || getStat("opponentPointsPerGame") || 112.0;
-    const fgPct = getStat("fieldGoalPct") || 0.460;
-    const assists = getStat("avgAssists") || 25.0;
-    const turnovers = getStat("avgTurnovers") || 14.0;
-
-    // Estimate pace from assists/turnovers/scoring signature
-    const estPace = 96 + (ppg - 110) * 0.3 + (assists - 25) * 0.2;
-    const pace = Math.max(92, Math.min(105, estPace));
-
-    // Adjusted efficiency per 100 possessions
-    const adjOE = (ppg / pace) * 100;
-    const adjDE = (oppPpg / pace) * 100;
-    const netRtg = adjOE - adjDE;
-
-    // Recent form from schedule
-    let formScore = 0;
+    const ppg = getStat("avgPoints","pointsPerGame") || 112.0;
+    const oppPpg = getStat("avgPointsAllowed","opponentPointsPerGame") || 112.0;
+    const estPace = 96 + (ppg-110)*0.3;
+    const pace = Math.max(92,Math.min(105,estPace));
+    const adjOE = (ppg/pace)*100, adjDE = (oppPpg/pace)*100;
+    let formScore=0, wins=0, losses=0;
     try {
-      const schedData = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/schedule`).then(r => r.ok ? r.json() : null).catch(() => null);
-      const events = schedData?.events || [];
-      const recent = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(-10);
-      if (recent.length) {
-        formScore = recent.slice(-5).reduce((s, e, i) => {
-          const comp = e.competitions?.[0];
-          const teamComp = comp?.competitors?.find(c => c.team?.id === String(espnId));
-          return s + ((teamComp?.winner || false) ? 1 : -0.6) * (i + 1);
-        }, 0) / 15;
-      }
+      const events = schedData?.events||[];
+      const completed = events.filter(e=>e.competitions?.[0]?.status?.type?.completed);
+      wins = completed.filter(e=>e.competitions?.[0]?.competitors?.find(c=>c.team?.id===String(espnId))?.winner).length;
+      losses = completed.length - wins;
+      formScore = completed.slice(-5).reduce((s,e,i)=>{
+        const comp=e.competitions?.[0];
+        const tc=comp?.competitors?.find(c=>c.team?.id===String(espnId));
+        return s+((tc?.winner||false)?1:-0.6)*(i+1);
+      },0)/15;
     } catch {}
-
-    const wins = teamData?.team?.record?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
-    const losses = teamData?.team?.record?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
-
-    const result = {
-      abbr, espnId,
-      name: teamData?.team?.displayName || abbr,
-      ppg, oppPpg, pace, adjOE, adjDE, netRtg,
-      fgPct, assists, turnovers, formScore,
-      wins, losses, totalGames: wins + losses,
-    };
-    _nbaStatsCache[abbr] = result;
+    const result = { abbr, espnId, name:teamData?.team?.displayName||abbr, ppg, oppPpg, pace, adjOE, adjDE, netRtg:adjOE-adjDE, formScore, wins, losses, totalGames:wins+losses };
+    _nbaStatsCache[abbr]=result;
     return result;
-  } catch (e) {
-    console.warn("fetchNBATeamStats error:", abbr, e);
-    return null;
-  }
+  } catch(e) { console.warn("fetchNBATeamStats:",abbr,e); return null; }
 }
 
 async function fetchNBAGamesForDate(dateStr) {
   try {
-    const compact = dateStr.replace(/-/g, "");
-    const data = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${compact}&limit=50`)
-      .then(r => r.ok ? r.json() : null).catch(() => null);
+    const compact = dateStr.replace(/-/g,"");
+    const data = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${compact}&limit=50`).then(r=>r.ok?r.json():null).catch(()=>null);
     if (!data?.events) return [];
-    return data.events.map(event => {
-      const comp = event.competitions?.[0];
-      const home = comp?.competitors?.find(c => c.homeAway === "home");
-      const away = comp?.competitors?.find(c => c.homeAway === "away");
-      const status = comp?.status?.type;
-      // Map ESPN team abbr to our abbr system
-      const mapAbbr = a => {
-        const mapping = { "GS": "GSW", "NY": "NYK", "NO": "NOP", "SA": "SAS", "OKC": "OKC", "LAL": "LAL", "LAC": "LAC" };
-        return mapping[a] || a;
-      };
-      const homeAbbr = mapAbbr(home?.team?.abbreviation || "");
-      const awayAbbr = mapAbbr(away?.team?.abbreviation || "");
-      return {
-        gameId: event.id,
-        gameDate: event.date,
-        status: status?.completed ? "Final" : status?.state === "in" ? "Live" : "Preview",
-        detailedState: status?.detail || "",
-        homeTeamId: home?.team?.id,
-        awayTeamId: away?.team?.id,
-        homeAbbr,
-        awayAbbr,
-        homeTeamName: home?.team?.displayName || home?.team?.name,
-        awayTeamName: away?.team?.displayName || away?.team?.name,
-        homeScore: status?.completed ? parseInt(home?.score) : null,
-        awayScore: status?.completed ? parseInt(away?.score) : null,
-        neutralSite: comp?.neutralSite || false,
-      };
-    }).filter(g => g.homeAbbr && g.awayAbbr);
-  } catch (e) {
-    console.warn("fetchNBAGamesForDate error:", dateStr, e);
-    return [];
-  }
+    const mapAbbr = a => ({"GS":"GSW","NY":"NYK","NO":"NOP","SA":"SAS"}[a]||a);
+    return data.events.map(ev=>{
+      const comp=ev.competitions?.[0];
+      const home=comp?.competitors?.find(c=>c.homeAway==="home");
+      const away=comp?.competitors?.find(c=>c.homeAway==="away");
+      const status=comp?.status?.type;
+      return { gameId:ev.id, gameDate:ev.date, status:status?.completed?"Final":status?.state==="in"?"Live":"Preview",
+        homeAbbr:mapAbbr(home?.team?.abbreviation||""), awayAbbr:mapAbbr(away?.team?.abbreviation||""),
+        homeTeamName:home?.team?.displayName, awayTeamName:away?.team?.displayName,
+        homeScore:status?.completed?parseInt(home?.score):null, awayScore:status?.completed?parseInt(away?.score):null, neutralSite:comp?.neutralSite||false };
+    }).filter(g=>g.homeAbbr&&g.awayAbbr);
+  } catch(e) { console.warn("fetchNBAGamesForDate:",dateStr,e); return []; }
 }
 
-const NBA_HOME_COURT_ADV = 2.8;
-const NBA_BACK_TO_BACK_PENALTY = 3.2;
-
-function nbaPredictGame({ homeStats, awayStats, neutralSite = false,
-  homeDaysRest = 2, awayDaysRest = 2,
-  homeInjuryAdj = 0, awayInjuryAdj = 0,
-  calibrationFactor = 1.0 }) {
-  if (!homeStats || !awayStats) return null;
-
-  const possessions = (homeStats.pace + awayStats.pace) / 2;
-  const lgAvgOE = 112.0; // NBA league average ~112 pts/100 poss
-
-  // Possession-model scoring
-  const homeOffVsAwayDef = (homeStats.adjOE / lgAvgOE) * (lgAvgOE / awayStats.adjDE) * lgAvgOE;
-  const awayOffVsHomeDef = (awayStats.adjOE / lgAvgOE) * (lgAvgOE / homeStats.adjDE) * lgAvgOE;
-  let homeScore = (homeOffVsAwayDef / 100) * possessions;
-  let awayScore = (awayOffVsHomeDef / 100) * possessions;
-
-  // Home court
-  const hca = neutralSite ? 0 : NBA_HOME_COURT_ADV;
-  homeScore += hca / 2;
-  awayScore -= hca / 2;
-
-  // Back-to-back fatigue
-  if (homeDaysRest === 0) { homeScore -= NBA_BACK_TO_BACK_PENALTY / 2; awayScore += NBA_BACK_TO_BACK_PENALTY / 2; }
-  if (awayDaysRest === 0) { awayScore -= NBA_BACK_TO_BACK_PENALTY / 2; homeScore += NBA_BACK_TO_BACK_PENALTY / 2; }
-  else if (homeDaysRest - awayDaysRest >= 2) homeScore += 1.5;
-  else if (awayDaysRest - homeDaysRest >= 2) awayScore += 1.5;
-
-  // Injury adjustments
-  homeScore += homeInjuryAdj;
-  awayScore += awayInjuryAdj;
-
-  // Recent form (capped)
-  const formWeight = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames, 30) / 30));
-  homeScore += homeStats.formScore * formWeight * 3;
-  awayScore += awayStats.formScore * formWeight * 3;
-
-  homeScore = Math.max(85, Math.min(145, homeScore));
-  awayScore = Math.max(85, Math.min(145, awayScore));
-
-  const projectedSpread = parseFloat((homeScore - awayScore).toFixed(1));
-
-  // Win probability via logistic on spread
-  let homeWinPct = 1 / (1 + Math.pow(10, -projectedSpread / 12));
-  homeWinPct = Math.min(0.92, Math.max(0.08, homeWinPct));
-  if (calibrationFactor !== 1.0) homeWinPct = Math.min(0.92, Math.max(0.08, 0.5 + (homeWinPct - 0.5) * calibrationFactor));
-
-  const modelML_home = homeWinPct >= 0.5 ? -Math.round((homeWinPct / (1 - homeWinPct)) * 100) : +Math.round(((1 - homeWinPct) / homeWinPct) * 100);
-  const modelML_away = homeWinPct >= 0.5 ? +Math.round(((1 - homeWinPct) / homeWinPct) * 100) : -Math.round((homeWinPct / (1 - homeWinPct)) * 100);
-
-  // Confidence: net rating gap + win pct strength + sample size
-  const netGap = Math.abs(homeStats.netRtg - awayStats.netRtg);
-  const winPctStrength = Math.abs(homeWinPct - 0.5) * 2;
-  const minGames = Math.min(homeStats.totalGames, awayStats.totalGames);
-  const sampleWeight = Math.min(1.0, minGames / 20);
-  const confScore = Math.round(
-    (Math.min(netGap, 8) / 8) * 40 +
-    winPctStrength * 35 +
-    sampleWeight * 20 +
-    (minGames >= 10 ? 5 : 0)
-  );
-  const confidence = confScore >= 62 ? "HIGH" : confScore >= 35 ? "MEDIUM" : "LOW";
-
-  return {
-    homeScore: parseFloat(homeScore.toFixed(1)),
-    awayScore: parseFloat(awayScore.toFixed(1)),
-    homeWinPct, awayWinPct: 1 - homeWinPct,
-    projectedSpread,
-    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
-    modelML_home, modelML_away,
-    confidence, confScore,
-    possessions: parseFloat(possessions.toFixed(1)),
-    homeNetRtg: parseFloat(homeStats.netRtg?.toFixed(2)),
-    awayNetRtg: parseFloat(awayStats.netRtg?.toFixed(2)),
-    netRtgDiff: parseFloat((homeStats.netRtg - awayStats.netRtg).toFixed(2)),
-    neutralSite,
-  };
+function nbaPredictGame({ homeStats, awayStats, neutralSite=false, homeDaysRest=2, awayDaysRest=2, calibrationFactor=1.0 }) {
+  if (!homeStats||!awayStats) return null;
+  const poss = (homeStats.pace+awayStats.pace)/2;
+  const lgAvg = 112.0;
+  let homeScore = ((homeStats.adjOE/lgAvg)*(lgAvg/awayStats.adjDE)*lgAvg/100)*poss;
+  let awayScore = ((awayStats.adjOE/lgAvg)*(lgAvg/homeStats.adjDE)*lgAvg/100)*poss;
+  homeScore += (neutralSite?0:2.8)/2; awayScore -= (neutralSite?0:2.8)/2;
+  if (homeDaysRest===0){homeScore-=1.6;awayScore+=1.6;} if(awayDaysRest===0){awayScore-=1.6;homeScore+=1.6;}
+  else if(homeDaysRest-awayDaysRest>=2) homeScore+=1.5; else if(awayDaysRest-homeDaysRest>=2) awayScore+=1.5;
+  const fw=Math.min(0.10,0.10*Math.sqrt(Math.min(homeStats.totalGames,30)/30));
+  homeScore+=homeStats.formScore*fw*3; awayScore+=awayStats.formScore*fw*3;
+  homeScore=Math.max(85,Math.min(145,homeScore)); awayScore=Math.max(85,Math.min(145,awayScore));
+  const spread=parseFloat((homeScore-awayScore).toFixed(1));
+  let hwp=1/(1+Math.pow(10,-spread/12));
+  hwp=Math.min(0.92,Math.max(0.08,hwp));
+  if(calibrationFactor!==1.0) hwp=Math.min(0.92,Math.max(0.08,0.5+(hwp-0.5)*calibrationFactor));
+  const mml=hwp>=0.5?-Math.round((hwp/(1-hwp))*100):+Math.round(((1-hwp)/hwp)*100);
+  const aml=hwp>=0.5?+Math.round(((1-hwp)/hwp)*100):-Math.round((hwp/(1-hwp))*100);
+  const gap=Math.abs(homeStats.netRtg-awayStats.netRtg);
+  const cs=Math.round((Math.min(gap,8)/8)*40+Math.abs(hwp-0.5)*2*35+Math.min(1,homeStats.totalGames/20)*20+(homeStats.totalGames>=10?5:0));
+  return { homeScore:parseFloat(homeScore.toFixed(1)), awayScore:parseFloat(awayScore.toFixed(1)), homeWinPct:hwp, awayWinPct:1-hwp,
+    projectedSpread:spread, ouTotal:parseFloat((homeScore+awayScore).toFixed(1)), modelML_home:mml, modelML_away:aml,
+    confidence:cs>=62?"HIGH":cs>=35?"MEDIUM":"LOW", confScore:cs,
+    possessions:parseFloat(poss.toFixed(1)), homeNetRtg:parseFloat(homeStats.netRtg?.toFixed(2)), awayNetRtg:parseFloat(awayStats.netRtg?.toFixed(2)), neutralSite };
 }
 
-async function nbaBuildPredictionRow(game, dateStr, marketOdds = null) {
-  const [homeStats, awayStats] = await Promise.all([
-    fetchNBATeamStats(game.homeAbbr),
-    fetchNBATeamStats(game.awayAbbr),
-  ]);
-  if (!homeStats || !awayStats) return null;
-  const pred = nbaPredictGame({ homeStats, awayStats, neutralSite: game.neutralSite });
-  if (!pred) return null;
-  return {
-    game_date: dateStr,
-    game_id: game.gameId,
-    home_team: game.homeAbbr,
-    away_team: game.awayAbbr,
-    home_team_name: game.homeTeamName,
-    away_team_name: game.awayTeamName,
-    model_ml_home: pred.modelML_home,
-    model_ml_away: pred.modelML_away,
-    spread_home: pred.projectedSpread,
-    ou_total: pred.ouTotal,
-    win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)),
-    confidence: pred.confidence,
-    pred_home_score: pred.homeScore,
-    pred_away_score: pred.awayScore,
-    home_net_rtg: pred.homeNetRtg,
-    away_net_rtg: pred.awayNetRtg,
-    ...(marketOdds?.marketSpreadHome != null && { market_spread_home: marketOdds.marketSpreadHome }),
-    ...(marketOdds?.marketTotal != null && { market_ou_total: marketOdds.marketTotal }),
-  };
+function matchNBAOddsToGame(o,g) {
+  if(!o||!g) return false;
+  const n=s=>(s||"").toLowerCase().replace(/[\s\W]/g,"");
+  return (n(o.homeTeam).includes(n(g.homeTeamName||"").slice(0,6))||n(g.homeTeamName||"").includes(n(o.homeTeam).slice(0,6)))&&
+         (n(o.awayTeam).includes(n(g.awayTeamName||"").slice(0,6))||n(g.awayTeamName||"").includes(n(o.awayTeam).slice(0,6)));
 }
 
 async function nbaFillFinalScores(pendingRows) {
-  if (!pendingRows.length) return 0;
-  let filled = 0;
-  const byDate = {};
-  for (const row of pendingRows) { if (!byDate[row.game_date]) byDate[row.game_date] = []; byDate[row.game_date].push(row); }
-  for (const [dateStr, rows] of Object.entries(byDate)) {
-    try {
-      const games = await fetchNBAGamesForDate(dateStr);
-      for (const g of games) {
-        if (g.status !== "Final" || g.homeScore === null || g.awayScore === null) continue;
-        const matchedRow = rows.find(row =>
-          (row.game_id && row.game_id === g.gameId) ||
-          (row.home_team === g.homeAbbr && row.away_team === g.awayAbbr)
-        );
-        if (!matchedRow) continue;
-        const homeScore = g.homeScore, awayScore = g.awayScore;
-        const modelPickedHome = (matchedRow.win_pct_home ?? 0.5) >= 0.5;
-        const homeWon = homeScore > awayScore;
-        const ml_correct = modelPickedHome ? homeWon : !homeWon;
-        const actualMargin = homeScore - awayScore;
-        const mktSpread = matchedRow.market_spread_home ?? null;
-        let rl_correct = null;
-        if (mktSpread !== null) {
-          if (actualMargin > mktSpread) rl_correct = true;
-          else if (actualMargin < mktSpread) rl_correct = false;
-          else rl_correct = null;
-        } else {
-          const projSpread = matchedRow.spread_home || 0;
-          const modelPickedHomeBySpread = projSpread > 0;
-          if (actualMargin === 0) rl_correct = null;
-          else if (actualMargin > 0 && modelPickedHomeBySpread) rl_correct = true;
-          else if (actualMargin < 0 && !modelPickedHomeBySpread) rl_correct = true;
-          else rl_correct = false;
-        }
-        const total = homeScore + awayScore;
-        const ouLine = matchedRow.market_ou_total ?? matchedRow.ou_total ?? null;
-        const predTotal = (matchedRow.pred_home_score ?? 0) + (matchedRow.pred_away_score ?? 0);
-        let ou_correct = null;
-        if (ouLine !== null && total !== ouLine) {
-          ou_correct = ((total > ouLine) === (predTotal > ouLine)) ? "OVER" : "UNDER";
-        } else if (ouLine !== null && total === ouLine) {
-          ou_correct = "PUSH";
-        }
-        await supabaseQuery(`/nba_predictions?id=eq.${matchedRow.id}`, "PATCH", {
-          actual_home_score: homeScore, actual_away_score: awayScore,
-          result_entered: true, ml_correct, rl_correct, ou_correct,
-        });
+  if(!pendingRows.length) return 0;
+  let filled=0;
+  const byDate={};
+  for(const r of pendingRows){if(!byDate[r.game_date])byDate[r.game_date]=[];byDate[r.game_date].push(r);}
+  for(const [dateStr,rows] of Object.entries(byDate)){
+    try{
+      const games=await fetchNBAGamesForDate(dateStr);
+      for(const g of games){
+        if(g.status!=="Final"||g.homeScore===null) continue;
+        const row=rows.find(r=>(r.game_id&&r.game_id===g.gameId)||(r.home_team===g.homeAbbr&&r.away_team===g.awayAbbr));
+        if(!row) continue;
+        const hW=g.homeScore>g.awayScore, mH=(row.win_pct_home??0.5)>=0.5, ml=mH?hW:!hW;
+        const margin=g.homeScore-g.awayScore, mktSpr=row.market_spread_home??null;
+        let rl=null;
+        if(mktSpr!==null){if(margin>mktSpr)rl=true;else if(margin<mktSpr)rl=false;}
+        else{const ps=row.spread_home||0;if(margin===0)rl=null;else if(margin>0&&ps>0)rl=true;else if(margin<0&&ps<0)rl=true;else rl=false;}
+        const total=g.homeScore+g.awayScore, ouL=row.market_ou_total??row.ou_total??null;
+        const predT=(row.pred_home_score??0)+(row.pred_away_score??0);
+        let ou=null;
+        if(ouL!==null&&total!==ouL) ou=((total>ouL)===(predT>ouL))?"OVER":"UNDER";
+        else if(ouL!==null&&total===ouL) ou="PUSH";
+        await supabaseQuery(`/nba_predictions?id=eq.${row.id}`,"PATCH",{actual_home_score:g.homeScore,actual_away_score:g.awayScore,result_entered:true,ml_correct:ml,rl_correct:rl,ou_correct:ou});
         filled++;
       }
-    } catch (e) { console.warn("nbaFillFinalScores error", dateStr, e); }
+    }catch(e){console.warn("nbaFillFinalScores:",dateStr,e);}
   }
   return filled;
 }
 
-function matchNBAOddsToGame(oddsGame, schedGame) {
-  if (!oddsGame || !schedGame) return false;
-  const norm = s => (s || "").toLowerCase().replace(/[\s\W]/g, "");
-  const hName = norm(schedGame.homeTeamName || "");
-  const aName = norm(schedGame.awayTeamName || "");
-  const oHome = norm(oddsGame.homeTeam || "");
-  const oAway = norm(oddsGame.awayTeam || "");
-  return (oHome.includes(hName.slice(0, 6)) || hName.includes(oHome.slice(0, 6))) &&
-    (oAway.includes(aName.slice(0, 6)) || aName.includes(oAway.slice(0, 6)));
-}
-
-const _nbaSeason = (() => {
-  const now = new Date();
-  const yr = now.getMonth() < 7 ? now.getFullYear() - 1 : now.getFullYear();
-  return `${yr}-10-01`;
-})();
+const _nbaSeason=(()=>{const n=new Date();return `${n.getMonth()<7?n.getFullYear()-1:n.getFullYear()}-10-01`;})();
 
 async function nbaAutoSync(onProgress) {
   onProgress?.("🏀 Syncing NBA…");
-  const today = new Date().toISOString().split("T")[0];
-  const existing = await supabaseQuery(
-    `/nba_predictions?select=id,game_date,home_team,away_team,result_entered,game_id&order=game_date.asc&limit=10000`
-  );
-  const savedKeys = new Set((existing || []).map(r => r.game_id || `${r.game_date}|${r.home_team}|${r.away_team}`));
-  const pendingResults = (existing || []).filter(r => !r.result_entered);
-  if (pendingResults.length) {
-    const filled = await nbaFillFinalScores(pendingResults);
-    if (filled) onProgress?.(`🏀 ${filled} NBA result(s) recorded`);
-  }
-  const allDates = [];
-  const cur = new Date(_nbaSeason);
-  while (cur.toISOString().split("T")[0] <= today) {
-    allDates.push(cur.toISOString().split("T")[0]);
-    cur.setDate(cur.getDate() + 1);
-  }
-  const todayOdds = await fetchOdds("basketball_nba");
-  const todayOddsGames = todayOdds?.games || [];
-  let newPred = 0;
-  for (const dateStr of allDates) {
-    const games = await fetchNBAGamesForDate(dateStr);
-    if (!games.length) { await _sleep(60); continue; }
-    const unsaved = games.filter(g => !savedKeys.has(g.gameId || `${dateStr}|${g.homeAbbr}|${g.awayAbbr}`));
-    if (!unsaved.length) { await _sleep(60); continue; }
-    const isToday = dateStr === today;
-    const rows = (await Promise.all(unsaved.map(g => {
-      const gameOdds = isToday ? (todayOddsGames.find(o => matchNBAOddsToGame(o, g)) || null) : null;
-      return nbaBuildPredictionRow(g, dateStr, gameOdds);
+  const today=new Date().toISOString().split("T")[0];
+  const existing=await supabaseQuery(`/nba_predictions?select=id,game_date,home_team,away_team,result_entered,game_id&order=game_date.asc&limit=10000`);
+  const savedKeys=new Set((existing||[]).map(r=>r.game_id||`${r.game_date}|${r.home_team}|${r.away_team}`));
+  const pending=(existing||[]).filter(r=>!r.result_entered);
+  if(pending.length){const f=await nbaFillFinalScores(pending);if(f)onProgress?.(`🏀 ${f} NBA result(s) recorded`);}
+  const allDates=[]; const cur=new Date(_nbaSeason);
+  while(cur.toISOString().split("T")[0]<=today){allDates.push(cur.toISOString().split("T")[0]);cur.setDate(cur.getDate()+1);}
+  const todayOdds=(await fetchOdds("basketball_nba"))?.games||[];
+  let newPred=0;
+  for(const dateStr of allDates){
+    const games=await fetchNBAGamesForDate(dateStr);
+    if(!games.length){await _sleep(50);continue;}
+    const unsaved=games.filter(g=>!savedKeys.has(g.gameId||`${dateStr}|${g.homeAbbr}|${g.awayAbbr}`));
+    if(!unsaved.length){await _sleep(50);continue;}
+    const isToday=dateStr===today;
+    const rows=(await Promise.all(unsaved.map(async g=>{
+      const [hs,as_]=await Promise.all([fetchNBATeamStats(g.homeAbbr),fetchNBATeamStats(g.awayAbbr)]);
+      if(!hs||!as_) return null;
+      const pred=nbaPredictGame({homeStats:hs,awayStats:as_,neutralSite:g.neutralSite});
+      if(!pred) return null;
+      const odds=isToday?(todayOdds.find(o=>matchNBAOddsToGame(o,g))||null):null;
+      return {game_date:dateStr,game_id:g.gameId,home_team:g.homeAbbr,away_team:g.awayAbbr,home_team_name:g.homeTeamName,away_team_name:g.awayTeamName,
+        model_ml_home:pred.modelML_home,model_ml_away:pred.modelML_away,spread_home:pred.projectedSpread,ou_total:pred.ouTotal,
+        win_pct_home:parseFloat(pred.homeWinPct.toFixed(4)),confidence:pred.confidence,pred_home_score:pred.homeScore,pred_away_score:pred.awayScore,
+        home_net_rtg:pred.homeNetRtg,away_net_rtg:pred.awayNetRtg,
+        ...(odds?.marketSpreadHome!=null&&{market_spread_home:odds.marketSpreadHome}),
+        ...(odds?.marketTotal!=null&&{market_ou_total:odds.marketTotal})};
     }))).filter(Boolean);
-    if (rows.length) {
-      await supabaseQuery("/nba_predictions", "UPSERT", rows, "game_id");
-      newPred += rows.length;
-      const ns = await supabaseQuery(
-        `/nba_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team,away_team,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
-      );
-      if (ns?.length) await nbaFillFinalScores(ns);
-      rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team}|${r.away_team}`));
+    if(rows.length){
+      await supabaseQuery("/nba_predictions","UPSERT",rows,"game_id");
+      newPred+=rows.length;
+      const ns=await supabaseQuery(`/nba_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team,away_team,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`);
+      if(ns?.length) await nbaFillFinalScores(ns);
+      rows.forEach(r=>savedKeys.add(r.game_id||`${dateStr}|${r.home_team}|${r.away_team}`));
     }
-    await _sleep(200);
+    await _sleep(150);
   }
-  onProgress?.(newPred ? `🏀 NBA sync complete — ${newPred} new` : "🏀 NBA up to date");
+  onProgress?.(newPred?`🏀 NBA sync complete — ${newPred} new`:"🏀 NBA up to date");
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 🏈 NFL ENGINE — v3 model ported to React/Supabase
+// Factors: EPA/play, turnover margin, red zone, third down,
+//          weather, dome, rest/bye week, home field, form
+// ═══════════════════════════════════════════════════════════════
+
+const NFL_TEAMS = [
+  {abbr:"ARI",name:"Arizona Cardinals",  espnId:22,conf:"NFC",div:"West", color:"#97233F"},
+  {abbr:"ATL",name:"Atlanta Falcons",    espnId:1, conf:"NFC",div:"South",color:"#A71930"},
+  {abbr:"BAL",name:"Baltimore Ravens",   espnId:33,conf:"AFC",div:"North",color:"#241773"},
+  {abbr:"BUF",name:"Buffalo Bills",      espnId:2, conf:"AFC",div:"East", color:"#00338D"},
+  {abbr:"CAR",name:"Carolina Panthers",  espnId:29,conf:"NFC",div:"South",color:"#0085CA"},
+  {abbr:"CHI",name:"Chicago Bears",      espnId:3, conf:"NFC",div:"North",color:"#0B162A"},
+  {abbr:"CIN",name:"Cincinnati Bengals", espnId:4, conf:"AFC",div:"North",color:"#FB4F14"},
+  {abbr:"CLE",name:"Cleveland Browns",   espnId:5, conf:"AFC",div:"North",color:"#311D00"},
+  {abbr:"DAL",name:"Dallas Cowboys",     espnId:6, conf:"NFC",div:"East", color:"#003594"},
+  {abbr:"DEN",name:"Denver Broncos",     espnId:7, conf:"AFC",div:"West", color:"#FB4F14"},
+  {abbr:"DET",name:"Detroit Lions",      espnId:8, conf:"NFC",div:"North",color:"#0076B6"},
+  {abbr:"GB", name:"Green Bay Packers",  espnId:9, conf:"NFC",div:"North",color:"#203731"},
+  {abbr:"HOU",name:"Houston Texans",     espnId:34,conf:"AFC",div:"South",color:"#03202F"},
+  {abbr:"IND",name:"Indianapolis Colts", espnId:11,conf:"AFC",div:"South",color:"#002C5F"},
+  {abbr:"JAC",name:"Jacksonville Jaguars",espnId:30,conf:"AFC",div:"South",color:"#006778"},
+  {abbr:"KC", name:"Kansas City Chiefs", espnId:12,conf:"AFC",div:"West", color:"#E31837"},
+  {abbr:"LV", name:"Las Vegas Raiders",  espnId:13,conf:"AFC",div:"West", color:"#000000"},
+  {abbr:"LAC",name:"LA Chargers",        espnId:24,conf:"AFC",div:"West", color:"#0080C6"},
+  {abbr:"LAR",name:"LA Rams",            espnId:14,conf:"NFC",div:"West", color:"#003594"},
+  {abbr:"MIA",name:"Miami Dolphins",     espnId:15,conf:"AFC",div:"East", color:"#008E97"},
+  {abbr:"MIN",name:"Minnesota Vikings",  espnId:16,conf:"NFC",div:"North",color:"#4F2683"},
+  {abbr:"NE", name:"New England Patriots",espnId:17,conf:"AFC",div:"East",color:"#002244"},
+  {abbr:"NO", name:"New Orleans Saints", espnId:18,conf:"NFC",div:"South",color:"#D3BC8D"},
+  {abbr:"NYG",name:"NY Giants",          espnId:19,conf:"NFC",div:"East", color:"#0B2265"},
+  {abbr:"NYJ",name:"NY Jets",            espnId:20,conf:"AFC",div:"East", color:"#125740"},
+  {abbr:"PHI",name:"Philadelphia Eagles",espnId:21,conf:"NFC",div:"East", color:"#004C54"},
+  {abbr:"PIT",name:"Pittsburgh Steelers",espnId:23,conf:"AFC",div:"North",color:"#FFB612"},
+  {abbr:"SF", name:"San Francisco 49ers",espnId:25,conf:"NFC",div:"West", color:"#AA0000"},
+  {abbr:"SEA",name:"Seattle Seahawks",   espnId:26,conf:"NFC",div:"West", color:"#002244"},
+  {abbr:"TB", name:"Tampa Bay Buccaneers",espnId:27,conf:"NFC",div:"South",color:"#D50A0A"},
+  {abbr:"TEN",name:"Tennessee Titans",   espnId:10,conf:"AFC",div:"South",color:"#0C2340"},
+  {abbr:"WSH",name:"Washington Commanders",espnId:28,conf:"NFC",div:"East",color:"#5A1414"},
+];
+
+const nflTeamByAbbr = a => NFL_TEAMS.find(t=>t.abbr===a)||{abbr:a,name:a,espnId:null,color:"#444"};
+const NFL_ABBR_MAP = {"WAS":"WSH","JAX":"JAC","LVR":"LV","LA":"LAR"};
+const normNFLAbbr = a => NFL_ABBR_MAP[a]||a;
+
+// Dome + altitude stadium factors
+const NFL_STADIUM = {
+  ARI:{dome:true,alt:1.0},ATL:{dome:true,alt:1.0},BAL:{dome:false,alt:1.0},BUF:{dome:false,alt:0.98},
+  CAR:{dome:false,alt:1.0},CHI:{dome:false,alt:0.99},CIN:{dome:false,alt:1.0},CLE:{dome:false,alt:0.98},
+  DAL:{dome:true,alt:1.0},DEN:{dome:false,alt:1.04},DET:{dome:true,alt:1.0},GB:{dome:false,alt:0.97},
+  HOU:{dome:true,alt:1.0},IND:{dome:true,alt:1.0},JAC:{dome:false,alt:1.01},KC:{dome:false,alt:1.0},
+  LV:{dome:true,alt:1.0},LAC:{dome:false,alt:1.0},LAR:{dome:true,alt:1.0},MIA:{dome:false,alt:1.01},
+  MIN:{dome:true,alt:1.0},NE:{dome:false,alt:0.98},NO:{dome:true,alt:1.0},NYG:{dome:false,alt:1.0},
+  NYJ:{dome:false,alt:1.0},PHI:{dome:false,alt:1.0},PIT:{dome:false,alt:0.99},SF:{dome:false,alt:1.0},
+  SEA:{dome:false,alt:1.02},TB:{dome:false,alt:1.01},TEN:{dome:false,alt:1.0},WSH:{dome:false,alt:1.0},
+};
+
+const _nflStatsCache = {};
+
+async function fetchNFLTeamStats(abbr) {
+  if (_nflStatsCache[abbr]) return _nflStatsCache[abbr];
+  const team = nflTeamByAbbr(abbr);
+  if (!team?.espnId) return null;
+  try {
+    const [statsData, schedData] = await Promise.all([
+      fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${team.espnId}/statistics`)
+        .then(r=>r.ok?r.json():null).catch(()=>null),
+      fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/${team.espnId}/schedule`)
+        .then(r=>r.ok?r.json():null).catch(()=>null),
+    ]);
+
+    // ESPN NFL stats have nested categories — try multiple stat name variants
+    const cats = statsData?.results?.stats?.categories || statsData?.splits?.categories || [];
+    const getStat = (...names) => {
+      for (const cat of cats) for (const name of names) {
+        const s = cat.stats?.find(s=>s.name===name||s.abbreviation===name||s.displayName?.toLowerCase()===name.toLowerCase());
+        if (s) return parseFloat(s.value)||null;
+      }
+      return null;
+    };
+
+    const ppg        = getStat("avgPoints","pointsPerGame","scoringAverage") || 22.5;
+    const oppPpg     = getStat("avgPointsAllowed","opponentPointsPerGame","pointsAgainstAverage") || 22.5;
+    const ypPlay     = getStat("yardsPerPlay","totalYardsPerPlay","offensiveYardsPerPlay") || 5.5;
+    const oppYpPlay  = getStat("opponentYardsPerPlay","yardsPerPlayAllowed","defensiveYardsPerPlay") || 5.5;
+    const thirdPct   = getStat("thirdDownPct","thirdDownConversionPct","thirdDownEfficiency") || 0.40;
+    const rzPct      = getStat("redZonePct","redZoneScoringPct","redZoneEfficiency") || 0.55;
+    const qbRating   = getStat("passerRating","totalQBRating","netPasserRating") || 85.0;
+    const rushYpc    = getStat("rushingYardsPerAttempt","yardsPerRushAttempt","rushingYardsPerCarry") || 4.2;
+    const sacks      = getStat("sacks","totalSacks","defensiveSacks") || 2.0;
+    const sacksAllowed = getStat("sacksAllowed","qbSacksAllowed","offensiveSacksAllowed") || 2.0;
+    const turnoversLost   = getStat("turnovers","totalTurnovers","offensiveTurnovers") || 1.5;
+    const turnoversForced = getStat("defensiveTurnovers","takeaways","totalTakeaways") || 1.5;
+
+    // EPA proxy from scoring + efficiency differentials (calibrated to ~0.05–0.15 range)
+    const lgPpg=22.5, lgYpp=5.5;
+    const offEPA = ((ppg-lgPpg)/lgPpg)*0.08 + ((ypPlay-lgYpp)/lgYpp)*0.06 + ((thirdPct-0.40)/0.40)*0.04 + ((rzPct-0.55)/0.55)*0.03;
+    const defEPA = ((lgPpg-oppPpg)/lgPpg)*0.08 + ((lgYpp-oppYpPlay)/lgYpp)*0.06 + (sacks-2.0)*0.004;
+
+    // Recent form — last 5 results with margin weighting
+    let formScore=0, wins=0, losses=0;
+    try {
+      const events = schedData?.events||[];
+      const completed = events.filter(e=>e.competitions?.[0]?.status?.type?.completed);
+      completed.forEach(e=>{
+        const comp=e.competitions?.[0];
+        const tc=comp?.competitors?.find(c=>c.team?.id===String(team.espnId));
+        if(tc?.winner) wins++; else losses++;
+      });
+      formScore = completed.slice(-5).reduce((s,e,i)=>{
+        const comp=e.competitions?.[0];
+        const tc=comp?.competitors?.find(c=>c.team?.id===String(team.espnId));
+        const won=tc?.winner||false;
+        const myScore=parseInt(tc?.score)||0;
+        const oppScore=parseInt(comp?.competitors?.find(c=>c.team?.id!==String(team.espnId))?.score)||0;
+        const margin=myScore-oppScore;
+        return s+(won?1+Math.min(margin/21,0.5):-0.6-Math.min(Math.abs(margin)/21,0.4))*(i+1);
+      },0)/15;
+    } catch {}
+
+    const result = {
+      abbr, name:team.name, espnId:team.espnId,
+      ppg, oppPpg, ypPlay, oppYpPlay, thirdPct, rzPct, qbRating, rushYpc,
+      sacks, sacksAllowed, turnoversLost, turnoversForced,
+      turnoverMargin: turnoversForced-turnoversLost,
+      offEPA, defEPA, netEPA: offEPA+defEPA,
+      formScore, wins, losses, totalGames: wins+losses,
+    };
+    _nflStatsCache[abbr] = result;
+    return result;
+  } catch(e) { console.warn("fetchNFLTeamStats:",abbr,e); return null; }
+}
+
+async function fetchNFLGamesForDate(dateStr) {
+  try {
+    const compact = dateStr.replace(/-/g,"");
+    const data = await fetch(`https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=${compact}&limit=20`)
+      .then(r=>r.ok?r.json():null).catch(()=>null);
+    if (!data?.events) return [];
+    return data.events.map(ev=>{
+      const comp=ev.competitions?.[0];
+      const home=comp?.competitors?.find(c=>c.homeAway==="home");
+      const away=comp?.competitors?.find(c=>c.homeAway==="away");
+      const status=comp?.status?.type;
+      const wx=comp?.weather;
+      return {
+        gameId:ev.id, gameDate:ev.date,
+        status:status?.completed?"Final":status?.state==="in"?"Live":"Preview",
+        homeAbbr:normNFLAbbr(home?.team?.abbreviation||""),
+        awayAbbr:normNFLAbbr(away?.team?.abbreviation||""),
+        homeTeamName:home?.team?.displayName, awayTeamName:away?.team?.displayName,
+        homeScore:status?.completed?parseInt(home?.score):null,
+        awayScore:status?.completed?parseInt(away?.score):null,
+        week:ev.week?.number||null, season:ev.season?.year||new Date().getFullYear(),
+        neutralSite:comp?.neutralSite||false,
+        weather:{ desc:wx?.displayValue||null, temp:wx?.temperature||null, wind:parseInt(wx?.wind)||0 },
+      };
+    }).filter(g=>g.homeAbbr&&g.awayAbbr);
+  } catch(e) { console.warn("fetchNFLGamesForDate:",dateStr,e); return []; }
+}
+
+// Weather adjustment — cold temps + high wind kill scoring
+function nflWeatherAdj(wx) {
+  if (!wx) return { pts:0, note:null };
+  const temp = wx.temp||65, wind = wx.wind||0;
+  let pts=0, notes=[];
+  if (temp<25) { pts-=4.5; notes.push(`❄ ${temp}°F`); }
+  else if (temp<32) { pts-=3.0; notes.push(`🥶 ${temp}°F`); }
+  else if (temp<40) { pts-=1.5; notes.push(`🥶 ${temp}°F`); }
+  if (wind>25) { pts-=3.5; notes.push(`💨 ${wind}mph`); }
+  else if (wind>20) { pts-=2.5; notes.push(`💨 ${wind}mph`); }
+  else if (wind>15) { pts-=1.5; notes.push(`💨 ${wind}mph`); }
+  return { pts, note: notes.join(" ") || null };
+}
+
+function nflPredictGame({ homeStats, awayStats, neutralSite=false, weather={}, homeRestDays=7, awayRestDays=7, calibrationFactor=1.0 }) {
+  if (!homeStats||!awayStats) return null;
+  const lgPpg=22.5;
+
+  // 1. Base scoring from offensive vs defensive matchup
+  const homeOff = (homeStats.ppg-lgPpg)/6;   // +1 per 6ppg above avg
+  const awayDef = (awayStats.oppPpg-lgPpg)/6; // positive = leaky defense
+  const awayOff = (awayStats.ppg-lgPpg)/6;
+  const homeDef = (homeStats.oppPpg-lgPpg)/6;
+  let homeScore = lgPpg + homeOff*3 + awayDef*2;
+  let awayScore = lgPpg + awayOff*3 + homeDef*2;
+
+  // 2. EPA overlay — efficiency signal
+  homeScore += homeStats.offEPA*12 + awayStats.defEPA*10;
+  awayScore += awayStats.offEPA*12 + homeStats.defEPA*10;
+
+  // 3. Turnover margin (~3.5 pts per turnover swing in NFL)
+  const toAdj = (homeStats.turnoverMargin - awayStats.turnoverMargin) * 1.75;
+  homeScore += toAdj*0.5; awayScore -= toAdj*0.5;
+
+  // 4. Third down efficiency
+  const tdAdj = (homeStats.thirdPct - awayStats.thirdPct) * 18;
+  homeScore += tdAdj*0.25; awayScore -= tdAdj*0.1;
+
+  // 5. Red zone — scoring efficiency differential
+  const rzAdj = (homeStats.rzPct - awayStats.rzPct) * 12;
+  homeScore += rzAdj*0.25; awayScore -= rzAdj*0.1;
+
+  // 6. Pass rush / sack rate
+  const sackAdj = (homeStats.sacks - awayStats.sacksAllowed)*0.5;
+  homeScore += sackAdj*0.15; awayScore -= sackAdj*0.15;
+
+  // 7. Yards per play differential
+  const yppAdj = (homeStats.ypPlay - awayStats.oppYpPlay)*1.8;
+  homeScore += yppAdj*0.2; awayScore -= yppAdj*0.1;
+
+  // 8. Recent form
+  const fw = Math.min(0.12,0.12*Math.sqrt(Math.min(homeStats.totalGames,17)/17));
+  homeScore += homeStats.formScore*fw*5; awayScore += awayStats.formScore*fw*5;
+
+  // 9. Home field advantage (2.5pts, disabled on neutral)
+  if (!neutralSite) { homeScore+=1.25; awayScore-=1.25; }
+
+  // 10. Rest / bye week
+  if (homeRestDays>=10) homeScore+=2.0; // bye week
+  if (awayRestDays>=10) awayScore+=2.0;
+  else if (homeRestDays-awayRestDays>=3) homeScore+=0.8;
+  else if (awayRestDays-homeRestDays>=3) awayScore+=0.8;
+
+  // 11. Dome/altitude factor
+  const sf = NFL_STADIUM[homeStats.abbr]||{dome:false,alt:1.0};
+  homeScore *= sf.alt; awayScore *= sf.alt;
+
+  // 12. Weather — reduces both teams' scoring
+  const wxAdj = nflWeatherAdj(weather);
+  homeScore += wxAdj.pts/2; awayScore += wxAdj.pts/2;
+
+  homeScore = Math.max(3,Math.min(55,homeScore));
+  awayScore = Math.max(3,Math.min(55,awayScore));
+  const spread = parseFloat((homeScore-awayScore).toFixed(1));
+
+  // Win probability — logistic, calibrated for NFL spread scale
+  let hwp = 1/(1+Math.pow(10,-spread/10));
+  hwp = Math.min(0.94,Math.max(0.06,hwp));
+  if (calibrationFactor!==1.0) hwp=Math.min(0.94,Math.max(0.06,0.5+(hwp-0.5)*calibrationFactor));
+  const mml=hwp>=0.5?-Math.round((hwp/(1-hwp))*100):+Math.round(((1-hwp)/hwp)*100);
+  const aml=hwp>=0.5?+Math.round(((1-hwp)/hwp)*100):-Math.round((hwp/(1-hwp))*100);
+
+  // Confidence
+  const spreadSize=Math.abs(spread), wps=Math.abs(hwp-0.5)*2;
+  const minG=Math.min(homeStats.totalGames,awayStats.totalGames);
+  const epaQ=Math.min(1,(Math.abs(homeStats.netEPA)+Math.abs(awayStats.netEPA))/0.2);
+  const cs=Math.round((Math.min(spreadSize,10)/10)*35+wps*30+Math.min(1,minG/10)*20+epaQ*10+(minG>=6?5:0));
+  const confidence=cs>=62?"HIGH":cs>=35?"MEDIUM":"LOW";
+
+  // Key factors for card display
+  const factors=[];
+  if(Math.abs(toAdj)>1.5) factors.push({label:"Turnover Margin",val:toAdj>0?`HOME +${toAdj.toFixed(1)}`:`AWAY +${(-toAdj).toFixed(1)}`,type:toAdj>0?"home":"away"});
+  if(Math.abs(homeStats.netEPA-awayStats.netEPA)>0.04) factors.push({label:"EPA Edge",val:homeStats.netEPA>awayStats.netEPA?`HOME +${(homeStats.netEPA-awayStats.netEPA).toFixed(3)} EPA/play`:`AWAY +${(awayStats.netEPA-homeStats.netEPA).toFixed(3)} EPA/play`,type:homeStats.netEPA>awayStats.netEPA?"home":"away"});
+  if(Math.abs(homeStats.formScore-awayStats.formScore)>0.15) factors.push({label:"Recent Form",val:homeStats.formScore>awayStats.formScore?"HOME hot":"AWAY hot",type:homeStats.formScore>awayStats.formScore?"home":"away"});
+  if(homeRestDays>=10) factors.push({label:"Bye Week Rest",val:"HOME rested",type:"home"});
+  if(awayRestDays>=10) factors.push({label:"Bye Week Rest",val:"AWAY rested",type:"away"});
+  if(wxAdj.note) factors.push({label:"Weather",val:wxAdj.note,type:"neutral"});
+  if(!neutralSite) factors.push({label:"Home Field",val:"+2.5 pts",type:"home"});
+  if(sf.dome) factors.push({label:"Dome Advantage",val:"Indoor — no weather",type:"home"});
+
+  return { homeScore:parseFloat(homeScore.toFixed(1)), awayScore:parseFloat(awayScore.toFixed(1)),
+    homeWinPct:hwp, awayWinPct:1-hwp, projectedSpread:spread, ouTotal:parseFloat((homeScore+awayScore).toFixed(1)),
+    modelML_home:mml, modelML_away:aml, confidence, confScore:cs,
+    homeEPA:parseFloat(homeStats.netEPA?.toFixed(3)), awayEPA:parseFloat(awayStats.netEPA?.toFixed(3)),
+    weather:wxAdj, factors, neutralSite };
+}
+
+function matchNFLOddsToGame(o,g) {
+  if(!o||!g) return false;
+  const n=s=>(s||"").toLowerCase().replace(/[\s\W]/g,"");
+  return (n(o.homeTeam).includes(n(g.homeTeamName||"").slice(0,5))||n(g.homeTeamName||"").includes(n(o.homeTeam).slice(0,5)))&&
+         (n(o.awayTeam).includes(n(g.awayTeamName||"").slice(0,5))||n(g.awayTeamName||"").includes(n(o.awayTeam).slice(0,5)));
+}
+
+async function nflFillFinalScores(pendingRows) {
+  if (!pendingRows.length) return 0;
+  let filled=0;
+  const byDate={};
+  for(const r of pendingRows){if(!byDate[r.game_date])byDate[r.game_date]=[];byDate[r.game_date].push(r);}
+  for(const [dateStr,rows] of Object.entries(byDate)){
+    try{
+      const games=await fetchNFLGamesForDate(dateStr);
+      for(const g of games){
+        if(g.status!=="Final"||g.homeScore===null) continue;
+        const row=rows.find(r=>(r.game_id&&r.game_id===g.gameId)||(r.home_team===g.homeAbbr&&r.away_team===g.awayAbbr));
+        if(!row) continue;
+        const hW=g.homeScore>g.awayScore, mH=(row.win_pct_home??0.5)>=0.5, ml=mH?hW:!hW;
+        const margin=g.homeScore-g.awayScore, mktSpr=row.market_spread_home??null;
+        let rl=null;
+        if(mktSpr!==null){if(margin>mktSpr)rl=true;else if(margin<mktSpr)rl=false;}
+        else{const ps=row.spread_home||0;if(margin===0)rl=null;else if(margin>0&&ps>0)rl=true;else if(margin<0&&ps<0)rl=true;else rl=false;}
+        const total=g.homeScore+g.awayScore,ouL=row.market_ou_total??row.ou_total??null;
+        const predT=(row.pred_home_score??0)+(row.pred_away_score??0);
+        let ou=null;
+        if(ouL!==null&&total!==ouL) ou=((total>ouL)===(predT>ouL))?"OVER":"UNDER";
+        else if(ouL!==null&&total===ouL) ou="PUSH";
+        await supabaseQuery(`/nfl_predictions?id=eq.${row.id}`,"PATCH",{actual_home_score:g.homeScore,actual_away_score:g.awayScore,result_entered:true,ml_correct:ml,rl_correct:rl,ou_correct:ou});
+        filled++;
+      }
+    }catch(e){console.warn("nflFillFinalScores:",dateStr,e);}
+  }
+  return filled;
+}
+
+async function nflAutoSync(onProgress) {
+  onProgress?.("🏈 Syncing NFL…");
+  const today=new Date().toISOString().split("T")[0];
+  const existing=await supabaseQuery(`/nfl_predictions?select=id,game_date,home_team,away_team,result_entered,game_id&order=game_date.asc&limit=5000`);
+  const savedKeys=new Set((existing||[]).map(r=>r.game_id||`${r.game_date}|${r.home_team}|${r.away_team}`));
+  const pending=(existing||[]).filter(r=>!r.result_entered);
+  if(pending.length){const f=await nflFillFinalScores(pending);if(f)onProgress?.(`🏈 ${f} NFL result(s) recorded`);}
+  // NFL season: weekly scans Aug–Feb
+  const yr=new Date().getFullYear();
+  const seasonStart=`${yr}-08-01`;
+  const dates=[]; const cur=new Date(seasonStart);
+  while(cur.toISOString().split("T")[0]<=today){dates.push(cur.toISOString().split("T")[0]);cur.setDate(cur.getDate()+1);}
+  const todayOdds=(await fetchOdds("americanfootball_nfl"))?.games||[];
+  let newPred=0;
+  for(const dateStr of dates){
+    const games=await fetchNFLGamesForDate(dateStr);
+    if(!games.length){await _sleep(50);continue;}
+    const unsaved=games.filter(g=>!savedKeys.has(g.gameId||`${dateStr}|${g.homeAbbr}|${g.awayAbbr}`));
+    if(!unsaved.length){await _sleep(50);continue;}
+    const isToday=dateStr===today;
+    const rows=(await Promise.all(unsaved.map(async g=>{
+      const [hs,as_]=await Promise.all([fetchNFLTeamStats(g.homeAbbr),fetchNFLTeamStats(g.awayAbbr)]);
+      if(!hs||!as_) return null;
+      const pred=nflPredictGame({homeStats:hs,awayStats:as_,neutralSite:g.neutralSite,weather:g.weather});
+      if(!pred) return null;
+      const odds=isToday?(todayOdds.find(o=>matchNFLOddsToGame(o,g))||null):null;
+      return {game_date:dateStr,game_id:g.gameId,home_team:g.homeAbbr,away_team:g.awayAbbr,
+        home_team_name:g.homeTeamName,away_team_name:g.awayTeamName,week:g.week,season:g.season,
+        model_ml_home:pred.modelML_home,model_ml_away:pred.modelML_away,spread_home:pred.projectedSpread,
+        ou_total:pred.ouTotal,win_pct_home:parseFloat(pred.homeWinPct.toFixed(4)),confidence:pred.confidence,
+        pred_home_score:pred.homeScore,pred_away_score:pred.awayScore,
+        home_epa:pred.homeEPA,away_epa:pred.awayEPA,key_factors:pred.factors,
+        ...(odds?.marketSpreadHome!=null&&{market_spread_home:odds.marketSpreadHome}),
+        ...(odds?.marketTotal!=null&&{market_ou_total:odds.marketTotal})};
+    }))).filter(Boolean);
+    if(rows.length){
+      await supabaseQuery("/nfl_predictions","UPSERT",rows,"game_id");
+      newPred+=rows.length;
+      const ns=await supabaseQuery(`/nfl_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team,away_team,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`);
+      if(ns?.length) await nflFillFinalScores(ns);
+      rows.forEach(r=>savedKeys.add(r.game_id||`${dateStr}|${r.home_team}|${r.away_team}`));
+    }
+    await _sleep(100);
+  }
+  onProgress?.(newPred?`🏈 NFL sync complete — ${newPred} new`:"🏈 NFL up to date");
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2455,7 +2598,7 @@ function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalibrationN
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 🏀 NBA CALENDAR TAB
+// 🏀 NBA UI
 // ═══════════════════════════════════════════════════════════════
 
 function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
@@ -2464,146 +2607,93 @@ function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(null);
-  const [oddsData, setOddsData] = useState(null);
+  const [oddsInfo, setOddsInfo] = useState(null);
 
-  const nbaColors = {
-    ATL:"#E03A3E",BOS:"#007A33",BKN:"#000",CHA:"#1D1160",CHI:"#CE1141",
-    CLE:"#860038",DAL:"#00538C",DEN:"#0E2240",DET:"#C8102E",GSW:"#1D428A",
-    HOU:"#CE1141",IND:"#002D62",LAC:"#C8102E",LAL:"#552583",MEM:"#5D76A9",
-    MIA:"#98002E",MIL:"#00471B",MIN:"#0C2340",NOP:"#0C2340",NYK:"#006BB6",
-    OKC:"#007AC1",ORL:"#0077C0",PHI:"#006BB6",PHX:"#1D1160",POR:"#E03A3E",
-    SAC:"#5A2D81",SAS:"#C4CED4",TOR:"#CE1141",UTA:"#002B5C",WAS:"#002B5C",
-  };
-
-  const loadGames = useCallback(async (d) => {
+  const load = useCallback(async (d) => {
     setLoading(true); setGames([]);
     const [raw, odds] = await Promise.all([fetchNBAGamesForDate(d), fetchOdds("basketball_nba")]);
-    setOddsData(odds);
-    setGames(raw.map(g => ({ ...g, pred: null, loading: true })));
-    const enriched = await Promise.all(raw.map(async (g) => {
-      const [homeStats, awayStats] = await Promise.all([
-        fetchNBATeamStats(g.homeAbbr),
-        fetchNBATeamStats(g.awayAbbr),
-      ]);
-      const pred = homeStats && awayStats
-        ? nbaPredictGame({ homeStats, awayStats, neutralSite: g.neutralSite, calibrationFactor })
-        : null;
+    setOddsInfo(odds);
+    setGames(raw.map(g => ({ ...g, loading: true })));
+    const enriched = await Promise.all(raw.map(async g => {
+      const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
+      const pred = hs && as_ ? nbaPredictGame({ homeStats: hs, awayStats: as_, neutralSite: g.neutralSite, calibrationFactor }) : null;
       const gameOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
-      return { ...g, homeStats, awayStats, pred, loading: false, odds: gameOdds };
+      return { ...g, homeStats: hs, awayStats: as_, pred, loading: false, odds: gameOdds };
     }));
-    setGames(enriched);
-    onGamesLoaded?.(enriched);
-    setLoading(false);
+    setGames(enriched); onGamesLoaded?.(enriched); setLoading(false);
   }, [calibrationFactor]);
 
-  useEffect(() => { loadGames(dateStr); }, [dateStr, calibrationFactor]);
-
-  const getBannerInfo = (pred, odds) => {
-    if (!pred) return { color: "yellow", label: "⚠ No prediction" };
-    if (odds?.homeML && odds?.awayML) {
-      const market = trueImplied(odds.homeML, odds.awayML);
-      const homeEdge = pred.homeWinPct - market.home;
-      if (Math.abs(homeEdge) >= EDGE_THRESHOLD)
-        return { color: "green", edge: homeEdge, label: homeEdge >= EDGE_THRESHOLD ? `+${(homeEdge * 100).toFixed(1)}% HOME edge` : `+${((-homeEdge) * 100).toFixed(1)}% AWAY edge` };
-      return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge` };
-    }
-    if (pred.homeWinPct >= 0.65 || pred.homeWinPct <= 0.35) return { color: "green", label: "Strong signal" };
-    return { color: "neutral", label: "Close matchup" };
-  };
+  useEffect(() => { load(dateStr); }, [dateStr, calibrationFactor]);
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <input type="date" value={dateStr} onChange={e => setDateStr(e.target.value)}
           style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "inherit" }} />
-        <button onClick={() => loadGames(dateStr)}
-          style={{ background: "#161b22", color: "#58a6ff", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+        <button onClick={() => load(dateStr)}
+          style={{ background: "#161b22", color: C.orange, border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
           ↻ REFRESH
         </button>
-        {!loading && oddsData?.games?.length > 0 && <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsData.games.length})</span>}
-        {!loading && oddsData?.noKey && <span style={{ fontSize: 11, color: C.dim }}>⚠ Add ODDS_API_KEY for live lines</span>}
-        {loading && <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading NBA games…</span>}
-        <span style={{ fontSize: 10, color: C.dim }}>NBA · ESPN API</span>
+        {!loading && oddsInfo?.games?.length > 0 && <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsInfo.games.length})</span>}
+        {loading && <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading…</span>}
+        {!loading && games.length === 0 && <span style={{ color: C.dim, fontSize: 11 }}>No NBA games on {dateStr}</span>}
       </div>
-      {!loading && games.length === 0 && (
-        <div style={{ color: C.dim, textAlign: "center", marginTop: 40 }}>No NBA games scheduled for {dateStr}</div>
-      )}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {games.map(game => {
-          const bannerInfo = game.loading ? { color: "yellow", label: "Calculating…" } : getBannerInfo(game.pred, game.odds);
-          const color = bannerInfo.color;
+          const homeColor = NBA_TEAM_COLORS[game.homeAbbr] || "#334";
+          const awayColor = NBA_TEAM_COLORS[game.awayAbbr] || "#334";
           const isOpen = expanded === game.gameId;
-          const homeCol = nbaColors[game.homeAbbr] || "#444";
-          const awayCol = nbaColors[game.awayAbbr] || "#444";
-          const bannerBg = color === "green" ? "linear-gradient(135deg,#0b2012,#0e2315)" : color === "yellow" ? "linear-gradient(135deg,#1a1200,#1a1500)" : `linear-gradient(135deg,${C.card},#111822)`;
-          const borderColor = color === "green" ? "#2ea043" : color === "yellow" ? "#4a3a00" : C.border;
-          const hName = game.homeAbbr || "";
-          const aName = game.awayAbbr || "";
-
+          const sigs = game.pred ? getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" }) : null;
+          const hasBet = sigs && (sigs.ml?.verdict === "GO" || sigs.spread?.verdict === "LEAN" || sigs.ou?.verdict === "GO");
           return (
-            <div key={game.gameId} style={{ background: bannerBg, border: `1px solid ${borderColor}`, borderRadius: 10, overflow: "hidden" }}>
-              {/* Color bar across top */}
-              <div style={{ height: 3, background: `linear-gradient(90deg, ${awayCol}, ${homeCol})` }} />
+            <div key={game.gameId} style={{ background: hasBet ? "linear-gradient(135deg,#0b2012,#0e2315)" : "linear-gradient(135deg,#0d1117,#111822)", border: `1px solid ${hasBet ? "#2ea043" : C.border}`, borderRadius: 10, overflow: "hidden" }}>
+              <div style={{ height: 3, background: `linear-gradient(90deg,${awayColor},${homeColor})` }} />
               <div onClick={() => setExpanded(isOpen ? null : game.gameId)}
                 style={{ padding: "14px 18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 200 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <div style={{ textAlign: "center" }}>
-                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: awayCol, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{aName}</div>
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: awayColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{game.awayAbbr}</div>
                     <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
                   </div>
-                  <div style={{ fontSize: 13, color: C.dim }}>@</div>
+                  <span style={{ color: C.dim }}>@</span>
                   <div style={{ textAlign: "center" }}>
-                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: homeCol, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{hName}</div>
-                    <div style={{ fontSize: 9, color: C.dim }}>HOME{game.neutralSite ? " (N)" : ""}</div>
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: homeColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{game.homeAbbr}</div>
+                    <div style={{ fontSize: 9, color: C.dim }}>HOME</div>
                   </div>
                 </div>
-                {game.pred ? (() => {
-                  const sigs = getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" });
-                  return (
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                      <Pill label="PROJ" value={`${aName} ${game.pred.awayScore.toFixed(0)} — ${hName} ${game.pred.homeScore.toFixed(0)}`} />
-                      <Pill label="SPREAD" value={game.pred.projectedSpread > 0
-                        ? `${hName} -${game.pred.projectedSpread.toFixed(1)}`
-                        : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`}
-                        highlight={sigs.spread?.verdict === "LEAN"} />
-                      <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN"} />
-                      {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                      <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO" || sigs.ou?.verdict === "LEAN"} />
-                      <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={sigs.conf?.verdict === "GO"} />
-                    </div>
-                  );
-                })() : (
-                  <div style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "⚠ Stats unavailable"}</div>
+                {game.pred ? (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <Pill label="PROJ" value={`${game.awayAbbr} ${game.pred.awayScore.toFixed(0)}–${game.pred.homeScore.toFixed(0)} ${game.homeAbbr}`} />
+                    <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${game.homeAbbr} -${game.pred.projectedSpread}` : `${game.awayAbbr} -${-game.pred.projectedSpread}`} highlight={sigs?.spread?.verdict === "LEAN"} />
+                    <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs?.ml?.verdict === "GO" || sigs?.ml?.verdict === "LEAN"} />
+                    {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
+                    <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs?.ou?.verdict === "GO"} />
+                    <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={game.pred.confidence === "HIGH"} />
+                  </div>
+                ) : (
+                  <span style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "Stats unavailable"}</span>
                 )}
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}–{game.homeScore}</span>}
                   {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
-                  {bannerInfo.edge != null && <span style={{ fontSize: 10, color: Math.abs(bannerInfo.edge) >= EDGE_THRESHOLD ? C.green : C.dim }}>{bannerInfo.label}</span>}
                   <span style={{ color: C.dim, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
                 </div>
               </div>
               {isOpen && game.pred && (
-                <div style={{ borderTop: `1px solid ${borderColor}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
+                <div style={{ borderTop: `1px solid ${C.border}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8, marginBottom: 10 }}>
-                    <Kv k="Projected Score" v={`${aName} ${game.pred.awayScore.toFixed(1)} — ${hName} ${game.pred.homeScore.toFixed(1)}`} />
-                    <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
+                    <Kv k="Win %" v={`${game.homeAbbr} ${(game.pred.homeWinPct*100).toFixed(1)}% / ${game.awayAbbr} ${(game.pred.awayWinPct*100).toFixed(1)}%`} />
                     <Kv k="O/U Total" v={game.pred.ouTotal} />
-                    <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${hName} -${game.pred.projectedSpread.toFixed(1)}` : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
-                    <Kv k="Possessions" v={game.pred.possessions.toFixed(1)} />
-                    {game.homeStats && <Kv k={`${hName} Net Rtg`} v={game.pred.homeNetRtg > 0 ? `+${game.pred.homeNetRtg}` : game.pred.homeNetRtg} />}
-                    {game.awayStats && <Kv k={`${aName} Net Rtg`} v={game.pred.awayNetRtg > 0 ? `+${game.pred.awayNetRtg}` : game.pred.awayNetRtg} />}
-                    {game.homeStats && <Kv k={`${hName} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
-                    {game.awayStats && <Kv k={`${aName} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
-                    {game.homeStats && <Kv k={`${hName} Opp PPG`} v={game.homeStats.oppPpg?.toFixed(1)} />}
-                    {game.awayStats && <Kv k={`${aName} Opp PPG`} v={game.awayStats.oppPpg?.toFixed(1)} />}
+                    <Kv k="Possessions" v={game.pred.possessions} />
+                    <Kv k={`${game.homeAbbr} Net Rtg`} v={game.pred.homeNetRtg} />
+                    <Kv k={`${game.awayAbbr} Net Rtg`} v={game.pred.awayNetRtg} />
+                    {game.homeStats && <Kv k={`${game.homeAbbr} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${game.awayAbbr} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
+                    {game.homeStats && <Kv k={`${game.homeAbbr} Opp PPG`} v={game.homeStats.oppPpg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${game.awayAbbr} Opp PPG`} v={game.awayStats.oppPpg?.toFixed(1)} />}
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
-                    {game.neutralSite && <Kv k="Site" v="Neutral" />}
                   </div>
-                  <BetSignalsPanel
-                    signals={getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" })}
-                    pred={game.pred} odds={game.odds} sport="nba"
-                    homeName={hName} awayName={aName}
-                  />
+                  <BetSignalsPanel signals={sigs} pred={game.pred} odds={game.odds} sport="nba" homeName={game.homeAbbr} awayName={game.awayAbbr} />
                 </div>
               )}
             </div>
@@ -2617,48 +2707,195 @@ function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
 function NBASection({ nbaGames, setNbaGames, calibrationNBA, setCalibrationNBA, refreshKey, setRefreshKey }) {
   const [tab, setTab] = useState("calendar");
   const [syncMsg, setSyncMsg] = useState("");
-  const TABS = ["calendar", "accuracy", "history", "parlay"];
-
-  const handleAutoSync = async () => {
-    setSyncMsg("🏀 Syncing NBA…");
-    await nbaAutoSync(msg => setSyncMsg(msg));
-    setRefreshKey(k => k + 1);
-    setTimeout(() => setSyncMsg(""), 4000);
-  };
-
   return (
     <div>
       <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
-        {TABS.map(t => (
+        {["calendar","accuracy","history","parlay"].map(t => (
           <button key={t} onClick={() => setTab(t)} style={{
             padding: "6px 16px", borderRadius: 7, border: `1px solid ${tab === t ? "#30363d" : "transparent"}`,
-            background: tab === t ? "#161b22" : "transparent", color: tab === t ? "#58a6ff" : C.dim,
+            background: tab === t ? "#161b22" : "transparent", color: tab === t ? C.orange : C.dim,
             cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
           }}>
             {t === "calendar" ? "📅" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎯"} {t}
           </button>
         ))}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <button onClick={handleAutoSync}
+        <div style={{ marginLeft: "auto" }}>
+          <button onClick={async () => { setSyncMsg("Syncing…"); await nbaAutoSync(m => setSyncMsg(m)); setRefreshKey(k => k+1); setTimeout(() => setSyncMsg(""), 4000); }}
             style={{ background: "#161b22", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 10 }}>
             ⟳ Sync
           </button>
         </div>
       </div>
-      {syncMsg && (
-        <div style={{ background: "#0d1a10", border: "1px solid #1a3a1a", borderRadius: 7, padding: "8px 14px", marginBottom: 12, fontSize: 11, color: C.green, fontFamily: "monospace" }}>
-          {syncMsg}
-        </div>
-      )}
-      {!syncMsg && (
-        <div style={{ fontSize: 10, color: C.dim, marginBottom: 12, letterSpacing: 1 }}>
-          NBA · Season starts {_nbaSeason} · ESPN API (free, no key)
-        </div>
-      )}
+      {syncMsg && <div style={{ background: "#0d1a10", border: "1px solid #1a3a1a", borderRadius: 7, padding: "8px 14px", marginBottom: 12, fontSize: 11, color: C.green, fontFamily: "monospace" }}>{syncMsg}</div>}
       {tab === "calendar" && <NBACalendarTab calibrationFactor={calibrationNBA} onGamesLoaded={setNbaGames} />}
       {tab === "accuracy" && <AccuracyDashboard table="nba_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNBA} spreadLabel="Spread" />}
       {tab === "history" && <HistoryTab table="nba_predictions" refreshKey={refreshKey} />}
       {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={nbaGames} />}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 🏈 NFL UI
+// ═══════════════════════════════════════════════════════════════
+
+function NFLCalendarTab({ calibrationFactor, onGamesLoaded }) {
+  const todayStr = new Date().toISOString().split("T")[0];
+  const [dateStr, setDateStr] = useState(todayStr);
+  const [games, setGames] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+  const [oddsInfo, setOddsInfo] = useState(null);
+
+  const load = useCallback(async (d) => {
+    setLoading(true); setGames([]);
+    const [raw, odds] = await Promise.all([fetchNFLGamesForDate(d), fetchOdds("americanfootball_nfl")]);
+    setOddsInfo(odds);
+    setGames(raw.map(g => ({ ...g, loading: true })));
+    const enriched = await Promise.all(raw.map(async g => {
+      const [hs, as_] = await Promise.all([fetchNFLTeamStats(g.homeAbbr), fetchNFLTeamStats(g.awayAbbr)]);
+      const pred = hs && as_ ? nflPredictGame({ homeStats: hs, awayStats: as_, neutralSite: g.neutralSite, weather: g.weather, calibrationFactor }) : null;
+      const gameOdds = odds?.games?.find(o => matchNFLOddsToGame(o, g)) || null;
+      return { ...g, homeStats: hs, awayStats: as_, pred, loading: false, odds: gameOdds };
+    }));
+    setGames(enriched); onGamesLoaded?.(enriched); setLoading(false);
+  }, [calibrationFactor]);
+
+  useEffect(() => { load(dateStr); }, [dateStr, calibrationFactor]);
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+        <input type="date" value={dateStr} onChange={e => setDateStr(e.target.value)}
+          style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "inherit" }} />
+        <button onClick={() => load(dateStr)}
+          style={{ background: "#161b22", color: "#f97316", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+          ↻ REFRESH
+        </button>
+        {!loading && oddsInfo?.games?.length > 0 && <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsInfo.games.length})</span>}
+        {loading && <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading NFL games…</span>}
+        {!loading && games.length === 0 && <span style={{ color: C.dim, fontSize: 11 }}>No NFL games on {dateStr} — try Thu/Sun/Mon</span>}
+        {!loading && games.length > 0 && <span style={{ fontSize: 10, color: C.dim }}>Week {games[0]?.week || "—"} · {games[0]?.season || ""} Season</span>}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {games.map(game => {
+          const homeTeam = nflTeamByAbbr(game.homeAbbr);
+          const awayTeam = nflTeamByAbbr(game.awayAbbr);
+          const isOpen = expanded === game.gameId;
+          const sigs = game.pred ? getBetSignals({ pred: game.pred, odds: game.odds, sport: "nfl" }) : null;
+          const hasBet = sigs && (sigs.ml?.verdict === "GO" || sigs.spread?.verdict === "LEAN" || sigs.ou?.verdict === "GO");
+          return (
+            <div key={game.gameId} style={{ background: hasBet ? "linear-gradient(135deg,#0b2012,#0e2315)" : "linear-gradient(135deg,#0d1117,#111822)", border: `1px solid ${hasBet ? "#2ea043" : C.border}`, borderRadius: 10, overflow: "hidden" }}>
+              <div style={{ height: 3, background: `linear-gradient(90deg,${awayTeam.color},${homeTeam.color})` }} />
+              <div onClick={() => setExpanded(isOpen ? null : game.gameId)}
+                style={{ padding: "14px 18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: awayTeam.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{game.awayAbbr}</div>
+                    <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
+                  </div>
+                  <span style={{ color: C.dim, fontSize: 13 }}>@</span>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: homeTeam.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{game.homeAbbr}</div>
+                    <div style={{ fontSize: 9, color: C.dim }}>HOME{game.neutralSite ? " (N)" : ""}</div>
+                  </div>
+                  {game.weather?.note && <span style={{ fontSize: 9, color: C.dim, marginLeft: 4 }}>{game.weather.note}</span>}
+                </div>
+                {game.pred ? (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <Pill label="PROJ" value={`${game.awayAbbr} ${game.pred.awayScore.toFixed(0)}–${game.pred.homeScore.toFixed(0)} ${game.homeAbbr}`} />
+                    <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${game.homeAbbr} -${game.pred.projectedSpread}` : `${game.awayAbbr} -${-game.pred.projectedSpread}`} highlight={sigs?.spread?.verdict === "LEAN"} />
+                    <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs?.ml?.verdict === "GO" || sigs?.ml?.verdict === "LEAN"} />
+                    {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
+                    <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs?.ou?.verdict === "GO"} />
+                    <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={game.pred.confidence === "HIGH"} />
+                  </div>
+                ) : (
+                  <span style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "Stats unavailable"}</span>
+                )}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}–{game.homeScore}</span>}
+                  {game.status === "Live" && <span style={{ fontSize: 10, color: "#f97316", fontWeight: 700 }}>LIVE</span>}
+                  <span style={{ color: C.dim, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+                </div>
+              </div>
+              {isOpen && game.pred && (
+                <div style={{ borderTop: `1px solid ${C.border}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8, marginBottom: 10 }}>
+                    <Kv k="Projected Score" v={`${game.awayAbbr} ${game.pred.awayScore.toFixed(1)} — ${game.homeAbbr} ${game.pred.homeScore.toFixed(1)}`} />
+                    <Kv k="Home Win %" v={`${(game.pred.homeWinPct*100).toFixed(1)}%`} />
+                    <Kv k="O/U Total" v={game.pred.ouTotal} />
+                    <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${game.homeAbbr} -${game.pred.projectedSpread}` : `${game.awayAbbr} -${-game.pred.projectedSpread}`} />
+                    {game.homeStats && <Kv k={`${game.homeAbbr} PPG / OppPPG`} v={`${game.homeStats.ppg?.toFixed(1)} / ${game.homeStats.oppPpg?.toFixed(1)}`} />}
+                    {game.awayStats && <Kv k={`${game.awayAbbr} PPG / OppPPG`} v={`${game.awayStats.ppg?.toFixed(1)} / ${game.awayStats.oppPpg?.toFixed(1)}`} />}
+                    {game.homeStats && <Kv k={`${game.homeAbbr} Yds/Play`} v={`${game.homeStats.ypPlay?.toFixed(1)} off / ${game.homeStats.oppYpPlay?.toFixed(1)} def`} />}
+                    {game.awayStats && <Kv k={`${game.awayAbbr} Yds/Play`} v={`${game.awayStats.ypPlay?.toFixed(1)} off / ${game.awayStats.oppYpPlay?.toFixed(1)} def`} />}
+                    {game.pred.homeEPA != null && <Kv k={`${game.homeAbbr} Net EPA`} v={game.pred.homeEPA > 0 ? `+${game.pred.homeEPA}` : `${game.pred.homeEPA}`} />}
+                    {game.pred.awayEPA != null && <Kv k={`${game.awayAbbr} Net EPA`} v={game.pred.awayEPA > 0 ? `+${game.pred.awayEPA}` : `${game.pred.awayEPA}`} />}
+                    {game.homeStats && <Kv k={`${game.homeAbbr} TO Margin`} v={game.homeStats.turnoverMargin > 0 ? `+${game.homeStats.turnoverMargin?.toFixed(1)}` : game.homeStats.turnoverMargin?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${game.awayAbbr} TO Margin`} v={game.awayStats.turnoverMargin > 0 ? `+${game.awayStats.turnoverMargin?.toFixed(1)}` : game.awayStats.turnoverMargin?.toFixed(1)} />}
+                    <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
+                    {game.week && <Kv k="Week" v={game.week} />}
+                    {game.weather?.note && <Kv k="Weather" v={game.weather.note} />}
+                  </div>
+                  {game.pred.factors?.length > 0 && (
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 6 }}>KEY FACTORS</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {game.pred.factors.map((f, i) => (
+                          <div key={i} style={{
+                            background: f.type==="home"?"#001a0f":f.type==="away"?"#1a0008":"#1a1200",
+                            border: `1px solid ${f.type==="home"?"#003820":f.type==="away"?"#330011":"#3a2a00"}`,
+                            borderRadius: 6, padding: "4px 10px", fontSize: 11,
+                            color: f.type==="home"?C.green:f.type==="away"?"#ff4466":C.yellow,
+                          }}>
+                            {f.label}: {f.val}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <BetSignalsPanel signals={sigs} pred={game.pred} odds={game.odds} sport="nfl" homeName={game.homeAbbr} awayName={game.awayAbbr} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function NFLSection({ nflGames, setNflGames, calibrationNFL, setCalibrationNFL, refreshKey, setRefreshKey }) {
+  const [tab, setTab] = useState("calendar");
+  const [syncMsg, setSyncMsg] = useState("");
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {["calendar","accuracy","history","parlay"].map(t => (
+          <button key={t} onClick={() => setTab(t)} style={{
+            padding: "6px 16px", borderRadius: 7, border: `1px solid ${tab === t ? "#30363d" : "transparent"}`,
+            background: tab === t ? "#161b22" : "transparent", color: tab === t ? "#f97316" : C.dim,
+            cursor: "pointer", fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase",
+          }}>
+            {t === "calendar" ? "📅" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎯"} {t}
+          </button>
+        ))}
+        <div style={{ marginLeft: "auto" }}>
+          <button onClick={async () => { setSyncMsg("Syncing NFL…"); await nflAutoSync(m => setSyncMsg(m)); setRefreshKey(k => k+1); setTimeout(() => setSyncMsg(""), 4000); }}
+            style={{ background: "#161b22", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 10 }}>
+            ⟳ Sync
+          </button>
+        </div>
+      </div>
+      {syncMsg && <div style={{ background: "#0d1a10", border: "1px solid #1a3a1a", borderRadius: 7, padding: "8px 14px", marginBottom: 12, fontSize: 11, color: C.green, fontFamily: "monospace" }}>{syncMsg}</div>}
+      <div style={{ fontSize: 10, color: C.dim, marginBottom: 12, letterSpacing: 1 }}>
+        NFL · ESPN API (free, no key) · Games: Thu / Sun / Mon · Weather + EPA + Turnover model
+      </div>
+      {tab === "calendar" && <NFLCalendarTab calibrationFactor={calibrationNFL} onGamesLoaded={setNflGames} />}
+      {tab === "accuracy" && <AccuracyDashboard table="nfl_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNFL} spreadLabel="Spread" />}
+      {tab === "history" && <HistoryTab table="nfl_predictions" refreshKey={refreshKey} />}
+      {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={nflGames} />}
     </div>
   );
 }
@@ -2672,6 +2909,7 @@ export default function App() {
   const [mlbGames, setMlbGames] = useState([]);
   const [ncaaGames, setNcaaGames] = useState([]);
   const [nbaGames, setNbaGames] = useState([]);
+  const [nflGames, setNflGames] = useState([]);
   const [calibrationMLB, setCalibrationMLB] = useState(() => {
     try { const v = parseFloat(localStorage.getItem("cal_mlb")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
   });
@@ -2681,10 +2919,14 @@ export default function App() {
   const [calibrationNBA, setCalibrationNBA] = useState(() => {
     try { const v = parseFloat(localStorage.getItem("cal_nba")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
   });
-
+  const [calibrationNFL, setCalibrationNFL] = useState(() => {
+    try { const v = parseFloat(localStorage.getItem("cal_nfl")); return isNaN(v) ? 1.0 : v; } catch { return 1.0; }
+  });
   useEffect(() => { try { localStorage.setItem("cal_mlb", calibrationMLB); } catch {} }, [calibrationMLB]);
   useEffect(() => { try { localStorage.setItem("cal_ncaa", calibrationNCAA); } catch {} }, [calibrationNCAA]);
   useEffect(() => { try { localStorage.setItem("cal_nba", calibrationNBA); } catch {} }, [calibrationNBA]);
+  useEffect(() => { try { localStorage.setItem("cal_nfl", calibrationNFL); } catch {} }, [calibrationNFL]);
+
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncMsg, setSyncMsg] = useState("");
 
@@ -2696,13 +2938,22 @@ export default function App() {
       await ncaaAutoSync(m => setSyncMsg(m));
       setSyncMsg("🏀 Syncing NBA…");
       await nbaAutoSync(m => setSyncMsg(m));
+      setSyncMsg("🏈 Syncing NFL…");
+      await nflAutoSync(m => setSyncMsg(m));
       setSyncMsg("");
       setRefreshKey(k => k + 1);
     })();
   }, []);
 
+  const calActive = [
+    calibrationMLB !== 1.0 && `MLB×${calibrationMLB}`,
+    calibrationNCAA !== 1.0 && `NCAA×${calibrationNCAA}`,
+    calibrationNBA !== 1.0 && `NBA×${calibrationNBA}`,
+    calibrationNFL !== 1.0 && `NFL×${calibrationNFL}`,
+  ].filter(Boolean);
+
   return (
-    <div style={{ background: C.bg, minHeight: "100vh", color: "#e2e8f0", fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace" }}>
+    <div style={{ background: C.bg, minHeight: "100vh", color: "#e2e8f0", fontFamily: "'JetBrains Mono','Fira Code','Courier New',monospace" }}>
       <style>{`
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -2713,69 +2964,50 @@ export default function App() {
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
       `}</style>
 
-      {/* TOP NAV */}
-      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "0 20px", display: "flex", alignItems: "center", gap: 16, height: 52, position: "sticky", top: 0, background: "#0d1117", zIndex: 100, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: "#e2e8f0", letterSpacing: 2 }}>
-          <span style={{ color: C.blue }}>⚾</span> MLB <span style={{ color: C.dim, margin: "0 4px" }}>+</span>
-          <span style={{ color: C.orange }}>🏀</span> NCAA <span style={{ color: C.dim, margin: "0 4px" }}>+</span>
-          <span style={{ color: "#58a6ff" }}>🏀</span> NBA
+      {/* NAV */}
+      <div style={{ borderBottom: `1px solid ${C.border}`, padding: "0 16px", display: "flex", alignItems: "center", gap: 12, height: 52, position: "sticky", top: 0, background: "#0d1117", zIndex: 100, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: "#e2e8f0", letterSpacing: 1, whiteSpace: "nowrap" }}>
+          ⚾🏀🏀🏈 <span style={{ fontSize: 9, color: C.dim, letterSpacing: 2 }}>PREDICTOR v12</span>
         </div>
-        <div style={{ fontSize: 9, color: C.dim, letterSpacing: 2 }}>PREDICTOR v11</div>
-
-        {/* Sport Toggle */}
         <div style={{ display: "flex", gap: 2, background: "#080c10", border: `1px solid ${C.border}`, borderRadius: 8, padding: 3, marginLeft: "auto" }}>
-          {[["MLB", "⚾", C.blue], ["NCAA", "🏀", C.orange], ["NBA", "🏀", "#58a6ff"]].map(([s, icon, col]) => (
+          {[["MLB","⚾",C.blue],["NCAA","🏀",C.orange],["NBA","🏀","#58a6ff"],["NFL","🏈","#f97316"]].map(([s,icon,col]) => (
             <button key={s} onClick={() => setSport(s)} style={{
-              padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer",
-              fontSize: 12, fontWeight: 800,
-              background: sport === s ? col : "transparent",
-              color: sport === s ? C.bg : C.dim,
-              transition: "all 0.15s", letterSpacing: 1,
-            }}>
-              {icon} {s}
-            </button>
+              padding: "4px 12px", borderRadius: 6, border: "none", cursor: "pointer",
+              fontSize: 11, fontWeight: 800, background: sport === s ? col : "transparent",
+              color: sport === s ? C.bg : C.dim, transition: "all 0.15s",
+            }}>{icon} {s}</button>
           ))}
           <button onClick={() => setSport("PARLAY")} style={{
-            padding: "5px 14px", borderRadius: 6, border: "none", cursor: "pointer",
-            fontSize: 12, fontWeight: 800,
-            background: sport === "PARLAY" ? C.green : "transparent",
-            color: sport === "PARLAY" ? C.bg : C.dim,
-            transition: "all 0.15s",
-          }}>
-            🎯 PARLAY
-          </button>
+            padding: "4px 12px", borderRadius: 6, border: "none", cursor: "pointer",
+            fontSize: 11, fontWeight: 800, background: sport === "PARLAY" ? C.green : "transparent",
+            color: sport === "PARLAY" ? C.bg : C.dim, transition: "all 0.15s",
+          }}>🎯 PARLAY</button>
         </div>
-
-        {syncMsg && <div style={{ fontSize: 10, color: C.dim, animation: "pulse 1.5s ease infinite" }}>{syncMsg}</div>}
-        {(calibrationMLB !== 1.0 || calibrationNCAA !== 1.0 || calibrationNBA !== 1.0) && (
+        {syncMsg && <div style={{ fontSize: 10, color: C.dim, animation: "pulse 1.5s ease infinite", whiteSpace: "nowrap" }}>{syncMsg}</div>}
+        {calActive.length > 0 && (
           <div style={{ fontSize: 10, color: C.yellow, background: "#1a1200", border: `1px solid #3a2a00`, borderRadius: 5, padding: "3px 8px" }}>
-            Cal: {calibrationMLB !== 1.0 ? `MLB×${calibrationMLB} ` : ""}{calibrationNCAA !== 1.0 ? `NCAA×${calibrationNCAA} ` : ""}{calibrationNBA !== 1.0 ? `NBA×${calibrationNBA}` : ""}
+            Cal: {calActive.join(" ")}
           </div>
         )}
       </div>
 
-      {/* MAIN CONTENT */}
+      {/* CONTENT */}
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
-        {sport === "MLB" && (
-          <MLBSection mlbGames={mlbGames} setMlbGames={setMlbGames} calibrationMLB={calibrationMLB} setCalibrationMLB={setCalibrationMLB} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />
-        )}
-        {sport === "NCAA" && (
-          <NCAASection ncaaGames={ncaaGames} setNcaaGames={setNcaaGames} calibrationNCAA={calibrationNCAA} setCalibrationNCAA={setCalibrationNCAA} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />
-        )}
-        {sport === "NBA" && (
-          <NBASection nbaGames={nbaGames} setNbaGames={setNbaGames} calibrationNBA={calibrationNBA} setCalibrationNBA={setCalibrationNBA} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />
-        )}
+        {sport === "MLB" && <MLBSection mlbGames={mlbGames} setMlbGames={setMlbGames} calibrationMLB={calibrationMLB} setCalibrationMLB={setCalibrationMLB} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
+        {sport === "NCAA" && <NCAASection ncaaGames={ncaaGames} setNcaaGames={setNcaaGames} calibrationNCAA={calibrationNCAA} setCalibrationNCAA={setCalibrationNCAA} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
+        {sport === "NBA" && <NBASection nbaGames={nbaGames} setNbaGames={setNbaGames} calibrationNBA={calibrationNBA} setCalibrationNBA={setCalibrationNBA} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
+        {sport === "NFL" && <NFLSection nflGames={nflGames} setNflGames={setNflGames} calibrationNFL={calibrationNFL} setCalibrationNFL={setCalibrationNFL} refreshKey={refreshKey} setRefreshKey={setRefreshKey} />}
         {sport === "PARLAY" && (
           <div>
-            <div style={{ fontSize: 12, color: C.dim, marginBottom: 16, letterSpacing: 1 }}>Combined parlay builder — uses games loaded in MLB, NCAA, and NBA calendars</div>
-            <ParlayBuilder mlbGames={mlbGames} ncaaGames={[...ncaaGames, ...nbaGames]} />
+            <div style={{ fontSize: 12, color: C.dim, marginBottom: 16, letterSpacing: 1 }}>Combined parlay builder — load games in each sport's calendar first, then build here</div>
+            <ParlayBuilder mlbGames={mlbGames} ncaaGames={[...ncaaGames, ...nbaGames, ...nflGames]} />
           </div>
         )}
       </div>
 
       {/* FOOTER */}
       <div style={{ textAlign: "center", padding: "16px", borderTop: `1px solid ${C.border}`, fontSize: 9, color: "#21262d", letterSpacing: 2 }}>
-        MULTI-SPORT PREDICTOR v11 · MLB (statsapi.mlb.com) · NCAA + NBA (ESPN API) · {SEASON}
+        MULTI-SPORT PREDICTOR v12 · MLB (statsapi.mlb.com) · NCAA + NBA + NFL (ESPN API) · {SEASON}
       </div>
     </div>
   );
