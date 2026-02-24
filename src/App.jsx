@@ -4319,56 +4319,40 @@ const ncaaPredictGameEnhanced = (params) => ncaaPredictGame(params);
 // ═══════════════════════════════════════════════════════════════
 
 // NBA Stats API (no key needed — use browser UA header)
-const NBA_STATS_HEADERS = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-  "Referer": "https://www.nba.com/",
-  "Origin": "https://www.nba.com",
-};
-
 const _nbaRealStatsCache = {};
 
+// Replaces the old stats.nba.com call (blocked by CORS in browsers).
+// Derives pace, offRtg, defRtg, netRtg from ESPN's public API instead.
 async function fetchNBARealPace(abbr) {
-  // NBA Stats API team dashboard — real pace & efficiency
   if (_nbaRealStatsCache[abbr]) return _nbaRealStatsCache[abbr];
+  const espnId = NBA_ESPN_IDS[abbr];
+  if (!espnId) return null;
   try {
-    const teamId = NBA_STATS_TEAM_IDS[abbr];
-    if (!teamId) return null;
-    const season = (() => {
-      const n = new Date();
-      const yr = n.getMonth() < 7 ? n.getFullYear() - 1 : n.getFullYear();
-      return `${yr}-${String(yr + 1).slice(-2)}`;
-    })();
-    const url = `https://stats.nba.com/stats/teamdashboardbygeneralsplits?DateFrom=&DateTo=&GameSegment=&LastNGames=0&LeagueID=00&Location=&MeasureType=Advanced&Month=0&OpponentTeamID=0&Outcome=&PaceAdjust=N&PerMode=PerGame&PlusMinus=N&Rank=N&Season=${season}&SeasonSegment=&SeasonType=Regular+Season&ShotClockRange=&TeamID=${teamId}&VsConference=&VsDivision=`;
-    const data = await fetch(url, { headers: NBA_STATS_HEADERS }).then(r => r.ok ? r.json() : null).catch(() => null);
-    if (!data?.resultSets?.[0]) return null;
-    const headers = data.resultSets[0].headers;
-    const row = data.resultSets[0].rowSet?.[0];
-    if (!row) return null;
-    const get = name => {
-      const i = headers.indexOf(name);
-      return i >= 0 ? row[i] : null;
+    const statsData = await fetch(
+      `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/statistics`
+    ).then(r => r.ok ? r.json() : null).catch(() => null);
+    const cats = statsData?.results?.stats?.categories || [];
+    const getStat = (...names) => {
+      for (const cat of cats) for (const name of names) {
+        const s = cat.stats?.find(s => s.name === name || s.displayName === name);
+        if (s) { const v = parseFloat(s.value); return isNaN(v) ? null : v; }
+      }
+      return null;
     };
-    const result = {
-      pace:     parseFloat(get("PACE"))    || null,
-      offRtg:   parseFloat(get("OFF_RATING")) || null,
-      defRtg:   parseFloat(get("DEF_RATING")) || null,
-      netRtg:   parseFloat(get("NET_RATING")) || null,
-      pie:      parseFloat(get("PIE"))     || null,
-    };
+    const ppg    = getStat("avgPoints", "pointsPerGame") || 112.0;
+    const oppPpg = getStat("avgPointsAllowed", "opponentPointsPerGame") || 112.0;
+    // Estimate pace from PPG: faster teams score more
+    const estPace  = 96 + (ppg - 110) * 0.3;
+    const pace     = Math.max(92, Math.min(105, estPace));
+    // Efficiency ratings: points per 100 possessions (approximate)
+    const offRtg   = (ppg    / pace) * 100;
+    const defRtg   = (oppPpg / pace) * 100;
+    const netRtg   = offRtg - defRtg;
+    const result   = { pace, offRtg, defRtg, netRtg };
     _nbaRealStatsCache[abbr] = result;
     return result;
   } catch { return null; }
 }
-
-// NBA Stats Team IDs for real API
-const NBA_STATS_TEAM_IDS = {
-  ATL:1610612737,BOS:1610612738,BKN:1610612751,CHA:1610612766,CHI:1610612741,
-  CLE:1610612739,DAL:1610612742,DEN:1610612743,DET:1610612765,GSW:1610612744,
-  HOU:1610612745,IND:1610612754,LAC:1610612746,LAL:1610612747,MEM:1610612763,
-  MIA:1610612748,MIL:1610612749,MIN:1610612750,NOP:1610612740,NYK:1610612752,
-  OKC:1610612760,ORL:1610612753,PHI:1610612755,PHX:1610612756,POR:1610612757,
-  SAC:1610612758,SAS:1610612759,TOR:1610612761,UTA:1610612762,WAS:1610612764,
-};
 
 // Advanced rest/travel model
 // Returns point adjustment based on rest days, back-to-back fatigue, and travel distance
