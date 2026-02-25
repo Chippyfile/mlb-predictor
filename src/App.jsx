@@ -90,13 +90,13 @@ async function mlPredict(sport, gameData) {
   }
 }
 
-async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000) {
+async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000, ouLine = null) {
   if (!_mlApiAvailable) return null;
   try {
     const res = await fetch(`${ML_API}/monte-carlo`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sport, home_mean: homeMean, away_mean: awayMean, n_sims: nSims }),
+      body: JSON.stringify({ sport, home_mean: homeMean, away_mean: awayMean, n_sims: nSims, ou_line: ouLine }),
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return null;
@@ -156,6 +156,19 @@ function MonteCarloPanel({ mc }) {
         <span style={{ fontSize: 10, color: "#f85149" }}>Away Win: {(mc.away_win_pct * 100).toFixed(1)}%</span>
         <span style={{ fontSize: 10, color: "#c9d1d9" }}>Avg Margin: {mc.avg_margin > 0 ? "+" : ""}{mc.avg_margin?.toFixed(1)}</span>
         <span style={{ fontSize: 10, color: "#c9d1d9" }}>Avg Total: {mc.avg_total?.toFixed(1)}</span>
+        {mc.over_pct != null && (
+          <span style={{ fontSize: 10, color: mc.over_pct > 0.54 ? "#3fb950" : mc.under_pct > 0.54 ? "#f85149" : "#c9d1d9" }}>
+            O/U {mc.ou_line}: O {(mc.over_pct * 100).toFixed(1)}% / U {(mc.under_pct * 100).toFixed(1)}%
+          </span>
+        )}
+        {mc.home_rl_cover_pct != null && (
+          <span style={{ fontSize: 10, color: "#c9d1d9" }}>
+            RL -{mc.rl_threshold}: {(mc.home_rl_cover_pct * 100).toFixed(1)}% / +{mc.rl_threshold}: {(mc.away_rl_cover_pct * 100).toFixed(1)}%
+          </span>
+        )}
+        {mc.distribution && (
+          <span style={{ fontSize: 9, color: "#484f58" }}>({mc.distribution})</span>
+        )}
       </div>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 1, height: 40 }}>
         {mc.histogram.map((b, i) => (
@@ -2729,7 +2742,24 @@ function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       const [homeBullpen, awayBullpen] = await Promise.all([fetchBullpenFatigue(g.homeTeamId), fetchBullpenFatigue(g.awayTeamId)]);
       const pred = mlbPredictGame({ homeTeamId: g.homeTeamId, awayTeamId: g.awayTeamId, homeHit, awayHit, homePitch, awayPitch, homeStarterStats: homeStarter, awayStarterStats: awayStarter, homeForm, awayForm, homeGamesPlayed: homeForm?.gamesPlayed || 0, awayGamesPlayed: awayForm?.gamesPlayed || 0, bullpenData: { [g.homeTeamId]: homeBullpen, [g.awayTeamId]: awayBullpen }, homeLineup, awayLineup, umpire: g.umpire, calibrationFactor });
       const gameOdds = odds?.games?.find(o => matchMLBOddsToGame(o, g)) || null;
-      return { ...g, pred, loading: false, odds: gameOdds };
+      const [mlResult, mcResult] = await Promise.all([
+        mlPredict("mlb", {
+          pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
+          win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
+          model_ml_home: pred.modelML_home,
+          home_woba: pred.homeWOBA, away_woba: pred.awayWOBA,
+          home_fip: pred.hFIP, away_fip: pred.aFIP,
+          park_factor: pred.parkFactor,
+        }),
+        mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal),
+      ]);
+      const finalPred = pred && mlResult ? {
+        ...pred,
+        homeWinPct: mlResult.ml_win_prob_home,
+        awayWinPct: mlResult.ml_win_prob_away,
+        mlEnhanced: true,
+      } : pred;
+      return { ...g, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
     setGames(enriched);
     onGamesLoaded?.(enriched);
@@ -2827,6 +2857,9 @@ function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                     pred={game.pred} odds={game.odds} sport="mlb"
                     homeName={home.abbr} awayName={away.abbr}
                   />
+                  {game.pred?.mlEnhanced && <div style={{ fontSize: 8, color: "#58a6ff", marginTop: 4 }}>⚡ ML-enhanced · trained on {game.mlMeta?.n_train} games · MAE {game.mlMeta?.mae_cv?.toFixed(2)} runs</div>}
+                  <ShapPanel shap={game.mlShap} homeName={home.abbr} awayName={away.abbr} />
+                  <MonteCarloPanel mc={game.mc} />
                 </div>
               )}
             </div>
@@ -2873,7 +2906,7 @@ function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             market_spread_home: gameOdds?.homeSpread ?? null,
             market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
           }),
-          mlMonteCarlo("NCAAB", pred.homeScore, pred.awayScore),
+          mlMonteCarlo("NCAAB", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal),
         ]);
       }
       const finalPred = pred && mlResult ? {
@@ -3142,7 +3175,7 @@ function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
             model_ml_home: pred.modelML_home,
             market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
           }),
-          mlMonteCarlo("NBA", pred.homeScore, pred.awayScore),
+          mlMonteCarlo("NBA", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal),
         ]);
       }
       const finalPred = pred && mlResult ? {
