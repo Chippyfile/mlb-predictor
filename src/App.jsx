@@ -6,7 +6,7 @@ import {
 } from "recharts";
 
 // ============================================================
-// MULTI-SPORT PREDICTOR v14
+// MULTI-SPORT PREDICTOR v15
 // ⚾ MLB  +  🏀 NCAA Basketball  +  🏀 NBA  +  🏈 NFL
 // ============================================================
 
@@ -61,6 +61,118 @@ async function supabaseQuery(path, method = "GET", body = null, onConflict = nul
     const text = await res.text();
     return text ? JSON.parse(text) : [];
   } catch (e) { console.error("Supabase:", e); return null; }
+}
+
+// ============================================================
+// ML API — Railway backend (scikit-learn + SHAP)
+// Falls back silently to heuristic if unavailable
+// ============================================================
+const ML_API = "https://sports-predictor-api-production.up.railway.app";
+let _mlApiAvailable = true;
+
+async function mlPredict(sport, gameData) {
+  if (!_mlApiAvailable) return null;
+  try {
+    const res = await fetch(`${ML_API}/predict/${sport.toLowerCase()}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gameData),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data?.error) return null;
+    return data;
+  } catch {
+    _mlApiAvailable = false;
+    setTimeout(() => { _mlApiAvailable = true; }, 60000);
+    return null;
+  }
+}
+
+async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000) {
+  if (!_mlApiAvailable) return null;
+  try {
+    const res = await fetch(`${ML_API}/monte-carlo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sport, home_mean: homeMean, away_mean: awayMean, n_sims: nSims }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+function ShapPanel({ shap, homeName, awayName }) {
+  if (!shap || shap.length === 0) return null;
+  const top = shap.slice(0, 6);
+  const maxAbs = Math.max(...top.map(s => Math.abs(s.shap)), 0.01);
+  const LABEL_MAP = {
+    pred_home_score: "Proj Home Score", pred_away_score: "Proj Away Score",
+    pred_home_runs: "Proj Home Runs", pred_away_runs: "Proj Away Runs",
+    home_net_rtg: "Home Net Rtg", away_net_rtg: "Away Net Rtg",
+    net_rtg_diff: "Net Rtg Diff", score_diff_pred: "Score Diff (pred)",
+    total_pred: "Proj Total", home_fav: "Home Favorite",
+    win_pct_home: "Model Win %", ou_gap: "O/U Gap",
+    home_adj_em: "Home Adj EM", away_adj_em: "Away Adj EM",
+    adj_em_diff: "Adj EM Diff", neutral: "Neutral Site",
+    spread_vs_market: "Spread vs Market", home_epa: "Home EPA",
+    away_epa: "Away EPA", epa_diff: "EPA Diff",
+    run_diff_pred: "Run Diff (pred)", ou_total: "O/U Line",
+    ranked_game: "Ranked Game", home_rank_fill: "Home Rank", away_rank_fill: "Away Rank",
+  };
+  return (
+    <div style={{ marginTop: 12, padding: "10px 14px", background: "#0a0f1a", border: "1px solid #1e2d4a", borderRadius: 8 }}>
+      <div style={{ fontSize: 9, color: "#58a6ff", fontWeight: 800, letterSpacing: 2, marginBottom: 8 }}>🔍 WHY THIS PICK (SHAP)</div>
+      {top.map((s, i) => {
+        const pct = Math.abs(s.shap) / maxAbs;
+        const pos = s.shap > 0;
+        return (
+          <div key={i} style={{ marginBottom: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, marginBottom: 2 }}>
+              <span style={{ color: "#c9d1d9" }}>{LABEL_MAP[s.feature] || s.feature}</span>
+              <span style={{ color: pos ? "#3fb950" : "#f85149", fontWeight: 700 }}>{pos ? "▲" : "▼"} {pos ? `favors ${homeName}` : `favors ${awayName}`}</span>
+            </div>
+            <div style={{ height: 5, background: "#21262d", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${pct * 100}%`, background: pos ? "#238636" : "#da3633", borderRadius: 3 }} />
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 8, color: "#484f58", marginTop: 6 }}>Bar width = relative influence on this prediction</div>
+    </div>
+  );
+}
+
+function MonteCarloPanel({ mc }) {
+  if (!mc?.histogram) return null;
+  const maxCount = Math.max(...mc.histogram.map(h => h.count), 1);
+  return (
+    <div style={{ marginTop: 12, padding: "10px 14px", background: "#0a0f1a", border: "1px solid #1e2d4a", borderRadius: 8 }}>
+      <div style={{ fontSize: 9, color: "#58a6ff", fontWeight: 800, letterSpacing: 2, marginBottom: 6 }}>🎲 MONTE CARLO ({mc.n_sims?.toLocaleString()} SIMS)</div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, color: "#3fb950" }}>Home Win: {(mc.home_win_pct * 100).toFixed(1)}%</span>
+        <span style={{ fontSize: 10, color: "#f85149" }}>Away Win: {(mc.away_win_pct * 100).toFixed(1)}%</span>
+        <span style={{ fontSize: 10, color: "#c9d1d9" }}>Avg Margin: {mc.avg_margin > 0 ? "+" : ""}{mc.avg_margin?.toFixed(1)}</span>
+        <span style={{ fontSize: 10, color: "#c9d1d9" }}>Avg Total: {mc.avg_total?.toFixed(1)}</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 1, height: 40 }}>
+        {mc.histogram.map((b, i) => (
+          <div key={i} title={`Margin ${b.bin > 0 ? "+" : ""}${b.bin}: ${b.count} sims`}
+            style={{ flex: 1, height: (b.count / maxCount) * 40, background: b.bin > 0 ? "#238636" : "#da3633", borderRadius: "2px 2px 0 0", opacity: 0.8 }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: "#484f58", marginTop: 2 }}>
+        <span>Away blowout</span><span>← Margin →</span><span>Home blowout</span>
+      </div>
+      {mc.margin_percentiles && (
+        <div style={{ fontSize: 8, color: "#484f58", marginTop: 4 }}>
+          P10–P90: {mc.margin_percentiles.p10} to +{mc.margin_percentiles.p90} pts
+        </div>
+      )}
+    </div>
+  );
 }
 
 const SEASON = new Date().getFullYear();
@@ -2747,7 +2859,31 @@ function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const gameOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
       if (gameOdds) console.log("[NCAA odds matched]", g.homeTeamName, "vs", g.awayTeamName, gameOdds);
       else if (odds?.games?.length) console.log("[NCAA odds NO MATCH]", g.homeTeamName, "vs", g.awayTeamName, "available:", odds.games.map(o => o.homeTeam + " vs " + o.awayTeam));
-      return { ...g, homeStats, awayStats, pred, loading: false, odds: gameOdds };
+      // ── ML API: calibrated win prob + SHAP + Monte Carlo ──
+      let mlResult = null, mcResult = null;
+      if (pred) {
+        [mlResult, mcResult] = await Promise.all([
+          mlPredict("ncaa", {
+            pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
+            home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
+            win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
+            model_ml_home: pred.modelML_home,
+            neutral_site: g.neutralSite,
+            spread_home: pred.projectedSpread,
+            market_spread_home: gameOdds?.homeSpread ?? null,
+            market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
+          }),
+          mlMonteCarlo("NCAAB", pred.homeScore, pred.awayScore),
+        ]);
+      }
+      const finalPred = pred && mlResult ? {
+        ...pred,
+        homeWinPct: mlResult.ml_win_prob_home,
+        awayWinPct: mlResult.ml_win_prob_away,
+        projectedSpread: parseFloat(mlResult.ml_margin.toFixed(1)),
+        mlEnhanced: true,
+      } : pred;
+      return { ...g, homeStats, awayStats, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
     setGames(enriched);
     onGamesLoaded?.(enriched);
@@ -2845,6 +2981,9 @@ function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     pred={game.pred} odds={game.odds} sport="ncaa"
                     homeName={hName} awayName={aName}
                   />
+                  {game.pred?.mlEnhanced && <div style={{ fontSize: 8, color: "#58a6ff", marginTop: 4 }}>⚡ ML-enhanced · trained on {game.mlMeta?.n_train} games · MAE {game.mlMeta?.mae_cv?.toFixed(1)} pts</div>}
+                  <ShapPanel shap={game.mlShap} homeName={hName} awayName={aName} />
+                  <MonteCarloPanel mc={game.mc} />
                 </div>
               )}
             </div>
@@ -2992,7 +3131,28 @@ function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
       const pred = hs && as_ ? nbaPredictGame({ homeStats: hs, awayStats: as_, neutralSite: g.neutralSite, calibrationFactor }) : null;
       const gameOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
-      return { ...g, homeStats: hs, awayStats: as_, pred, loading: false, odds: gameOdds };
+      // ── ML API: calibrated win prob + SHAP + Monte Carlo ──
+      let mlResult = null, mcResult = null;
+      if (pred) {
+        [mlResult, mcResult] = await Promise.all([
+          mlPredict("nba", {
+            pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
+            home_net_rtg: pred.homeNetRtg, away_net_rtg: pred.awayNetRtg,
+            win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
+            model_ml_home: pred.modelML_home,
+            market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
+          }),
+          mlMonteCarlo("NBA", pred.homeScore, pred.awayScore),
+        ]);
+      }
+      const finalPred = pred && mlResult ? {
+        ...pred,
+        homeWinPct: mlResult.ml_win_prob_home,
+        awayWinPct: mlResult.ml_win_prob_away,
+        projectedSpread: parseFloat(mlResult.ml_margin.toFixed(1)),
+        mlEnhanced: true,
+      } : pred;
+      return { ...g, homeStats: hs, awayStats: as_, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
     setGames(enriched); onGamesLoaded?.(enriched); setLoading(false);
   }, [calibrationFactor]);
@@ -3068,6 +3228,9 @@ function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
                   </div>
                   <BetSignalsPanel signals={sigs} pred={game.pred} odds={game.odds} sport="nba" homeName={game.homeAbbr} awayName={game.awayAbbr} />
+                  {game.pred?.mlEnhanced && <div style={{ fontSize: 8, color: "#58a6ff", marginTop: 4 }}>⚡ ML-enhanced · trained on {game.mlMeta?.n_train} games · MAE {game.mlMeta?.mae_cv?.toFixed(1)} pts</div>}
+                  <ShapPanel shap={game.mlShap} homeName={game.homeAbbr} awayName={game.awayAbbr} />
+                  <MonteCarloPanel mc={game.mc} />
                 </div>
               )}
             </div>
@@ -5021,7 +5184,7 @@ export default function App() {
 
       {/* FOOTER */}
       <div style={{ textAlign: "center", padding: "16px", borderTop: `1px solid ${C.border}`, fontSize: 9, color: "#21262d", letterSpacing: 2 }}>
-        MULTI-SPORT PREDICTOR v14 · MLB · NCAAB · NBA · NFL · NCAAF · ESPN API · {SEASON}
+        MULTI-SPORT PREDICTOR v15 · MLB · NCAAB · NBA · NFL · NCAAF · ESPN API · {SEASON}
       </div>
     </div>
   );
