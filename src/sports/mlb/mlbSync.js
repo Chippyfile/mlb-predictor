@@ -44,6 +44,9 @@ function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game 
     home_starter_name: game?.homeStarterName || null,
     away_starter_name: game?.awayStarterName || null,
     umpire_name: game?.umpire?.name || null,
+    // F-05: SP average innings pitched (for bullpen exposure ML feature)
+    home_sp_ip: pred.homeSpAvgIP ?? null,
+    away_sp_ip: pred.awaySpAvgIP ?? null,
   };
 }
 

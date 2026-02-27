@@ -150,14 +150,29 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
     }
   }
 
-  // ── CONFIDENCE SIGNAL ──────────────────────────────────────
+  // ── CONFIDENCE SIGNAL (data quality — how reliable is this prediction?) ──
   const confSignal = {
     verdict: pred.confidence === "HIGH" ? "GO" : pred.confidence === "MEDIUM" ? "LEAN" : "SKIP",
+    score: pred.confScore,
     reason: pred.confidence === "HIGH"
-      ? "High confidence — large EM gap and decisive win probability"
+      ? "High data quality — complete stats, mature season, extra sources"
       : pred.confidence === "MEDIUM"
-      ? "Medium confidence — moderate signal strength"
-      : "Low confidence — small sample or near-even matchup",
+      ? "Moderate data quality — some inputs missing or early season"
+      : "Low data quality — limited sample size or missing key inputs",
+  };
+
+  // ── DECISIVENESS SIGNAL (prediction strength — how far from 50%?) ──
+  const decLabel = pred.decisivenessLabel || (
+    pred.decisiveness >= 15 ? "STRONG" : pred.decisiveness >= 7 ? "MODERATE" : "LEAN"
+  );
+  const decSignal = {
+    verdict: decLabel === "STRONG" ? "GO" : decLabel === "MODERATE" ? "LEAN" : "SKIP",
+    value: pred.decisiveness ? pred.decisiveness.toFixed(1) : Math.abs((pred.homeWinPct - 0.5) * 100).toFixed(1),
+    reason: decLabel === "STRONG"
+      ? `Clear separation (${Math.abs((pred.homeWinPct - 0.5) * 100).toFixed(1)}% from coin flip)`
+      : decLabel === "MODERATE"
+      ? `Moderate lean (${Math.abs((pred.homeWinPct - 0.5) * 100).toFixed(1)}% edge)`
+      : `Close matchup — thin margin`,
   };
 
   const anyEdge =
@@ -165,7 +180,7 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
     ouSignal?.verdict === "GO"   || ouSignal?.verdict === "LEAN" ||
     spreadSignal?.verdict === "LEAN";
 
-  return { ml: mlSignal, ou: ouSignal, spread: spreadSignal, conf: confSignal, anyEdge };
+  return { ml: mlSignal, ou: ouSignal, spread: spreadSignal, conf: confSignal, dec: decSignal, anyEdge };
 }
 
 // ─────────────────────────────────────────────────────────────
