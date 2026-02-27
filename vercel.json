@@ -5,6 +5,9 @@
     },
     "api/odds.js": {
       "maxDuration": 10
+    },
+    "api/statcast.js": {
+      "maxDuration": 15
     }
   }
 }
