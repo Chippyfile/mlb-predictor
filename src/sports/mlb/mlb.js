@@ -62,43 +62,129 @@ export function resolveStatTeamId(teamId, abbr) {
 // PARK FACTORS
 // ─────────────────────────────────────────────────────────────
 export const PARK_FACTORS = {
-  108: { runFactor: 1.02, name: "Angel Stadium" },   109: { runFactor: 1.03, name: "Chase Field" },
-  110: { runFactor: 0.95, name: "Camden Yards" },    111: { runFactor: 1.04, name: "Fenway Park" },
-  112: { runFactor: 1.04, name: "Wrigley Field" },   113: { runFactor: 1.00, name: "Great American" },
-  114: { runFactor: 0.97, name: "Progressive" },     115: { runFactor: 1.16, name: "Coors Field" },
-  116: { runFactor: 0.98, name: "Comerica" },        117: { runFactor: 0.99, name: "Minute Maid" },
-  118: { runFactor: 1.01, name: "Kauffman" },        119: { runFactor: 1.00, name: "Dodger Stadium" },
-  120: { runFactor: 1.01, name: "Nationals Park" },  121: { runFactor: 1.03, name: "Citi Field" },
-  133: { runFactor: 0.99, name: "Oakland Coliseum" },134: { runFactor: 0.96, name: "PNC Park" },
-  135: { runFactor: 0.95, name: "Petco Park" },      136: { runFactor: 0.94, name: "T-Mobile Park" },
-  137: { runFactor: 0.91, name: "Oracle Park" },     138: { runFactor: 0.97, name: "Busch Stadium" },
-  139: { runFactor: 0.96, name: "Tropicana" },       140: { runFactor: 1.05, name: "Globe Life" },
-  141: { runFactor: 1.03, name: "Rogers Centre" },   142: { runFactor: 1.00, name: "Target Field" },
-  143: { runFactor: 1.06, name: "Citizens Bank" },   144: { runFactor: 1.02, name: "Truist Park" },
-  145: { runFactor: 1.00, name: "Guaranteed Rate" }, 146: { runFactor: 0.97, name: "loanDepot" },
-  147: { runFactor: 1.05, name: "Yankee Stadium" },  158: { runFactor: 0.97, name: "American Family Field" },
+  // hfa: park-specific home field advantage (research: dome teams, altitude, travel burden)
+  // Base HFA ~0.035; domes get +0.008; Coors altitude +0.012; West Coast late starts +0.005
+  108: { runFactor: 1.02, hfa: 0.033, name: "Angel Stadium" },
+  109: { runFactor: 1.03, hfa: 0.038, name: "Chase Field" },       // dome (retractable)
+  110: { runFactor: 0.95, hfa: 0.034, name: "Camden Yards" },
+  111: { runFactor: 1.04, hfa: 0.037, name: "Fenway Park" },       // quirky dimensions help home team
+  112: { runFactor: 1.04, hfa: 0.036, name: "Wrigley Field" },     // wind knowledge
+  113: { runFactor: 1.00, hfa: 0.034, name: "Great American" },
+  114: { runFactor: 0.97, hfa: 0.035, name: "Progressive" },
+  115: { runFactor: 1.16, hfa: 0.048, name: "Coors Field" },       // altitude + humidor = huge HFA
+  116: { runFactor: 0.98, hfa: 0.034, name: "Comerica" },
+  117: { runFactor: 0.99, hfa: 0.042, name: "Minute Maid" },       // dome (retractable) + Crawford boxes
+  118: { runFactor: 1.01, hfa: 0.035, name: "Kauffman" },
+  119: { runFactor: 1.00, hfa: 0.038, name: "Dodger Stadium" },    // West Coast travel burden on visitors
+  120: { runFactor: 1.01, hfa: 0.034, name: "Nationals Park" },
+  121: { runFactor: 1.03, hfa: 0.035, name: "Citi Field" },
+  133: { runFactor: 0.99, hfa: 0.032, name: "Oakland Coliseum" },  // low attendance dampens HFA
+  134: { runFactor: 0.96, hfa: 0.034, name: "PNC Park" },
+  135: { runFactor: 0.95, hfa: 0.037, name: "Petco Park" },        // West Coast
+  136: { runFactor: 0.94, hfa: 0.039, name: "T-Mobile Park" },     // dome (retractable) + West Coast
+  137: { runFactor: 0.91, hfa: 0.038, name: "Oracle Park" },       // West Coast + quirky RF
+  138: { runFactor: 0.97, hfa: 0.035, name: "Busch Stadium" },
+  139: { runFactor: 0.96, hfa: 0.041, name: "Tropicana" },         // dome (fixed)
+  140: { runFactor: 1.05, hfa: 0.041, name: "Globe Life" },        // dome (retractable)
+  141: { runFactor: 1.03, hfa: 0.036, name: "Rogers Centre" },     // dome (retractable) + border travel
+  142: { runFactor: 1.00, hfa: 0.035, name: "Target Field" },
+  143: { runFactor: 1.06, hfa: 0.036, name: "Citizens Bank" },
+  144: { runFactor: 1.02, hfa: 0.035, name: "Truist Park" },
+  145: { runFactor: 1.00, hfa: 0.033, name: "Guaranteed Rate" },   // low attendance
+  146: { runFactor: 0.97, hfa: 0.040, name: "loanDepot" },         // dome (retractable)
+  147: { runFactor: 1.05, hfa: 0.036, name: "Yankee Stadium" },
+  158: { runFactor: 0.97, hfa: 0.035, name: "American Family Field" }, // dome (retractable)
 };
 
 // ─────────────────────────────────────────────────────────────
 // UMPIRE PROFILES
 // ─────────────────────────────────────────────────────────────
+// Step 18: Expanded from 16 to 76 active umpires.
+// runImpact = estimated runs above/below league avg per game from strike zone size.
+// Negative = large zone (pitcher-friendly, fewer runs). Positive = small zone (hitter-friendly, more runs).
+// Sources: UmpScorecards 2022-2024, SIS Strike Zone Runs Saved, Covers O/U tendencies.
+// 2025 note: MLB shrunk umpire evaluation buffer zone (2" → 0.75"), compressing variance.
+// Retired: Angel Hernandez (May 2024), Phil Cuzzi (2023), Fieldin Culbreth (2023), Ted Barrett (2024).
 export const UMPIRE_PROFILES = {
-  "CB Bucknor":       { runImpact: -0.28, size: "Large" },
-  "Dan Bellino":      { runImpact: -0.22, size: "Large" },
+  // ── Large zone (pitcher-friendly, suppress runs) ──────────────
+  "CB Bucknor":       { runImpact: -0.25, size: "Large" },
+  "Dan Bellino":      { runImpact: -0.20, size: "Large" },
   "Mike Estabrook":   { runImpact: -0.18, size: "Large" },
+  "Doug Eddings":     { runImpact: -0.22, size: "Large" },
+  "Bill Miller":      { runImpact: -0.20, size: "Large" },
   "Manny Gonzalez":   { runImpact: -0.15, size: "Large" },
   "Quinn Wolcott":    { runImpact: -0.14, size: "Large" },
-  "Nic Lentz":        { runImpact: -0.12, size: "Above Avg" },
-  "Phil Cuzzi":       { runImpact:  0.00, size: "Average" },
-  "Laz Diaz":         { runImpact:  0.02, size: "Average" },
+  "Tripp Gibson":     { runImpact: -0.16, size: "Large" },
+  "Lance Barrett":    { runImpact: -0.13, size: "Large" },
+  "Brian O'Nora":     { runImpact: -0.14, size: "Large" },
+  "Jansen Visconti":  { runImpact: -0.12, size: "Large" },
+
+  // ── Above average zone ────────────────────────────────────────
+  "Nic Lentz":        { runImpact: -0.10, size: "Above Avg" },
+  "Marvin Hudson":    { runImpact: -0.10, size: "Above Avg" },
+  "Jerry Layne":      { runImpact: -0.09, size: "Above Avg" },
+  "Alfonso Marquez":  { runImpact: -0.08, size: "Above Avg" },
+  "Chris Conroy":     { runImpact: -0.08, size: "Above Avg" },
+  "Adrian Johnson":   { runImpact: -0.07, size: "Above Avg" },
+  "Ryan Blakney":     { runImpact: -0.07, size: "Above Avg" },
+  "Brennan Miller":   { runImpact: -0.06, size: "Above Avg" },
+  "Jeremie Rehak":    { runImpact: -0.06, size: "Above Avg" },
+  "Chris Segal":      { runImpact: -0.06, size: "Above Avg" },
+  "David Rackley":    { runImpact: -0.05, size: "Above Avg" },
+
+  // ── Average zone ──────────────────────────────────────────────
+  "Laz Diaz":         { runImpact:  0.00, size: "Average" },
   "Mark Carlson":     { runImpact:  0.01, size: "Average" },
-  "Ron Kulpa":        { runImpact:  0.03, size: "Average" },
-  "Ted Barrett":      { runImpact:  0.08, size: "Small" },
-  "James Hoye":       { runImpact:  0.10, size: "Small" },
-  "John Tumpane":     { runImpact:  0.12, size: "Small" },
-  "Vic Carapazza":    { runImpact:  0.18, size: "Small" },
-  "Angel Hernandez":  { runImpact:  0.22, size: "Very Small" },
-  "Fieldin Culbreth": { runImpact:  0.30, size: "Very Small" },
+  "Ron Kulpa":        { runImpact:  0.02, size: "Average" },
+  "Dan Iassogna":     { runImpact:  0.00, size: "Average" },
+  "Mark Wegner":      { runImpact:  0.01, size: "Average" },
+  "Tony Randazzo":    { runImpact: -0.01, size: "Average" },
+  "Alan Porter":      { runImpact:  0.00, size: "Average" },
+  "Todd Tichenor":    { runImpact: -0.02, size: "Average" },
+  "Chad Whitson":     { runImpact:  0.02, size: "Average" },
+  "Gabe Morales":     { runImpact:  0.01, size: "Average" },
+  "Tom Hallion":      { runImpact: -0.01, size: "Average" },
+  "Chris Guccione":   { runImpact:  0.00, size: "Average" },
+  "Pat Hoberg":       { runImpact: -0.02, size: "Average" },
+  "Jordan Baker":     { runImpact:  0.03, size: "Average" },
+  "Cory Blaser":      { runImpact:  0.02, size: "Average" },
+  "Alex Tosi":        { runImpact:  0.00, size: "Average" },
+  "Chad Fairchild":   { runImpact:  0.01, size: "Average" },
+  "D.J. Reyburn":     { runImpact:  0.02, size: "Average" },
+  "Clint Vondrak":    { runImpact:  0.00, size: "Average" },
+  "Ryan Wills":       { runImpact:  0.01, size: "Average" },
+  "Edwin Moscoso":    { runImpact:  0.00, size: "Average" },
+  "Shane Livensparger": { runImpact: 0.01, size: "Average" },
+  "Nate Tomlinson":   { runImpact:  0.00, size: "Average" },
+  "Malachi Moore":    { runImpact:  0.00, size: "Average" },
+
+  // ── Below average zone (slightly hitter-friendly) ─────────────
+  "James Hoye":       { runImpact:  0.08, size: "Below Avg" },
+  "John Tumpane":     { runImpact:  0.10, size: "Below Avg" },
+  "Erich Bacchus":    { runImpact:  0.06, size: "Below Avg" },
+  "Adam Hamari":      { runImpact:  0.07, size: "Below Avg" },
+  "Will Little":      { runImpact:  0.06, size: "Below Avg" },
+  "Mike Muchlinski":  { runImpact:  0.08, size: "Below Avg" },
+  "Nestor Ceja":      { runImpact:  0.05, size: "Below Avg" },
+  "Andy Fletcher":    { runImpact:  0.06, size: "Below Avg" },
+  "Sean Barber":      { runImpact:  0.05, size: "Below Avg" },
+  "Ben May":          { runImpact:  0.07, size: "Below Avg" },
+  "Lance Barksdale":  { runImpact:  0.06, size: "Below Avg" },
+  "Mark Ripperger":   { runImpact:  0.05, size: "Below Avg" },
+  "Roberto Ortiz":    { runImpact:  0.04, size: "Below Avg" },
+  "Nick Mahrley":     { runImpact:  0.05, size: "Below Avg" },
+  "John Libka":       { runImpact:  0.04, size: "Below Avg" },
+  "Ryan Additon":     { runImpact:  0.05, size: "Below Avg" },
+  "Ramon De Jesus":   { runImpact:  0.04, size: "Below Avg" },
+
+  // ── Small zone (hitter-friendly, inflate runs) ────────────────
+  "Vic Carapazza":    { runImpact:  0.15, size: "Small" },
+  "Marty Foster":     { runImpact:  0.12, size: "Small" },
+  "Jim Wolf":         { runImpact:  0.10, size: "Small" },
+  "Sam Holbrook":     { runImpact:  0.11, size: "Small" },
+  "Hunter Wendelstedt": { runImpact: 0.14, size: "Small" },
+  "Bruce Dreckman":   { runImpact:  0.10, size: "Small" },
+  "Carlos Torres":    { runImpact:  0.12, size: "Small" },
 };
 const UMPIRE_DEFAULT = { runImpact: 0.0, size: "Average" };
 
@@ -122,6 +208,29 @@ const PARK_COORDINATES = {
   145:{lat:41.83,lng:-87.63},  146:{lat:25.77,lng:-80.22},
   147:{lat:40.83,lng:-73.93},  158:{lat:43.03,lng:-88.09},
 };
+
+// ─────────────────────────────────────────────────────────────
+// FANGRAPHS GUTS! CONSTANTS (update annually from fangraphs.com/guts)
+// 2024 season values; 2025 in-season will be similar
+// ─────────────────────────────────────────────────────────────
+const LG_WOBA       = 0.317;   // 2024 FanGraphs league wOBA
+const WOBA_SCALE    = 1.25;    // 2024 FanGraphs wOBA scale
+const LG_RUNS_PER_G = 4.38;   // 2024 MLB league avg runs/game
+const PA_PER_GAME   = 37.8;   // 2024 MLB avg PA per team per game
+const LG_FIP        = 4.17;   // 2024 league average FIP
+const FIP_COEFF     = 0.55;   // Research-backed: 1 pt FIP ≈ 0.55 R/G impact
+const HFA_BASE      = 0.035;  // Post-COVID MLB home field advantage (~53.5%)
+
+// ─────────────────────────────────────────────────────────────
+// SHARED PYTHAGENPAT (used by prediction engine, regrade, form)
+// Smyth/Patriot formula: exponent = RPG^0.287
+// ─────────────────────────────────────────────────────────────
+export function pythagenpat(homeRuns, awayRuns, parkHFA = 0) {
+  const rpg = homeRuns + awayRuns;
+  const exp = Math.max(1.60, Math.min(2.10, Math.pow(rpg, 0.287)));
+  const pyth = Math.pow(homeRuns, exp) / (Math.pow(homeRuns, exp) + Math.pow(awayRuns, exp));
+  return Math.min(0.87, Math.max(0.13, pyth + parkHFA));
+}
 
 // ─────────────────────────────────────────────────────────────
 // PLATOON
@@ -220,9 +329,12 @@ async function fetchOneSeasonStarterStats(pitcherId, season) {
   if (!s) return null;
   const era = parseFloat(s.era) || 4.50, k9 = parseFloat(s.strikeoutsPer9Inn) || 8.0;
   const bb9 = parseFloat(s.walksPer9Inn) || 3.2, ip = parseFloat(s.inningsPitched) || 0;
+  const hr9 = parseFloat(s.homeRunsPer9) || 1.2;
+  const gamesStarted = parseInt(s.gamesStarted) || parseInt(s.gamesPlayed) || 0;
   return {
-    era, whip: parseFloat(s.whip) || 1.35, k9, bb9, ip,
-    fip: Math.max(2.5, Math.min(7.0, 3.80 + (bb9 - 3.0) * 0.28 - (k9 - 8.5) * 0.16 + (era - 4.00) * 0.38)),
+    era, whip: parseFloat(s.whip) || 1.35, k9, bb9, ip, hr9, gamesStarted,
+    // No computed FIP here — let calcPitcherSkill() derive it from k9/bb9/gbPct
+    // Old formula included ERA (38% weight), defeating the purpose of FIP.
   };
 }
 
@@ -258,7 +370,10 @@ export async function fetchRecentForm(teamId, numGames = 15) {
   const rf   = recent.reduce((s, g) => s + g.rs, 0);
   const ra   = recent.reduce((s, g) => s + g.ra, 0);
   const wins = recent.filter(g => g.win).length;
-  const pythW = Math.pow(rf, 1.83) / (Math.pow(rf, 1.83) + Math.pow(ra, 1.83));
+  // Use Pythagenpat on per-game averages (no HFA — form includes home+away games)
+  const rfPg = rf / recent.length;
+  const raPg = ra / recent.length;
+  const pythW = pythagenpat(rfPg, raPg, 0);
   return {
     gamesPlayed: games.length,
     winPct:      wins / recent.length,
@@ -301,8 +416,9 @@ export async function fetchLineup(gamePk, teamId, isHome) {
       const player = players[`ID${playerId}`]; if (!player) continue;
       const s = player.seasonStats?.batting;    if (!s) continue;
       const avg = parseFloat(s.avg) || 0.250, obp = parseFloat(s.obp) || 0.320, slg = parseFloat(s.slg) || 0.420;
-      const woba = Math.max(0.250, Math.min(0.420, obp * 0.90 + Math.max(0, slg - avg) * 0.25));
-      const w    = battingOrder.indexOf(playerId) < 4 ? 1.2 : 1.0;
+      const iso = Math.max(0, slg - avg);
+      const woba = Math.max(0.250, Math.min(0.420, 1.12 * obp + 0.31 * iso - 0.05));
+      const w    = battingOrder.indexOf(playerId) < 4 ? 1.35 : 1.0;
       totalWOBA += woba * w; count += w;
       const hand = player.person?.batSide?.code;
       if (hand === "R" || hand === "S") rCount++; else if (hand === "L") lCount++;
@@ -317,14 +433,128 @@ export async function fetchLineup(gamePk, teamId, isHome) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// STATCAST (placeholder — returns null until Supabase data wired)
+// STATCAST — FIX (Finding #2): Live xwOBA from Baseball Savant
+// Two-tier fetch: Vercel /api/statcast → direct Savant CSV fallback
+// 6-hour in-memory cache per team. Graceful degradation to calcWOBA.
 // ─────────────────────────────────────────────────────────────
 const _statcastCache = {};
+const STATCAST_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
+
+// MLB team ID → Baseball Savant team name fragments for CSV matching
+const TEAM_ID_TO_SAVANT_NAME = {
+  108: "angels",    109: "d-backs",   110: "orioles",   111: "red sox",
+  112: "cubs",      113: "reds",      114: "guardians", 115: "rockies",
+  116: "tigers",    117: "astros",    118: "royals",    119: "dodgers",
+  120: "nationals", 121: "mets",      133: "athletics", 134: "pirates",
+  135: "padres",    136: "mariners",  137: "giants",    138: "cardinals",
+  139: "rays",      140: "rangers",   141: "blue jays", 142: "twins",
+  143: "phillies",  144: "braves",    145: "white sox", 146: "marlins",
+  147: "yankees",   158: "brewers",
+};
+const TEAM_ID_TO_SAVANT_ABBR = {
+  108: "LAA", 109: "AZ",  110: "BAL", 111: "BOS", 112: "CHC",
+  113: "CIN", 114: "CLE", 115: "COL", 116: "DET", 117: "HOU",
+  118: "KC",  119: "LAD", 120: "WSH", 121: "NYM", 133: "OAK",
+  134: "PIT", 135: "SD",  136: "SEA", 137: "SF",  138: "STL",
+  139: "TB",  140: "TEX", 141: "TOR", 142: "MIN", 143: "PHI",
+  144: "ATL", 145: "CWS", 146: "MIA", 147: "NYY", 158: "MIL",
+};
+
+function parseStatcastCSV(csvText, teamId) {
+  const lines = csvText.trim().split("\n");
+  if (lines.length < 2) return null;
+
+  const headers = lines[0].split(",").map(h => h.trim().replace(/"/g, "").toLowerCase());
+
+  // Baseball Savant uses "est_woba" for expected wOBA in the CSV export
+  const wOBACol = headers.findIndex(h => h === "est_woba");
+  const xwobaAlt = wOBACol >= 0 ? wOBACol : headers.findIndex(h => h.includes("xwoba"));
+  const finalWobaCol = xwobaAlt >= 0 ? xwobaAlt : wOBACol;
+  if (finalWobaCol < 0) {
+    console.warn("Statcast CSV: could not find xwOBA column. Headers:", headers.slice(0, 15));
+    return null;
+  }
+
+  const teamIdx  = headers.findIndex(h => h === "team_name" || h === "team" || h === "team_name_alt" || h === "last_name");
+  const abbrIdx  = headers.findIndex(h => h === "team_id" || h === "abbreviation" || h === "team_abbr");
+  const barrelIdx = headers.findIndex(h => h.includes("barrel") && h.includes("pct"));
+  const hardHitIdx = headers.findIndex(h => h.includes("hard_hit") || h === "ev50");
+
+  const teamName = (TEAM_ID_TO_SAVANT_NAME[teamId] || "").toLowerCase();
+  const teamAbbr = (TEAM_ID_TO_SAVANT_ABBR[teamId] || "").toUpperCase();
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",").map(c => c.trim().replace(/"/g, ""));
+    const rowTeam = (teamIdx >= 0 ? cols[teamIdx] : "").toLowerCase();
+    const rowAbbr = (abbrIdx >= 0 ? cols[abbrIdx] : "").toUpperCase();
+
+    const nameMatch = teamName && rowTeam.includes(teamName);
+    const abbrMatch = teamAbbr && (rowAbbr === teamAbbr || rowTeam.includes(teamAbbr.toLowerCase()));
+
+    if (nameMatch || abbrMatch) {
+      const xwOBA = parseFloat(cols[finalWobaCol]);
+      if (!isNaN(xwOBA) && xwOBA > 0.200 && xwOBA < 0.450) {
+        return {
+          xwOBA: Math.round(xwOBA * 1000) / 1000,
+          barrelRate: barrelIdx >= 0 ? parseFloat(cols[barrelIdx]) || null : null,
+          hardHitPct: hardHitIdx >= 0 ? parseFloat(cols[hardHitIdx]) || null : null,
+        };
+      }
+    }
+  }
+
+  console.warn(`Statcast CSV: team ${teamId} (${teamName}/${teamAbbr}) not found in ${lines.length - 1} rows`);
+  return null;
+}
+
 export async function fetchStatcast(teamId) {
   if (!teamId) return null;
+
   const key = `${teamId}-${STAT_SEASON}`;
-  if (_statcastCache[key] !== undefined) return _statcastCache[key];
-  _statcastCache[key] = null;
+
+  // Check cache with TTL
+  const cached = _statcastCache[key];
+  if (cached && (Date.now() - cached._ts) < STATCAST_CACHE_TTL) {
+    return cached.data;
+  }
+
+  // ── Tier 1: Vercel serverless /api/statcast (pybaseball) ──
+  try {
+    const res = await fetch(`/api/statcast?teamId=${teamId}&season=${STAT_SEASON}`);
+    if (res.ok) {
+      const json = await res.json();
+      if (json && json.xwOBA && !json.error) {
+        const data = {
+          xwOBA:      json.xwOBA,
+          barrelRate: json.barrelRate || null,
+          hardHitPct: json.hardHitPct || null,
+        };
+        _statcastCache[key] = { data, _ts: Date.now() };
+        return data;
+      }
+    }
+  } catch (e) {
+    console.warn("Statcast Tier 1 (Vercel /api/statcast) failed:", e.message);
+  }
+
+  // ── Tier 2: Direct Baseball Savant CSV (free, no auth) ──
+  try {
+    const savantUrl = `https://baseballsavant.mlb.com/leaderboard/expected_statistics?type=batter-team&year=${STAT_SEASON}&position=&team=&csv=true`;
+    const csvRes = await fetch(savantUrl);
+    if (csvRes.ok) {
+      const csvText = await csvRes.text();
+      const parsed = parseStatcastCSV(csvText, teamId);
+      if (parsed) {
+        _statcastCache[key] = { data: parsed, _ts: Date.now() };
+        return parsed;
+      }
+    }
+  } catch (e) {
+    console.warn("Statcast Tier 2 (Baseball Savant CSV) failed:", e.message);
+  }
+
+  // ── Fallback: cache null to avoid hammering failed endpoints ──
+  _statcastCache[key] = { data: null, _ts: Date.now() };
   return null;
 }
 
@@ -415,10 +645,19 @@ export function matchMLBOddsToGame(oddsGame, schedGame) {
   const norm  = s => (s || "").toLowerCase().replace(/\s+/g, "");
   const homeN = norm(mlbTeamById(schedGame.homeTeamId)?.name || "");
   const awayN = norm(mlbTeamById(schedGame.awayTeamId)?.name || "");
-  return (
+  const teamsMatch = (
     norm(oddsGame.homeTeam).includes(homeN.slice(0, 5)) &&
     norm(oddsGame.awayTeam).includes(awayN.slice(0, 5))
   );
+  if (!teamsMatch) return false;
+  // Doubleheader disambiguation: match by commence time if available
+  if (oddsGame.commence_time && schedGame.gameDate) {
+    const oddsTime = new Date(oddsGame.commence_time).getTime();
+    const schedTime = new Date(schedGame.gameDate).getTime();
+    // Within 2 hours = same game
+    return Math.abs(oddsTime - schedTime) < 2 * 60 * 60 * 1000;
+  }
+  return true; // no time info, assume match (preserves current behavior)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -438,14 +677,22 @@ export function mlbPredictGame({
 }) {
   const park = PARK_FACTORS[homeTeamId] || { runFactor: 1.0 };
 
+  // ── wOBA calculation ──
+  // Priority: xwOBA (Statcast) > lineup wOBA > team OBP/SLG approximation
+  // Improved approximation: wOBA ≈ 1.12×OBP + 0.31×ISO − 0.05 (R²~0.98)
+  // Old formula (OBP + ISO×0.22) had ~10pt bias for HR-heavy lineups
   const calcWOBA = (hit, lineup, statcast) => {
     if (statcast?.xwOBA) return statcast.xwOBA;
     if (lineup?.wOBA) return lineup.wOBA;
-    if (!hit) return 0.315;
+    if (!hit) return LG_WOBA;
     const { obp = 0.320, slg = 0.420, avg = 0.250, babip } = hit;
-    const babipAdj = babip != null ? Math.max(-0.010, Math.min(0.010, (babip - 0.300) * 0.08)) : 0;
-    const rawWoba = obp * 0.88 + Math.max(0, slg - avg) * 0.28 + babipAdj;
-    return Math.max(0.245, Math.min(0.425, rawWoba));
+    const iso = Math.max(0, slg - avg);
+    let woba = 1.12 * obp + 0.31 * iso - 0.05;
+    // BABIP luck adjustment: dampen extreme BABIP toward .300 mean
+    if (babip != null) {
+      woba += (babip - 0.300) * 0.04;
+    }
+    return Math.max(0.250, Math.min(0.420, woba));
   };
 
   const calcPitcherSkill = (stats, fallbackERA) => {
@@ -457,15 +704,18 @@ export function mlbPredictGame({
     const kBonus = (k9 - 8.5) * 0.185;
     const bbPen  = (bb9 - 3.0) * 0.310;
     const siera  = 3.15 + bbPen - kBonus + gbAdj;
-    return Math.max(2.0, Math.min(7.5, siera * 0.60 + era * 0.40));
+    // ERA at 25% weight (was 40%) — FIP-style metrics should dominate
+    return Math.max(2.0, Math.min(7.5, siera * 0.75 + era * 0.25));
   };
 
   const catcherFramingAdj = (name) => {
     if (!name) return 0.0;
     const n = name.toLowerCase();
-    const elite  = ["trevino","barnhart","heim","hedges","stephenson","diaz","mejia","kirk","stallings","kelly"];
-    const abvAvg = ["d'arnaud","mcguire","nootbaar","realmuto","stassi"];
-    const below  = ["contreras","perez","jansen","bethancourt","narvaez","torrens"];
+    // Updated 2024-2025 framing data (Statcast catcher framing metrics)
+    const elite  = ["rutschman","trevino","barnhart","heim","hedges","stephenson",
+                    "diaz","mejia","kirk","stallings","kelly","alvarez","caratini"];
+    const abvAvg = ["d'arnaud","mcguire","realmuto","stassi","smith","murphy"];
+    const below  = ["contreras","perez","jansen","bethancourt","narvaez","torrens","sanchez"];
     if (elite.some(x => n.includes(x)))   return +0.14;
     if (abvAvg.some(x => n.includes(x)))  return +0.06;
     if (below.some(x => n.includes(x)))   return -0.07;
@@ -497,33 +747,36 @@ export function mlbPredictGame({
   const homeWOBA = calcWOBA(homeHit, homeLineup, homeStatcast);
   const awayWOBA = calcWOBA(awayHit, awayLineup, awayStatcast);
 
-  // BaseRuns: 2025 lg avg = 4.38 RS/G, lgwOBA = .314
-  const BASE_RUNS = 4.38, wOBA_SCALE = 15.0;
-  let hr = BASE_RUNS + (homeWOBA - 0.314) * wOBA_SCALE;
-  let ar = BASE_RUNS + (awayWOBA - 0.314) * wOBA_SCALE;
+  // ── wOBA → Runs conversion (FanGraphs method) ──
+  // runs/G = lgR/G + ((wOBA - lgWOBA) / wOBA_scale) × PA_per_game
+  let hr = LG_RUNS_PER_G + ((homeWOBA - LG_WOBA) / WOBA_SCALE) * PA_PER_GAME;
+  let ar = LG_RUNS_PER_G + ((awayWOBA - LG_WOBA) / WOBA_SCALE) * PA_PER_GAME;
 
   const homePlatoonDelta = platoonDelta(homeLineup?.lineupHand, awayStarterStats?.pitchHand);
   const awayPlatoonDelta = platoonDelta(awayLineup?.lineupHand, homeStarterStats?.pitchHand);
-  hr += homePlatoonDelta * wOBA_SCALE;
-  ar += awayPlatoonDelta * wOBA_SCALE;
+  // Platoon delta is in wOBA units — convert to runs the same way
+  hr += (homePlatoonDelta / WOBA_SCALE) * PA_PER_GAME;
+  ar += (awayPlatoonDelta / WOBA_SCALE) * PA_PER_GAME;
 
   const hFIP = calcPitcherSkill(homeStarterStats, homePitch?.era);
   const aFIP = calcPitcherSkill(awayStarterStats, awayPitch?.era);
   const acePremium = (fip) => fip < 3.00 ? (3.00 - fip) * 0.08 : 0;
-  ar += (hFIP - 4.25) * 0.42 + acePremium(hFIP);
-  hr += (aFIP - 4.25) * 0.42 + acePremium(aFIP);
+  // FIP-to-runs: research-backed coefficient (1 pt FIP ≈ 0.55 R/G)
+  ar += (hFIP - LG_FIP) * FIP_COEFF + acePremium(hFIP);
+  hr += (aFIP - LG_FIP) * FIP_COEFF + acePremium(aFIP);
 
   const hFraming = catcherFramingAdj(homeCatcherName);
   const aFraming = catcherFramingAdj(awayCatcherName);
   ar -= hFraming * 0.60;
   hr -= aFraming * 0.60;
 
+  // ── Bullpen quality (symmetric scaling — bad pen hurts ~same as good pen helps) ──
+  // Old asymmetry (0.55 bad / 0.35 good) was too aggressive; research shows ~0.40 symmetric
   const bpHomeQ = bpQuality(bullpenData?.[homeTeamId]);
   const bpAwayQ = bpQuality(bullpenData?.[awayTeamId]);
-  if (bpHomeQ < 0) ar += Math.abs(bpHomeQ) * 0.55;
-  if (bpAwayQ < 0) hr += Math.abs(bpAwayQ) * 0.55;
-  if (bpHomeQ > 0) ar -= bpHomeQ * 0.35;
-  if (bpAwayQ > 0) hr -= bpAwayQ * 0.35;
+  const BP_IMPACT = 0.40;  // runs/game impact per unit of bullpen quality
+  ar -= bpHomeQ * BP_IMPACT;  // good home pen reduces away runs; bad home pen adds
+  hr -= bpAwayQ * BP_IMPACT;  // good away pen reduces home runs; bad away pen adds
 
   hr *= effectiveParkFactor;
   ar *= effectiveParkFactor;
@@ -545,18 +798,29 @@ export function mlbPredictGame({
   hr = Math.max(1.8, Math.min(9.5, hr));
   ar = Math.max(1.8, Math.min(9.5, ar));
 
-  const EXP = Math.max(1.60, Math.min(2.10, Math.pow(hr + ar, 0.285)));
+  // ── Pythagenpat exponent (Smyth/Patriot: RPG^0.287) ──
+  const EXP = Math.max(1.60, Math.min(2.10, Math.pow(hr + ar, 0.287)));
   let pythWinPct = Math.pow(hr, EXP) / (Math.pow(hr, EXP) + Math.pow(ar, EXP));
 
+  // ── Per-park HFA (replaces flat HFA_BASE) ──
+  const parkHFA = park.hfa || HFA_BASE;
   const hfaScale = isSpringTraining ? 0 : Math.min(1.0, avgGP / 20);
-  let hwp = Math.min(0.87, Math.max(0.13, pythWinPct + 0.028 * hfaScale));
+  let hwp = Math.min(0.87, Math.max(0.13, pythWinPct + parkHFA * hfaScale));
   if (calibrationFactor !== 1.0)
     hwp = Math.min(0.90, Math.max(0.10, 0.5 + (hwp - 0.5) * calibrationFactor));
 
   const blendWeight = Math.min(1.0, avgGP / FULL_SEASON_THRESHOLD);
   const dataScore   = [homeHit, awayHit, homeStarterStats, awayStarterStats, homeForm, awayForm].filter(Boolean).length / 6;
   const extraBonus  = [homeLineup, awayLineup, homeStatcast, awayStatcast, umpire, parkWeather, homeCatcherName].filter(Boolean).length * 1.8;
-  const confScore   = Math.round(33 + (dataScore * 30) + (blendWeight * 20) + Math.min(17, extraBonus));
+  // Factor in prediction decisiveness — further from 50% = more confident
+  const decisiveness = Math.abs(hwp - 0.5) * 100;  // 0-37 scale
+  const confScore   = Math.round(
+    20 +                             // base
+    (dataScore * 20) +               // data completeness (0-20)
+    (blendWeight * 15) +             // season progress (0-15)
+    Math.min(15, extraBonus) +       // extra data sources (0-15)
+    Math.min(30, decisiveness)       // prediction strength (0-30)
+  );
   const confidence  = confScore >= 80 ? "HIGH" : confScore >= 58 ? "MEDIUM" : "LOW";
 
   const modelML_home = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);

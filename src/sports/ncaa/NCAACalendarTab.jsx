@@ -45,7 +45,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             market_spread_home: gameOdds?.homeSpread ?? null,
             market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
           }),
-          mlMonteCarlo("NCAAB", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal),
+          mlMonteCarlo("NCAAB", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId),
         ]);
       }
       const finalPred = pred && mlResult ? {

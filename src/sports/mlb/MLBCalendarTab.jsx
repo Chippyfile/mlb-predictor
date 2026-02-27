@@ -11,6 +11,7 @@ import {
   fetchMLBScheduleForDate, matchMLBOddsToGame,
   fetchTeamHitting, fetchTeamPitching, fetchStarterStats,
   fetchRecentForm, fetchLineup, fetchBullpenFatigue,
+  fetchParkWeather, fetchStatcast,
   mlbPredictGame,
 } from "./mlb.js";
 import { mlbAutoSync } from "./mlbSync.js";
@@ -48,6 +49,12 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       const [homeBullpen, awayBullpen] = await Promise.all([
         fetchBullpenFatigue(g.homeTeamId), fetchBullpenFatigue(g.awayTeamId),
       ]);
+      // Phase 3: Fetch weather + Statcast for full feature pipeline
+      const [parkWeather, homeStatcast, awayStatcast] = await Promise.all([
+        fetchParkWeather(g.homeTeamId).catch(() => null),
+        fetchStatcast(homeStatId).catch(() => null),
+        fetchStatcast(awayStatId).catch(() => null),
+      ]);
       const pred = mlbPredictGame({
         homeTeamId: g.homeTeamId, awayTeamId: g.awayTeamId,
         homeHit, awayHit, homePitch, awayPitch,
@@ -58,19 +65,45 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         bullpenData: { [g.homeTeamId]: homeBullpen, [g.awayTeamId]: awayBullpen },
         homeLineup, awayLineup,
         umpire: g.umpire,
+        parkWeather,
+        homeStatcast, awayStatcast,
         calibrationFactor,
       });
       const gameOdds = odds?.games?.find(o => matchMLBOddsToGame(o, g)) || null;
+      // Phase 3: Compute SP avg IP per start for ML model
+      const homeSPipPerStart = homeStarter?.ip && homeStarter?.gamesStarted > 0
+        ? homeStarter.ip / homeStarter.gamesStarted : (homeStarter?.ip ? homeStarter.ip / 10 : 5.5);
+      const awaySPipPerStart = awayStarter?.ip && awayStarter?.gamesStarted > 0
+        ? awayStarter.ip / awayStarter.gamesStarted : (awayStarter?.ip ? awayStarter.ip / 10 : 5.5);
       const [mlResult, mcResult] = await Promise.all([
         mlPredict("mlb", {
+          // Heuristic outputs
           pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
           win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
           model_ml_home: pred.modelML_home,
+          // Raw offensive features
           home_woba: pred.homeWOBA, away_woba: pred.awayWOBA,
+          // Pitching features (use home_fip + home_sp_fip keys for backend compat)
           home_fip: pred.hFIP, away_fip: pred.aFIP,
+          home_sp_fip: pred.hFIP, away_sp_fip: pred.aFIP,
+          // Bullpen
+          home_bullpen_era: homeBullpen?.era || 4.10,
+          away_bullpen_era: awayBullpen?.era || 4.10,
+          // Park & weather
           park_factor: pred.parkFactor,
+          temp_f: parkWeather?.tempF ?? 70,
+          wind_mph: parkWeather?.windMph ?? 5,
+          wind_out_flag: parkWeather
+            ? ((parkWeather.windDir >= 145 && parkWeather.windDir <= 255) ? 1 : 0)
+            : 0,
+          // SP workload (avg IP per start)
+          home_sp_ip: homeSPipPerStart,
+          away_sp_ip: awaySPipPerStart,
+          // Rest days (from form data — days since last game)
+          home_rest_days: homeForm?.gamesPlayed > 0 ? 1 : 4,
+          away_rest_days: awayForm?.gamesPlayed > 0 ? 1 : 4,
         }),
-        mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal),
+        mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
       ]);
       const finalPred = pred && mlResult ? {
         ...pred,

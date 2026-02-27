@@ -1,13 +1,14 @@
 // src/sports/mlb/mlbSync.js
-// Lines 808–951 of App.jsx (extracted)
+// Step 5: Persist raw features + Step 6: Closing line tracking
 import { supabaseQuery } from "../../utils/supabase.js";
-import { getMLBGameType, MLB_SEASON_START } from "../../utils/sharedUtils.js";
+import { getMLBGameType, MLB_SEASON_START, fetchOdds } from "../../utils/sharedUtils.js";
 import {
   MLB_TEAMS,
   mlbTeamById,
   resolveStatTeamId,
   normAbbr,
   mlbPredictGame,
+  matchMLBOddsToGame,
   fetchTeamHitting,
   fetchTeamPitching,
   fetchStarterStats,
@@ -17,11 +18,63 @@ import {
   fetchBullpenFatigue,
   fetchParkWeather,
   fetchMLBScheduleForDate,
+  pythagenpat,
+  PARK_FACTORS,
   extractUmpire,
   mlbFetch,
 } from "./mlb.js";
 
-async function mlbBuildPredictionRow(game, dateStr) {
+// ─────────────────────────────────────────────────────────────
+// HELPER: Extract raw features from prediction + fetched data
+// ─────────────────────────────────────────────────────────────
+function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game }) {
+  return {
+    home_woba: parseFloat((pred.homeWOBA || 0.314).toFixed(3)),
+    away_woba: parseFloat((pred.awayWOBA || 0.314).toFixed(3)),
+    home_sp_fip: parseFloat((pred.hFIP || 4.25).toFixed(2)),
+    away_sp_fip: parseFloat((pred.aFIP || 4.25).toFixed(2)),
+    home_bullpen_era: parseFloat((homeBullpen?.era || 4.10).toFixed(2)),
+    away_bullpen_era: parseFloat((awayBullpen?.era || 4.10).toFixed(2)),
+    park_factor: pred.parkFactor || 1.00,
+    temp_f: parkWeather?.tempF ?? null,
+    wind_mph: parkWeather?.windMph ?? null,
+    wind_out_flag: parkWeather
+      ? ((parkWeather.windDir >= 145 && parkWeather.windDir <= 255) ? 1 : 0)
+      : null,
+    home_starter_name: game?.homeStarterName || null,
+    away_starter_name: game?.awayStarterName || null,
+    umpire_name: game?.umpire?.name || null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// HELPER: Extract market odds snapshot (opening or current)
+// ─────────────────────────────────────────────────────────────
+function extractOpeningOdds(gameOdds) {
+  if (!gameOdds) return {};
+  return {
+    ...(gameOdds.homeML != null && { opening_home_ml: gameOdds.homeML }),
+    ...(gameOdds.awayML != null && { opening_away_ml: gameOdds.awayML }),
+    ...(gameOdds.marketSpreadHome != null && { market_spread_home: gameOdds.marketSpreadHome }),
+    ...(gameOdds.marketTotal != null && { market_ou_total: gameOdds.marketTotal }),
+  };
+}
+
+function extractClosingOdds(gameOdds) {
+  if (!gameOdds) return {};
+  return {
+    ...(gameOdds.homeML != null && { closing_home_ml: gameOdds.homeML }),
+    ...(gameOdds.awayML != null && { closing_away_ml: gameOdds.awayML }),
+    ...(gameOdds.marketSpreadHome != null && { closing_spread_home: gameOdds.marketSpreadHome }),
+    ...(gameOdds.marketTotal != null && { closing_ou_total: gameOdds.marketTotal }),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// BUILD PREDICTION ROW (new games)
+// Persists raw features + opening market odds
+// ─────────────────────────────────────────────────────────────
+async function mlbBuildPredictionRow(game, dateStr, oddsData) {
   const homeStatId = resolveStatTeamId(game.homeTeamId, game.homeAbbr);
   const awayStatId = resolveStatTeamId(game.awayTeamId, game.awayAbbr);
   if (!homeStatId || !awayStatId) return null;
@@ -66,7 +119,14 @@ async function mlbBuildPredictionRow(game, dateStr) {
   if (!pred) return null;
 
   const home = mlbTeamById(game.homeTeamId), away = mlbTeamById(game.awayTeamId);
+  const raw = extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game });
+
+  // Step 6: Capture opening odds at prediction creation time
+  const gameOdds = oddsData?.games?.find(o => matchMLBOddsToGame(o, game)) || null;
+  const openingFields = extractOpeningOdds(gameOdds);
+
   return {
+    // ── Existing fields ──
     game_date: dateStr,
     home_team: game.homeAbbr || (home?.abbr || String(game.homeTeamId)).replace(/\d+$/, ""),
     away_team: game.awayAbbr || (away?.abbr || String(game.awayTeamId)).replace(/\d+$/, ""),
@@ -81,10 +141,19 @@ async function mlbBuildPredictionRow(game, dateStr) {
     confidence: pred.confidence,
     pred_home_runs: parseFloat(pred.homeRuns.toFixed(2)),
     pred_away_runs: parseFloat(pred.awayRuns.toFixed(2)),
+
+    // ── Step 5: Raw features ──
+    ...raw,
+
+    // ── Step 6: Opening market odds ──
+    ...openingFields,
   };
 }
 
-export async function mlbFillFinalScores(pendingRows) {
+// ─────────────────────────────────────────────────────────────
+// FILL FINAL SCORES — now captures closing lines (Step 6)
+// ─────────────────────────────────────────────────────────────
+export async function mlbFillFinalScores(pendingRows, oddsData) {
   if (!pendingRows.length) return 0;
   let filled = 0;
   const byDate = {};
@@ -94,6 +163,13 @@ export async function mlbFillFinalScores(pendingRows) {
   }
   const teamIdToAbbr = {};
   MLB_TEAMS.forEach(t => { teamIdToAbbr[t.id] = t.abbr; });
+
+  // Step 6: Fetch current odds if not passed in (these become closing lines)
+  const todayStr = new Date().toISOString().split("T")[0];
+  let closingOdds = oddsData || null;
+  if (!closingOdds && Object.keys(byDate).some(d => d === todayStr)) {
+    try { closingOdds = await fetchOdds("baseball_mlb"); } catch { /* no odds */ }
+  }
 
   for (const [dateStr, rows] of Object.entries(byDate)) {
     try {
@@ -129,10 +205,27 @@ export async function mlbFillFinalScores(pendingRows) {
           const ou_correct = matchedRow.ou_total
             ? (total > matchedRow.ou_total ? "OVER" : total < matchedRow.ou_total ? "UNDER" : "PUSH")
             : null;
+
+          // Step 6: Capture closing lines for today's finished games
+          let closingFields = {};
+          if (dateStr === todayStr && closingOdds?.games?.length) {
+            const homeN = (mlbTeamById(homeId)?.name || hAbbr).toLowerCase().replace(/\s+/g, "");
+            const awayN = (mlbTeamById(awayId)?.name || aAbbr).toLowerCase().replace(/\s+/g, "");
+            const closingMatch = closingOdds.games.find(o => {
+              const oH = (o.homeTeam || "").toLowerCase().replace(/\s+/g, "");
+              const oA = (o.awayTeam || "").toLowerCase().replace(/\s+/g, "");
+              return oH.includes(homeN.slice(0, 5)) && oA.includes(awayN.slice(0, 5));
+            });
+            if (closingMatch) {
+              closingFields = extractClosingOdds(closingMatch);
+            }
+          }
+
           await supabaseQuery(`/mlb_predictions?id=eq.${matchedRow.id}`, "PATCH", {
             actual_home_runs: homeScore, actual_away_runs: awayScore,
             result_entered: true, ml_correct, rl_correct, ou_correct,
             game_pk: g.gamePk, home_team: hAbbr, away_team: aAbbr,
+            ...closingFields,
           });
           filled++;
         }
@@ -142,10 +235,13 @@ export async function mlbFillFinalScores(pendingRows) {
   return filled;
 }
 
+// ─────────────────────────────────────────────────────────────
+// REGRADE ALL RESULTS (unchanged)
+// ─────────────────────────────────────────────────────────────
 export async function mlbRegradeAllResults(onProgress) {
   onProgress?.("⏳ Loading all graded MLB records…");
   const allGraded = await supabaseQuery(
-    `/mlb_predictions?result_entered=eq.true&select=id,win_pct_home,pred_home_runs,pred_away_runs,actual_home_runs,actual_away_runs,ou_total&limit=2000`
+    `/mlb_predictions?result_entered=eq.true&select=id,home_team,win_pct_home,pred_home_runs,pred_away_runs,actual_home_runs,actual_away_runs,ou_total&limit=2000`
   );
   if (!allGraded?.length) { onProgress?.("No graded records found"); return 0; }
   let fixed = 0;
@@ -156,8 +252,10 @@ export async function mlbRegradeAllResults(onProgress) {
     if (row.pred_home_runs && row.pred_away_runs) {
       const hr = parseFloat(row.pred_home_runs), ar = parseFloat(row.pred_away_runs);
       if (hr > 0 && ar > 0) {
-        const hrE = Math.pow(hr, 1.83), arE = Math.pow(ar, 1.83);
-        winPctHome = Math.min(0.88, Math.max(0.12, hrE / (hrE + arE) + 0.038));
+        // Use Pythagenpat with per-park HFA (was: fixed 1.83 exponent + flat 0.038)
+        const teamObj = MLB_TEAMS.find(t => t.abbr === row.home_team);
+        const parkHFA = teamObj ? (PARK_FACTORS[teamObj.id]?.hfa || 0.035) : 0.035;
+        winPctHome = pythagenpat(hr, ar, parkHFA);
       }
     }
     const modelPickedHome = winPctHome >= 0.5, homeWon = homeScore > awayScore;
@@ -183,6 +281,9 @@ export async function mlbRegradeAllResults(onProgress) {
   return fixed;
 }
 
+// ─────────────────────────────────────────────────────────────
+// REFRESH PREDICTIONS (full data + raw features + latest odds)
+// ─────────────────────────────────────────────────────────────
 export async function mlbRefreshPredictions(rows, onProgress) {
   if (!rows?.length) return 0;
   let updated = 0;
@@ -191,6 +292,10 @@ export async function mlbRefreshPredictions(rows, onProgress) {
     if (!byDate[row.game_date]) byDate[row.game_date] = [];
     byDate[row.game_date].push(row);
   }
+
+  let oddsData = null;
+  try { oddsData = await fetchOdds("baseball_mlb"); } catch { /* no odds */ }
+
   for (const [dateStr, dateRows] of Object.entries(byDate)) {
     onProgress?.(`🔄 Refreshing ${dateStr}…`);
     const schedData = await mlbFetch("schedule", { sportId: 1, date: dateStr, hydrate: "probablePitcher,teams,officials" });
@@ -209,31 +314,71 @@ export async function mlbRefreshPredictions(rows, onProgress) {
         const homeStatId = resolveStatTeamId(homeTeamId, row.home_team);
         const awayStatId = resolveStatTeamId(awayTeamId, row.away_team);
         const umpire = extractUmpire(schedGame);
-        const [homeHit, awayHit, homePitch, awayPitch, homeStarter, awayStarter, homeForm, awayForm] = await Promise.all([
+
+        const [
+          homeHit, awayHit, homePitch, awayPitch,
+          homeStarter, awayStarter,
+          homeForm, awayForm,
+          homeStatcast, awayStatcast,
+          homeLineup, awayLineup,
+        ] = await Promise.all([
           fetchTeamHitting(homeStatId), fetchTeamHitting(awayStatId),
           fetchTeamPitching(homeStatId), fetchTeamPitching(awayStatId),
           fetchStarterStats(schedGame?.teams?.home?.probablePitcher?.id),
           fetchStarterStats(schedGame?.teams?.away?.probablePitcher?.id),
           fetchRecentForm(homeStatId), fetchRecentForm(awayStatId),
+          fetchStatcast(homeStatId), fetchStatcast(awayStatId),
+          fetchLineup(row.game_pk || schedGame?.gamePk, homeStatId, true),
+          fetchLineup(row.game_pk || schedGame?.gamePk, awayStatId, false),
         ]);
+
         if (homeStarter) homeStarter.pitchHand = schedGame?.teams?.home?.probablePitcher?.pitchHand?.code;
         if (awayStarter) awayStarter.pitchHand = schedGame?.teams?.away?.probablePitcher?.pitchHand?.code;
+
+        const [homeBullpen, awayBullpen, parkWeather] = await Promise.all([
+          fetchBullpenFatigue(homeTeamId),
+          fetchBullpenFatigue(awayTeamId),
+          fetchParkWeather(homeTeamId).catch(() => null),
+        ]);
+
         const pred = mlbPredictGame({
           homeTeamId, awayTeamId, homeHit, awayHit, homePitch, awayPitch,
           homeStarterStats: homeStarter, awayStarterStats: awayStarter,
           homeForm, awayForm,
           homeGamesPlayed: homeForm?.gamesPlayed || 0,
           awayGamesPlayed: awayForm?.gamesPlayed || 0,
+          bullpenData: { [homeTeamId]: homeBullpen, [awayTeamId]: awayBullpen },
+          homeLineup, awayLineup,
           umpire,
+          homeStatcast, awayStatcast,
+          parkWeather,
         });
         if (!pred) continue;
+
+        const raw = extractRawFeatures(pred, {
+          homeBullpen, awayBullpen, parkWeather,
+          game: {
+            homeStarterName: schedGame?.teams?.home?.probablePitcher?.fullName,
+            awayStarterName: schedGame?.teams?.away?.probablePitcher?.fullName,
+            umpire,
+          },
+        });
+
+        // Update market odds on refresh (latest snapshot)
+        const gameForMatch = { homeTeamId, awayTeamId, homeAbbr: row.home_team, awayAbbr: row.away_team };
+        const gameOdds = oddsData?.games?.find(o => matchMLBOddsToGame(o, gameForMatch)) || null;
+        const marketFields = extractOpeningOdds(gameOdds);
+
         await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
-          model_ml_home: pred.modelML_home, model_ml_away: pred.modelML_away,
+          model_ml_home: pred.modelML_home,
+          model_ml_away: pred.modelML_away,
           ou_total: pred.ouTotal,
           win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)),
           confidence: pred.confidence,
           pred_home_runs: parseFloat(pred.homeRuns.toFixed(2)),
           pred_away_runs: parseFloat(pred.awayRuns.toFixed(2)),
+          ...raw,
+          ...marketFields,
         });
         updated++;
       } catch (e) { console.warn("mlbRefreshPredictions error:", row.id, e); }
@@ -243,6 +388,9 @@ export async function mlbRefreshPredictions(rows, onProgress) {
   return updated;
 }
 
+// ─────────────────────────────────────────────────────────────
+// AUTO SYNC (fetches odds once, passes through everywhere)
+// ─────────────────────────────────────────────────────────────
 export async function mlbAutoSync(onProgress) {
   onProgress?.("⚾ Syncing MLB…");
   try {
@@ -267,8 +415,13 @@ export async function mlbAutoSync(onProgress) {
   );
   const savedKeys = new Set((existing || []).map(r => `${r.game_date}|${normAbbr(r.away_team)}@${normAbbr(r.home_team)}`));
   const pendingResults = (existing || []).filter(r => !r.result_entered);
+
+  // Fetch odds once for the entire sync cycle
+  let oddsData = null;
+  try { oddsData = await fetchOdds("baseball_mlb"); } catch { /* no odds */ }
+
   if (pendingResults.length) {
-    const filled = await mlbFillFinalScores(pendingResults);
+    const filled = await mlbFillFinalScores(pendingResults, oddsData);
     if (filled) onProgress?.(`⚾ ${filled} MLB result(s) recorded`);
   }
 
@@ -284,7 +437,7 @@ export async function mlbAutoSync(onProgress) {
     if (!unsaved.length) continue;
     const rows = [];
     for (const g of unsaved) {
-      const row = await mlbBuildPredictionRow(g, dateStr).catch(() => null);
+      const row = await mlbBuildPredictionRow(g, dateStr, oddsData).catch(() => null);
       if (row) rows.push(row);
     }
     if (rows.length) {
@@ -293,7 +446,7 @@ export async function mlbAutoSync(onProgress) {
       const ns = await supabaseQuery(
         `/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`
       );
-      if (ns?.length) await mlbFillFinalScores(ns);
+      if (ns?.length) await mlbFillFinalScores(ns, oddsData);
     }
   }
   onProgress?.(newPred ? `⚾ MLB sync complete — ${newPred} new` : "⚾ MLB up to date");

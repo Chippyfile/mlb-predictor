@@ -24,7 +24,7 @@ export async function mlPredict(sport, gameData) {
   }
 }
 
-export async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000, ouLine = null) {
+export async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000, ouLine = null, gameId = null) {
   if (!_mlApiAvailable) return null;
   try {
     const res = await fetch(`${ML_API}/monte-carlo`, {
@@ -36,6 +36,7 @@ export async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000, ouL
         away_mean: awayMean,
         n_sims: nSims,
         ou_line: ouLine,
+        game_id: gameId,
       }),
       signal: AbortSignal.timeout(8000),
     });

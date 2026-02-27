@@ -3,14 +3,13 @@ import { useState, useEffect, useCallback } from "react";
 import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, BetSignalsPanel } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { getBetSignals } from "../../utils/sharedUtils.js";
-import { fetchNBARealPace } from "../../utils/betUtils.js";import { fetchOdds } from "../../utils/sharedUtils.js";
+import { getBetSignals, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
 import { nbaAutoSync } from "./nbaSync.js";
 import {
   fetchNBAGamesForDate,
   fetchNBATeamStats,
-  // fetchNBARealPace moved to betUtils
+  fetchNBARealPace,
   nbaPredictGame,
   matchNBAOddsToGame,
   NBA_TEAM_COLORS,

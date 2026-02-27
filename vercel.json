@@ -1,6 +1,14 @@
 {
   "functions": {
-    "api/mlb.js": { "maxDuration": 30 },
-    "api/odds.js": { "maxDuration": 10 }
+    "api/mlb.js": {
+      "maxDuration": 30
+    },
+    "api/odds.js": {
+      "maxDuration": 10
+    },
+    "api/statcast.py": {
+      "maxDuration": 60,
+      "memory": 512
+    }
   }
 }
