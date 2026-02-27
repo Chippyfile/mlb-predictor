@@ -246,3 +246,8 @@ export function matchNBAOddsToGame(o, g) {
   return (n(o.homeTeam).includes(n(g.homeTeamName||"").slice(0,6))||n(g.homeTeamName||"").includes(n(o.homeTeam).slice(0,6))) &&
          (n(o.awayTeam).includes(n(g.awayTeamName||"").slice(0,6))||n(g.awayTeamName||"").includes(n(o.awayTeam).slice(0,6)));
 }
+
+// Stub: fetchNBARealPace (planned feature — returns null for now)
+export async function fetchNBARealPace(teamAbbr) {
+  return null;
+}
