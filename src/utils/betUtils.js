@@ -11,7 +11,7 @@ import { ncaafPredictGame } from "../sports/ncaaf/ncaafUtils.js";
 // ─────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────
-export const ENHANCEMENT_VERSION  = "v15-ncaa-overhaul";
+export const ENHANCEMENT_VERSION  = "v14-refined";
 export const BREAK_EVEN_WIN_RATE  = 0.524;   // -110 juice break-even
 export const TARGET_WIN_RATE      = 0.55;    // Achievable with free enhancements
 export const KELLY_FRACTION       = 0.25;    // Quarter Kelly (conservative)
@@ -160,35 +160,8 @@ export const mlbPredictGameEnhanced = (params) => mlbPredictGame(params);
 // SECTION 3 — NCAA BASKETBALL ENHANCEMENTS
 // ═══════════════════════════════════════════════════════════════
 
-// Combined SOS + splits fetch — single API call (matches ncaaSync.js)
-export async function fetchNCAATeamRecord(teamId) {
-  if (!teamId) return { sos: null, splits: null };
-  try {
-    const data = await fetch(
-      `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/record`
-    ).then(r => r.ok ? r.json() : null).catch(() => null);
-    const items = data?.items || [];
-    const sos = items.find(i => i.type === "sos")?.stats?.find(s => s.name === "opponentWinPercent")?.value ?? null;
-    const home = items.find(i => i.type === "home");
-    const away = items.find(i => i.type === "away");
-    const getStat = (item, name) => item?.stats?.find(s => s.name === name)?.value ?? null;
-    const splits = (home || away) ? {
-      homeAvgMargin: getStat(home, "avgPointDifferential"),
-      awayAvgMargin: getStat(away, "avgPointDifferential"),
-    } : null;
-    return { sos, splits };
-  } catch { return { sos: null, splits: null }; }
-}
-
-// Legacy aliases for backward compat
-export async function fetchNCAATeamSOS(teamId) {
-  const rec = await fetchNCAATeamRecord(teamId);
-  return rec.sos;
-}
-export async function fetchNCAAHomeAwaySplits(teamId) {
-  const rec = await fetchNCAATeamRecord(teamId);
-  return rec.splits;
-}
+// F25 FIX: Removed dead fetchNCAATeamSOS (ncaaSync.js already fetches SOS from /record)
+// F25 FIX: Removed dead fetchNCAAHomeAwaySplits (ncaaSync.js already fetches splits)
 
 export function ncaaInjuryImpact(injuredPlayers = []) {
   if (!injuredPlayers?.length) return 0;
@@ -198,7 +171,29 @@ export function ncaaInjuryImpact(injuredPlayers = []) {
   }, 0);
 }
 
-export const ncaaPredictGameEnhanced = (params) => ncaaPredictGame(params);
+// F27 FIX: ncaaPredictGameEnhanced now applies injury adjustments when available
+export const ncaaPredictGameEnhanced = (params) => {
+  const pred = ncaaPredictGame(params);
+  if (!pred) return null;
+  // Apply injury impact if provided
+  const homeInjuryAdj = ncaaInjuryImpact(params.homeInjuries);
+  const awayInjuryAdj = ncaaInjuryImpact(params.awayInjuries);
+  if (homeInjuryAdj || awayInjuryAdj) {
+    const adjSpread = pred.projectedSpread - homeInjuryAdj + awayInjuryAdj;
+    const SIGMA = 11.0;
+    const adjWinPct = Math.min(0.97, Math.max(0.03, 1 / (1 + Math.pow(10, -adjSpread / SIGMA))));
+    return {
+      ...pred,
+      homeScore: parseFloat((pred.homeScore - homeInjuryAdj * 0.4).toFixed(1)),
+      awayScore: parseFloat((pred.awayScore - awayInjuryAdj * 0.4).toFixed(1)),
+      projectedSpread: parseFloat(adjSpread.toFixed(1)),
+      homeWinPct: adjWinPct,
+      awayWinPct: 1 - adjWinPct,
+      injuryAdj: { home: -homeInjuryAdj, away: -awayInjuryAdj },
+    };
+  }
+  return pred;
+};
 
 // ═══════════════════════════════════════════════════════════════
 // SECTION 4 — NBA ENHANCEMENTS
@@ -566,19 +561,19 @@ export const EnhancedPredictionEngine = {
   },
 
   async ncaab(game, homeStats, awayStats, opts = {}) {
-    let homeSOSFactor = null, awaySOSFactor = null;
-    let homeSplits = null, awaySplits = null;
-    try {
-      const [homeRecord, awayRecord] = await Promise.all([
-        fetchNCAATeamRecord(game.homeTeamId),
-        fetchNCAATeamRecord(game.awayTeamId),
-      ]);
-      homeSOSFactor = homeRecord.sos;
-      awaySOSFactor = awayRecord.sos;
-      homeSplits = homeRecord.splits;
-      awaySplits = awayRecord.splits;
-    } catch {}
-    return ncaaPredictGameEnhanced({ homeStats, awayStats, neutralSite: game.neutralSite, homeSOSFactor, awaySOSFactor, homeSplits, awaySplits, ...opts });
+    // F25 FIX: SOS and splits are now fetched by ncaaSync.js at prediction time
+    // and passed through via opts. No need for separate API calls here.
+    return ncaaPredictGameEnhanced({
+      homeStats, awayStats,
+      neutralSite: game.neutralSite,
+      homeSOSFactor: opts.homeSOSFactor || null,
+      awaySOSFactor: opts.awaySOSFactor || null,
+      homeSplits: opts.homeSplits || null,
+      awaySplits: opts.awaySplits || null,
+      homeInjuries: opts.homeInjuries || [],
+      awayInjuries: opts.awayInjuries || [],
+      ...opts,
+    });
   },
 
   async nba(game, homeStats, awayStats, opts = {}) {
