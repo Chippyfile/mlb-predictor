@@ -253,7 +253,15 @@ export async function ncaaAutoSync(onProgress) {
       return ncaaBuildPredictionRow(g, dateStr, gameOdds);
     }))).filter(Boolean);
     if (rows.length) {
-      await supabaseQuery("/ncaa_predictions", "POST", rows);
+      // Normalize keys across all rows for batch insert
+      const allKeys = new Set();
+      rows.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
+      const normalizedRows = rows.map(r => {
+        const normalized = {};
+        for (const k of allKeys) normalized[k] = r[k] !== undefined ? r[k] : null;
+        return normalized;
+      });
+      await supabaseQuery("/ncaa_predictions", "UPSERT", normalizedRows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
         `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
@@ -302,7 +310,15 @@ export async function ncaaFullBackfill(onProgress, signal) {
       }))).filter(Boolean);
     } catch (e) { errors++; await _sleep(500); continue; }
     if (rows.length) {
-      await supabaseQuery("/ncaa_predictions", "POST", rows);
+      // Ensure all rows have identical keys (Supabase batch insert requires this)
+      const allKeys = new Set();
+      rows.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
+      rows = rows.map(r => {
+        const normalized = {};
+        for (const k of allKeys) normalized[k] = r[k] !== undefined ? r[k] : null;
+        return normalized;
+      });
+      await supabaseQuery("/ncaa_predictions", "UPSERT", rows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
         `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
