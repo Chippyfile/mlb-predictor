@@ -34,8 +34,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const gameOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
       let mlResult = null, mcResult = null;
       if (pred) {
-        [mlResult, mcResult] = await Promise.all([
-          mlPredict("ncaa", {
+        // Run ML prediction first
+        mlResult = await mlPredict("ncaa", {
             pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
             home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
             win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
@@ -44,6 +44,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             spread_home: pred.projectedSpread,
             market_spread_home: gameOdds?.homeSpread ?? null,
             market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
+            // R2: Heuristic win probability for capped feature
+            // R3: Conference + date for conference game detection + season phase
+            home_conference: homeStats?.conferenceName || "",
+            away_conference: awayStats?.conferenceName || "",
+            game_date: selectedDate,
             // Raw stats for expanded ML features
             home_ppg: homeStats?.ppg, away_ppg: awayStats?.ppg,
             home_opp_ppg: homeStats?.oppPpg, away_opp_ppg: awayStats?.oppPpg,
@@ -65,9 +70,12 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             home_form: homeStats?.formScore, away_form: awayStats?.formScore,
             home_sos: null, away_sos: null,
             home_rank: g.homeRank || 200, away_rank: g.awayRank || 200,
-          }),
-          mlMonteCarlo("NCAAB", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId),
-        ]);
+          });
+        // R9: MC uses ML-adjusted means when ML is available
+        const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
+        const mcHome = pred.homeScore + mlMarginAdj;
+        const mcAway = pred.awayScore - mlMarginAdj;
+        mcResult = await mlMonteCarlo("NCAAB", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
       const finalPred = pred && mlResult ? {
         ...pred,
@@ -75,7 +83,14 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         awayWinPct: mlResult.ml_win_prob_away,
         projectedSpread: parseFloat(mlResult.ml_margin.toFixed(1)),
         mlEnhanced: true,
+        biasCorrection: mlResult.bias_correction_applied ?? 0,
       } : pred;
+      // R9: MC uses ML-adjusted means when ML prediction is available
+      const mcHomeMean = mlResult ? pred.homeScore + (mlResult.ml_margin - pred.projectedSpread) / 2 : pred?.homeScore;
+      const mcAwayMean = mlResult ? pred.awayScore - (mlResult.ml_margin - pred.projectedSpread) / 2 : pred?.awayScore;
+      if (pred && !mcResult) {
+        mcResult = await mlMonteCarlo("NCAAB", mcHomeMean, mcAwayMean, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
+      }
       return { ...g, homeStats, awayStats, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
     setGames(enriched);

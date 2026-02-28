@@ -13,6 +13,30 @@ const _ncaaSeasonStart = (() => {
 
 const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// R5: Compute rest days from team schedule
+// Returns the number of days since the team's last completed game
+async function _computeRestDays(teamId, gameDateStr) {
+  try {
+    const data = await fetch(
+      `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/schedule`
+    ).then(r => r.ok ? r.json() : null).catch(() => null);
+    if (!data?.events) return 3; // default
+    const gameDate = new Date(gameDateStr + "T00:00:00");
+    // Find the most recent completed game BEFORE this game date
+    let lastGameDate = null;
+    for (const ev of data.events) {
+      const evDate = new Date(ev.date);
+      const completed = ev.competitions?.[0]?.status?.type?.completed;
+      if (completed && evDate < gameDate) {
+        if (!lastGameDate || evDate > lastGameDate) lastGameDate = evDate;
+      }
+    }
+    if (!lastGameDate) return 7; // no prior games found (season opener)
+    const diffMs = gameDate - lastGameDate;
+    return Math.max(0, Math.round(diffMs / (1000 * 60 * 60 * 24)));
+  } catch { return 3; }
+}
+
 // Fetch SOS and home/away splits in a SINGLE API call (Finding 25: was 2 separate calls)
 async function fetchNCAATeamRecord(teamId) {
   try {
@@ -44,15 +68,21 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
   if (!homeStats || !awayStats) return null;
 
   let homeSOSFactor = null, awaySOSFactor = null, homeSplits = null, awaySplits = null;
+  // R5: Compute rest days in parallel with SOS
+  let homeRestDays = 3, awayRestDays = 3;
   try {
-    const [homeRecord, awayRecord] = await Promise.all([
+    const [homeRecord, awayRecord, homeRest, awayRest] = await Promise.all([
       fetchNCAATeamRecord(game.homeTeamId),
       fetchNCAATeamRecord(game.awayTeamId),
+      _computeRestDays(game.homeTeamId, dateStr),
+      _computeRestDays(game.awayTeamId, dateStr),
     ]);
     homeSOSFactor = homeRecord.sos;
     awaySOSFactor = awayRecord.sos;
     homeSplits = homeRecord.splits;
     awaySplits = awayRecord.splits;
+    homeRestDays = homeRest;
+    awayRestDays = awayRest;
   } catch {}
 
   const pred = ncaaPredictGame({ homeStats, awayStats, neutralSite: game.neutralSite, homeSOSFactor, awaySOSFactor, homeSplits, awaySplits });
@@ -79,7 +109,7 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     pred_away_score: parseFloat(pred.awayScore.toFixed(1)),
     home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
     neutral_site: game.neutralSite || false,
-    // Raw stats for ML training (Finding 24)
+    // Raw stats for ML training
     home_ppg: homeStats.ppg, away_ppg: awayStats.ppg,
     home_opp_ppg: homeStats.oppPpg, away_opp_ppg: awayStats.oppPpg,
     home_fgpct: homeStats.fgPct, away_fgpct: awayStats.fgPct,
@@ -101,6 +131,8 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     home_sos: homeSOSFactor, away_sos: awaySOSFactor,
     home_rank: game.homeRank, away_rank: game.awayRank,
     home_conference: homeStats.conferenceName, away_conference: awayStats.conferenceName,
+    // R5: Rest days for ML training
+    home_rest_days: homeRestDays, away_rest_days: awayRestDays,
     ...(market_spread_home !== null && { market_spread_home }),
     ...(market_ou_total !== null && { market_ou_total }),
   };
