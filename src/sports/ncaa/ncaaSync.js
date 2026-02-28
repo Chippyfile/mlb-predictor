@@ -13,31 +13,27 @@ const _ncaaSeasonStart = (() => {
 
 const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Fetch SOS and home/away splits (these may be defined elsewhere — stubs if not)
-async function fetchNCAATeamSOS(teamId) {
+// Fetch SOS and home/away splits in a SINGLE API call (Finding 25: was 2 separate calls)
+async function fetchNCAATeamRecord(teamId) {
   try {
     const data = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/record`)
       .then(r => r.ok ? r.json() : null).catch(() => null);
     const items = data?.items || [];
-    const sos = items.find(i => i.type === "sos")?.stats?.find(s => s.name === "opponentWinPercent")?.value ?? null;
-    return sos;
-  } catch { return null; }
-}
 
-async function fetchNCAAHomeAwaySplits(teamId) {
-  try {
-    const data = await fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/record`)
-      .then(r => r.ok ? r.json() : null).catch(() => null);
-    const items = data?.items || [];
+    // SOS
+    const sos = items.find(i => i.type === "sos")?.stats?.find(s => s.name === "opponentWinPercent")?.value ?? null;
+
+    // Home/Away splits
     const home = items.find(i => i.type === "home");
     const away = items.find(i => i.type === "away");
-    if (!home && !away) return null;
     const getStat = (item, name) => item?.stats?.find(s => s.name === name)?.value ?? null;
-    return {
+    const splits = (home || away) ? {
       homeAvgMargin: getStat(home, "avgPointDifferential"),
       awayAvgMargin: getStat(away, "avgPointDifferential"),
-    };
-  } catch { return null; }
+    } : null;
+
+    return { sos, splits };
+  } catch { return { sos: null, splits: null }; }
 }
 
 async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
@@ -49,10 +45,14 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
 
   let homeSOSFactor = null, awaySOSFactor = null, homeSplits = null, awaySplits = null;
   try {
-    [homeSOSFactor, awaySOSFactor, homeSplits, awaySplits] = await Promise.all([
-      fetchNCAATeamSOS(game.homeTeamId), fetchNCAATeamSOS(game.awayTeamId),
-      fetchNCAAHomeAwaySplits(game.homeTeamId), fetchNCAAHomeAwaySplits(game.awayTeamId),
+    const [homeRecord, awayRecord] = await Promise.all([
+      fetchNCAATeamRecord(game.homeTeamId),
+      fetchNCAATeamRecord(game.awayTeamId),
     ]);
+    homeSOSFactor = homeRecord.sos;
+    awaySOSFactor = awayRecord.sos;
+    homeSplits = homeRecord.splits;
+    awaySplits = awayRecord.splits;
   } catch {}
 
   const pred = ncaaPredictGame({ homeStats, awayStats, neutralSite: game.neutralSite, homeSOSFactor, awaySOSFactor, homeSplits, awaySplits });
@@ -79,6 +79,28 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     pred_away_score: parseFloat(pred.awayScore.toFixed(1)),
     home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
     neutral_site: game.neutralSite || false,
+    // Raw stats for ML training (Finding 24)
+    home_ppg: homeStats.ppg, away_ppg: awayStats.ppg,
+    home_opp_ppg: homeStats.oppPpg, away_opp_ppg: awayStats.oppPpg,
+    home_fgpct: homeStats.fgPct, away_fgpct: awayStats.fgPct,
+    home_threepct: homeStats.threePct, away_threepct: awayStats.threePct,
+    home_ftpct: homeStats.ftPct, away_ftpct: awayStats.ftPct,
+    home_assists: homeStats.assists, away_assists: awayStats.assists,
+    home_turnovers: homeStats.turnovers, away_turnovers: awayStats.turnovers,
+    home_tempo: homeStats.tempo, away_tempo: awayStats.tempo,
+    home_orb_pct: homeStats.orbPct, away_orb_pct: awayStats.orbPct,
+    home_fta_rate: homeStats.ftaRate, away_fta_rate: awayStats.ftaRate,
+    home_ato_ratio: homeStats.atoRatio, away_ato_ratio: awayStats.atoRatio,
+    home_opp_fgpct: homeStats.oppFGpct, away_opp_fgpct: awayStats.oppFGpct,
+    home_opp_threepct: homeStats.oppThreePct, away_opp_threepct: awayStats.oppThreePct,
+    home_steals: homeStats.steals, away_steals: awayStats.steals,
+    home_blocks: homeStats.blocks, away_blocks: awayStats.blocks,
+    home_wins: homeStats.wins, away_wins: awayStats.wins,
+    home_losses: homeStats.losses, away_losses: awayStats.losses,
+    home_form: homeStats.formScore, away_form: awayStats.formScore,
+    home_sos: homeSOSFactor, away_sos: awaySOSFactor,
+    home_rank: game.homeRank, away_rank: game.awayRank,
+    home_conference: homeStats.conferenceName, away_conference: awayStats.conferenceName,
     ...(market_spread_home !== null && { market_spread_home }),
     ...(market_ou_total !== null && { market_ou_total }),
   };

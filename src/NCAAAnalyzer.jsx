@@ -428,14 +428,15 @@ export default function NCAAAnalyzer() {
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 16 }}>
               <div style={{ fontSize: 11, color: C.dim, letterSpacing: 2, marginBottom: 12 }}>WHAT COULD INCREASE ACCURACY FURTHER</div>
               {[
+                { title: "✅ Full Four Factors (v15)", desc: "Implemented: eFG%, TO%, ORB%, and FTA Rate are all now included with correct formulas. Previously only 2 of 4 factors were used, and eFG% was calculated incorrectly." },
+                { title: "✅ Real tempo estimation (v15)", desc: "Implemented: Possessions estimated via Dean Oliver formula (FGA − ORB + TO + 0.475×FTA) instead of assists/turnovers proxy." },
+                { title: "✅ Conference-tier HCA (v15)", desc: "Implemented: Home court advantage now varies by conference (2.3 Ivy League → 3.8 Big 12) instead of flat 3.5 for all venues." },
+                { title: "✅ Defensive metrics (v15)", desc: "Implemented: Opponent FG%, opponent 3P%, steals, blocks, and A/TO ratio now factor into predictions." },
                 { title: "Injury & roster data", desc: "Missing starters have the biggest single-game impact in college basketball. No free API exists but ESPN game notes sometimes mention it." },
-                { title: "Home/away split stats", desc: "Some teams play dramatically differently at home vs away. ESPN team stats are season-wide averages — splitting them would improve road game predictions." },
-                { title: "Conference strength adjustment", desc: "A team with a 110 OE in the SEC faces harder competition than the same 110 OE in the Sun Belt. Inter-conference games are where the current model has the most error." },
-                { title: "Fatigue / travel factor", desc: "Back-to-back games and cross-country travel affect performance, especially for away teams. This could be approximated from schedule data." },
-                { title: "Recent form weighting", desc: `Current form weight is capped at 10%. Increasing it for mid-to-late season (when teams have 20+ games) could improve accuracy in February/March.` },
-                { title: "Pace of play adjustment", desc: "Current tempo estimate is derived from assists/turnovers. A direct possessions-per-game stat would be more accurate and reduce spread error." },
+                { title: "Historical training corpus", desc: "Building a 3–5 season historical dataset would let the ML model train on 15,000+ games instead of just the current season. This is the single biggest remaining accuracy opportunity." },
+                { title: "KenPom/Barttorvik integration", desc: "Real adjusted efficiency numbers would replace the ESPN-derived estimates. KenPom subscription is $20/year — the most cost-effective accuracy upgrade available." },
               ].map((item, i) => (
-                <div key={i} style={{ borderBottom: i < 5 ? `1px solid ${C.border}` : "none", padding: "10px 0" }}>
+                <div key={i} style={{ borderBottom: i < 6 ? `1px solid ${C.border}` : "none", padding: "10px 0" }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: C.blue, marginBottom: 3 }}>→ {item.title}</div>
                   <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>{item.desc}</div>
                 </div>

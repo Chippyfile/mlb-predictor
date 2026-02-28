@@ -11,7 +11,7 @@ import { ncaafPredictGame } from "../sports/ncaaf/ncaafUtils.js";
 // ─────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────
-export const ENHANCEMENT_VERSION  = "v14-refined";
+export const ENHANCEMENT_VERSION  = "v15-ncaa-overhaul";
 export const BREAK_EVEN_WIN_RATE  = 0.524;   // -110 juice break-even
 export const TARGET_WIN_RATE      = 0.55;    // Achievable with free enhancements
 export const KELLY_FRACTION       = 0.25;    // Quarter Kelly (conservative)
@@ -160,65 +160,34 @@ export const mlbPredictGameEnhanced = (params) => mlbPredictGame(params);
 // SECTION 3 — NCAA BASKETBALL ENHANCEMENTS
 // ═══════════════════════════════════════════════════════════════
 
-export async function fetchNCAATeamSOS(teamId) {
-  if (!teamId) return null;
+// Combined SOS + splits fetch — single API call (matches ncaaSync.js)
+export async function fetchNCAATeamRecord(teamId) {
+  if (!teamId) return { sos: null, splits: null };
   try {
-    const schedData = await fetch(
-      `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/schedule`
+    const data = await fetch(
+      `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/record`
     ).then(r => r.ok ? r.json() : null).catch(() => null);
-    const events    = schedData?.events || [];
-    const completed = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
-    if (completed.length < 5) return null;
-    const oppWinPcts = await Promise.all(
-      completed.slice(-10).map(async e => {
-        const comp    = e.competitions?.[0];
-        const oppTeam = comp?.competitors?.find(c => c.team?.id !== String(teamId));
-        if (!oppTeam?.team?.id) return 0.5;
-        const oppRecord = await fetch(
-          `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${oppTeam.team.id}/record`
-        ).then(r => r.ok ? r.json() : null).catch(() => null);
-        const w = oppRecord?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
-        const l = oppRecord?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
-        return w + l > 0 ? w / (w + l) : 0.5;
-      })
-    );
-    return oppWinPcts.reduce((s, v) => s + v, 0) / oppWinPcts.length;
-  } catch { return null; }
+    const items = data?.items || [];
+    const sos = items.find(i => i.type === "sos")?.stats?.find(s => s.name === "opponentWinPercent")?.value ?? null;
+    const home = items.find(i => i.type === "home");
+    const away = items.find(i => i.type === "away");
+    const getStat = (item, name) => item?.stats?.find(s => s.name === name)?.value ?? null;
+    const splits = (home || away) ? {
+      homeAvgMargin: getStat(home, "avgPointDifferential"),
+      awayAvgMargin: getStat(away, "avgPointDifferential"),
+    } : null;
+    return { sos, splits };
+  } catch { return { sos: null, splits: null }; }
 }
 
+// Legacy aliases for backward compat
+export async function fetchNCAATeamSOS(teamId) {
+  const rec = await fetchNCAATeamRecord(teamId);
+  return rec.sos;
+}
 export async function fetchNCAAHomeAwaySplits(teamId) {
-  if (!teamId) return null;
-  try {
-    const schedData = await fetch(
-      `https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/${teamId}/schedule`
-    ).then(r => r.ok ? r.json() : null).catch(() => null);
-    const events    = schedData?.events || [];
-    const completed = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
-    let homeW=0,homeL=0,awayW=0,awayL=0,homePtsFor=0,homePtsAgainst=0,awayPtsFor=0,awayPtsAgainst=0;
-    completed.forEach(e => {
-      const comp = e.competitions?.[0];
-      const tc   = comp?.competitors?.find(c => c.team?.id === String(teamId));
-      const opp  = comp?.competitors?.find(c => c.team?.id !== String(teamId));
-      if (!tc) return;
-      const won    = tc.winner || false;
-      const pts    = parseInt(tc.score) || 0;
-      const oppPts = parseInt(opp?.score) || 0;
-      if (tc.homeAway === "home") {
-        won ? homeW++ : homeL++;
-        homePtsFor += pts; homePtsAgainst += oppPts;
-      } else {
-        won ? awayW++ : awayL++;
-        awayPtsFor += pts; awayPtsAgainst += oppPts;
-      }
-    });
-    const hG = homeW + homeL, aG = awayW + awayL;
-    return {
-      homeWinPct:    hG > 0 ? homeW / hG : 0.5,
-      awayWinPct:    aG > 0 ? awayW / aG : 0.5,
-      homeAvgMargin: hG > 0 ? (homePtsFor - homePtsAgainst) / hG : 0,
-      awayAvgMargin: aG > 0 ? (awayPtsFor - awayPtsAgainst) / aG : 0,
-    };
-  } catch { return null; }
+  const rec = await fetchNCAATeamRecord(teamId);
+  return rec.splits;
 }
 
 export function ncaaInjuryImpact(injuredPlayers = []) {
@@ -600,12 +569,14 @@ export const EnhancedPredictionEngine = {
     let homeSOSFactor = null, awaySOSFactor = null;
     let homeSplits = null, awaySplits = null;
     try {
-      [homeSOSFactor, awaySOSFactor, homeSplits, awaySplits] = await Promise.all([
-        fetchNCAATeamSOS(game.homeTeamId),
-        fetchNCAATeamSOS(game.awayTeamId),
-        fetchNCAAHomeAwaySplits(game.homeTeamId),
-        fetchNCAAHomeAwaySplits(game.awayTeamId),
+      const [homeRecord, awayRecord] = await Promise.all([
+        fetchNCAATeamRecord(game.homeTeamId),
+        fetchNCAATeamRecord(game.awayTeamId),
       ]);
+      homeSOSFactor = homeRecord.sos;
+      awaySOSFactor = awayRecord.sos;
+      homeSplits = homeRecord.splits;
+      awaySplits = awayRecord.splits;
     } catch {}
     return ncaaPredictGameEnhanced({ homeStats, awayStats, neutralSite: game.neutralSite, homeSOSFactor, awaySOSFactor, homeSplits, awaySplits, ...opts });
   },

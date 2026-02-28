@@ -15,6 +15,21 @@ const LABEL_MAP = {
   away_epa: "Away EPA", epa_diff: "EPA Diff",
   run_diff_pred: "Run Diff (pred)", ou_total: "O/U Line",
   ranked_game: "Ranked Game", home_rank_fill: "Home Rank", away_rank_fill: "Away Rank",
+  // New NCAA features (Phase 1+2)
+  ppg_diff: "PPG Diff", opp_ppg_diff: "Opp PPG Diff",
+  fgpct_diff: "FG% Diff", threepct_diff: "3P% Diff",
+  orb_pct_diff: "ORB% Diff", fta_rate_diff: "FTA Rate Diff",
+  ato_diff: "A/TO Diff", def_fgpct_diff: "Def FG% Diff",
+  steals_diff: "Steals Diff", blocks_diff: "Blocks Diff",
+  sos_diff: "SOS Diff", form_diff: "Form Diff",
+  rank_diff: "Rank Diff", win_pct_diff: "Win% Diff",
+  tempo_avg: "Avg Tempo", is_ranked_game: "Ranked Game",
+  is_top_matchup: "Top 25 Matchup",
+  home_fgpct: "Home FG%", away_fgpct: "Away FG%",
+  home_threepct: "Home 3P%", away_threepct: "Away 3P%",
+  home_orb_pct: "Home ORB%", away_orb_pct: "Away ORB%",
+  home_ato_ratio: "Home A/TO", away_ato_ratio: "Away A/TO",
+  home_opp_fgpct: "Home Opp FG%", away_opp_fgpct: "Away Opp FG%",
 };
 
 export default function ShapPanel({ shap, homeName, awayName }) {
