@@ -167,14 +167,33 @@ export async function fetchNBATeamStats(abbr) {
     const turnovers = getStat("avgTurnovers") || 14.0;
 
     // ── Shot attempts + rebounds ──
-    const fga    = getStat("fieldGoalsAttempted", "avgFieldGoalsAttempted") || 88.0;
-    const fta    = getStat("freeThrowsAttempted", "avgFreeThrowsAttempted") || 24.0;
+    // FIX: ESPN returns BOTH season totals (e.g. fieldGoalsAttempted=5720) and
+    // per-game averages (avgFieldGoalsAttempted=88). Must use per-game first.
+    // If per-game is unavailable, detect season totals (>200) and divide by games.
+    const _nbaPerGame = (avgName, totalName, fallback) => {
+      const avg = getStat(avgName);
+      if (avg != null) return avg;
+      const total = getStat(totalName);
+      if (total != null) {
+        // Season totals are typically >200 for FGA, >100 for FTA
+        // Per-game NBA FGA is ~80-95, FTA is ~18-30
+        if (total > 200) {
+          // Estimate games from schedule if available
+          const gamesPlayed = schedData?.events?.filter(e => e.competitions?.[0]?.status?.type?.completed)?.length || 82;
+          return total / Math.max(1, gamesPlayed);
+        }
+        return total; // small enough to be per-game already
+      }
+      return fallback;
+    };
+    const fga    = _nbaPerGame("avgFieldGoalsAttempted", "fieldGoalsAttempted", 88.0);
+    const fta    = _nbaPerGame("avgFreeThrowsAttempted", "freeThrowsAttempted", 24.0);
     const offReb = getStat("avgOffensiveRebounds", "offensiveReboundsPerGame") || 10.5;
     const defReb = getStat("avgDefensiveRebounds", "defensiveReboundsPerGame") || 33.5;
     const totalReb = getStat("avgRebounds", "reboundsPerGame") || (offReb + defReb);
     const steals = getStat("avgSteals", "stealsPerGame") || 7.5;
     const blocks = getStat("avgBlocks", "blocksPerGame") || 5.0;
-    const threeAtt = getStat("threePointFieldGoalsAttempted", "avgThreePointFieldGoalsAttempted") || (fga * 0.40);
+    const threeAtt = _nbaPerGame("avgThreePointFieldGoalsAttempted", "threePointFieldGoalsAttempted", fga * 0.40);
     const foulsPerGame = getStat("avgFouls", "foulsPerGame") || 20.0;
 
     // ── Opponent defensive stats ──
@@ -292,8 +311,17 @@ export async function fetchNBARealPace(abbr) {
 
     const ppg    = getStat("avgPoints", "pointsPerGame") || 112.0;
     const oppPpg = getStat("avgPointsAllowed", "opponentPointsPerGame") || 112.0;
-    const fga    = getStat("fieldGoalsAttempted", "avgFieldGoalsAttempted") || 88.0;
-    const fta    = getStat("freeThrowsAttempted", "avgFreeThrowsAttempted") || 24.0;
+    // FIX: Use per-game averages first; detect season totals (>200) and divide
+    const _rpPerGame = (avgName, totalName, fallback) => {
+      const avg = getStat(avgName);
+      if (avg != null) return avg;
+      const total = getStat(totalName);
+      if (total != null && total > 200) return total / 82; // approximate
+      if (total != null) return total;
+      return fallback;
+    };
+    const fga    = _rpPerGame("avgFieldGoalsAttempted", "fieldGoalsAttempted", 88.0);
+    const fta    = _rpPerGame("avgFreeThrowsAttempted", "freeThrowsAttempted", 24.0);
     const offReb = getStat("avgOffensiveRebounds", "offensiveReboundsPerGame") || 10.5;
     const turnovers = getStat("avgTurnovers") || 14.0;
 

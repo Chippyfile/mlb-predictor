@@ -349,11 +349,12 @@ export function ncaaPredictGame({
   awayScore += awayStats.formScore * formWeight * 4.0;
 
   // ── Safety cap: prevent unrealistic game totals ──
-  // NCAA D1 game totals almost never exceed 180. If the projection
-  // exceeds this, it indicates a data quality issue upstream.
+  // NCAA D1 game totals rarely exceed 190 (even Florida's elite offense at
+  // 124 adjOE with ~72 possessions produces ~87 pts per team ≈ 174 total).
+  // Totals above 190 strongly indicate a data quality issue upstream.
   // Scale both scores down proportionally to preserve the spread.
   const rawTotal = homeScore + awayScore;
-  const maxRealisticTotal = 180;
+  const maxRealisticTotal = 190;
   if (rawTotal > maxRealisticTotal) {
     const scaleFactor = maxRealisticTotal / rawTotal;
     homeScore *= scaleFactor;
