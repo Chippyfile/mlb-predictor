@@ -43,7 +43,28 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         homeRealStats: nbaRealH, awayRealStats: nbaRealA,
         homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr,
       }) : null;
-      const gameOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
+      const rawOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
+      // ── ODDS NORMALIZATION ──
+      // Normalize field names (odds.js returns marketSpreadHome/marketTotal)
+      // and detect home/away swap between The Odds API and ESPN
+      const gameOdds = rawOdds ? (() => {
+        const normalize = s => (s || "").toLowerCase().replace(/[^a-z]/g, "");
+        const oddsHome = normalize(rawOdds.homeTeam);
+        const espnHome = normalize(g.homeTeamName || g.homeAbbr);
+        const espnAway = normalize(g.awayTeamName || g.awayAbbr);
+        const homeMatchesHome = oddsHome.includes(espnHome.slice(0, 6)) || espnHome.includes(oddsHome.slice(0, 6));
+        const homeMatchesAway = oddsHome.includes(espnAway.slice(0, 6)) || espnAway.includes(oddsHome.slice(0, 6));
+        const isSwapped = !homeMatchesHome && homeMatchesAway;
+        if (isSwapped) console.warn(`⚠️ NBA ODDS SWAP: Odds="${rawOdds.homeTeam}" vs ESPN="${g.homeTeamName}"`);
+        return {
+          ...rawOdds,
+          homeML: isSwapped ? rawOdds.awayML : rawOdds.homeML,
+          awayML: isSwapped ? rawOdds.homeML : rawOdds.awayML,
+          homeSpread: isSwapped ? -(rawOdds.marketSpreadHome ?? null) : (rawOdds.marketSpreadHome ?? null),
+          ouLine: rawOdds.marketTotal ?? null,
+          _swapped: isSwapped,
+        };
+      })() : null;
       // ── ML API: calibrated win prob + SHAP + Monte Carlo ──
       let mlResult = null, mcResult = null;
       if (pred) {
@@ -66,8 +87,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-        // CONSISTENCY FIX: Derive win prob FROM margin so spread and win% always agree.
-        // NBA sigma ~15.0 (similar spread-to-probability relationship)
+        // CONSISTENCY FIX: Derive win prob FROM margin so spread/win%/ML always agree.
         const SIGMA = 15.0;
         const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
         const MARGIN_WEIGHT = 0.70;

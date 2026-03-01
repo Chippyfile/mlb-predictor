@@ -38,7 +38,36 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 16.0;
       const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
       const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null;
-      const gameOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
+      const rawOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
+      // ── ODDS NORMALIZATION ──
+      // Fix 1: odds.js returns marketSpreadHome/marketTotal, but downstream
+      //         code expects homeSpread/ouLine. Normalize field names.
+      // Fix 2: The Odds API may designate home/away opposite to ESPN.
+      //         Detect swap by comparing odds homeTeam against ESPN homeTeamName.
+      //         If swapped, flip homeML↔awayML and negate the spread.
+      const gameOdds = rawOdds ? (() => {
+        const normalize = s => (s || "").toLowerCase().replace(/[^a-z]/g, "");
+        const oddsHome = normalize(rawOdds.homeTeam);
+        const espnHome = normalize(g.homeTeamName || g.homeAbbr);
+        const espnAway = normalize(g.awayTeamName || g.awayAbbr);
+        // Check if the odds API has teams swapped relative to ESPN
+        const homeMatchesHome = oddsHome.includes(espnHome.slice(0, 6)) || espnHome.includes(oddsHome.slice(0, 6));
+        const homeMatchesAway = oddsHome.includes(espnAway.slice(0, 6)) || espnAway.includes(oddsHome.slice(0, 6));
+        const isSwapped = !homeMatchesHome && homeMatchesAway;
+        if (isSwapped) {
+          console.warn(`⚠️ ODDS SWAP DETECTED: Odds has "${rawOdds.homeTeam}" as home, ESPN has "${g.homeTeamName}". Flipping ML/spread.`);
+        }
+        return {
+          ...rawOdds,
+          homeML: isSwapped ? rawOdds.awayML : rawOdds.homeML,
+          awayML: isSwapped ? rawOdds.homeML : rawOdds.awayML,
+          homeSpread: isSwapped
+            ? -(rawOdds.marketSpreadHome ?? null)
+            : (rawOdds.marketSpreadHome ?? null),
+          ouLine: rawOdds.marketTotal ?? null,
+          _swapped: isSwapped,
+        };
+      })() : null;
       let mlResult = null, mcResult = null;
       if (pred) {
         // Run ML prediction first
@@ -105,23 +134,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-
-        // CONSISTENCY FIX: The ML model returns two independent outputs:
-        //   1) ml_margin (from regressor) — e.g., -2.4 means away by 2.4
-        //   2) ml_win_prob_home (from classifier) — e.g., 0.77 means home 77%
-        // These can CONTRADICT each other (margin says away wins, prob says home wins).
-        // Solution: Derive win probability FROM the final margin using the same
-        // sigma-based formula the heuristic uses, so spread and win% always agree.
-        const SIGMA = 16.0; // Same sigma used in ncaaPredictGame
+        // CONSISTENCY FIX: Derive win probability FROM margin so spread/win%/ML always agree.
+        const SIGMA = 16.0;
         const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
-        // Blend margin-derived prob with ML classifier prob, but margin gets priority
-        // since it drives the displayed spread. 70% margin-based, 30% classifier.
         const MARGIN_WEIGHT = 0.70;
         const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
-        // Clamp to [0.12, 0.88] to prevent extreme moneylines
         const blendedWinHome = Math.max(0.12, Math.min(0.88, rawBlended));
         const blendedWinAway = 1 - blendedWinHome;
-        // Cap moneyline at ±500
         const ML_CAP = 500;
         const newModelML_home = blendedWinHome >= 0.5
           ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
