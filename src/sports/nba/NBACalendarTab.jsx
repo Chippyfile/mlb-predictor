@@ -13,6 +13,7 @@ import {
   nbaPredictGame,
   matchNBAOddsToGame,
   NBA_TEAM_COLORS,
+  computeLeagueAverages,
 } from "./nbaUtils.js";
 
 // ─────────────────────────────────────────────────────────────
@@ -31,11 +32,23 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     const [raw, odds] = await Promise.all([fetchNBAGamesForDate(d), fetchOdds("basketball_nba")]);
     setOddsInfo(odds);
     setGames(raw.map(g => ({ ...g, loading: true })));
-    const enriched = await Promise.all(raw.map(async g => {
+    // Pre-load all team stats and compute dynamic league averages
+    const allStatsPairs = await Promise.all(raw.map(async g => {
       const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
-      // Fetch real pace/efficiency stats for improved accuracy + enables travel distance calc
       let nbaRealH = null, nbaRealA = null;
       try { [nbaRealH, nbaRealA] = await Promise.all([fetchNBARealPace(g.homeAbbr), fetchNBARealPace(g.awayAbbr)]); } catch {}
+      return { game: g, hs, as_, nbaRealH, nbaRealA };
+    }));
+    // Compute league averages from all unique teams loaded today
+    const uniqueNbaStats = [];
+    const seenNba = new Set();
+    for (const { hs, as_ } of allStatsPairs) {
+      if (hs && !seenNba.has(hs.abbr)) { seenNba.add(hs.abbr); uniqueNbaStats.push(hs); }
+      if (as_ && !seenNba.has(as_.abbr)) { seenNba.add(as_.abbr); uniqueNbaStats.push(as_); }
+    }
+    if (uniqueNbaStats.length >= 10) computeLeagueAverages(uniqueNbaStats);
+
+    const enriched = await Promise.all(allStatsPairs.map(async ({ game: g, hs, as_, nbaRealH, nbaRealA }) => {
       const pred = hs && as_ ? nbaPredictGame({
         homeStats: hs, awayStats: as_,
         neutralSite: g.neutralSite,

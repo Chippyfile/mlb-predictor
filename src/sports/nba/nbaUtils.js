@@ -410,7 +410,7 @@ export function nbaPredictGame({
   const homeDefRtg = homeRealStats?.defRtg || homeStats.adjDE;
   const awayDefRtg = awayRealStats?.defRtg || awayStats.adjDE;
   const poss = (homePace + awayPace) / 2;
-  const lgAvg = lg.ppg;
+  const lgAvg = lg.offRtg || lg.ppg;  // Use per-100-poss rating, not raw ppg
 
   // ── Core score projection (offense vs defense matchup) ──
   let homeScore = ((homeOffRtg / lgAvg) * (lgAvg / awayDefRtg) * lgAvg / 100) * poss;
@@ -515,6 +515,21 @@ export function nbaPredictGame({
   const fw = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames, 30) / 30));
   homeScore += homeStats.formScore * fw * 3;
   awayScore += awayStats.formScore * fw * 3;
+
+  // ── O/U Total Calibration ──
+  // Additive boosts (Four Factors, TS%, defBoost, ATO, rim protection,
+  // form) add to BOTH scores. Net spread effect ≈ 0, but total inflates.
+  // Blend toward pace-implied baseline to correct.
+  const rawNbaTotal = homeScore + awayScore;
+  const paceImpliedNbaTotal = poss * 2 * (lgAvg / 100);
+  // Blend: 78% model, 22% pace baseline
+  const NBA_TOTAL_WEIGHT = 0.78;
+  const calibratedNbaTotal = NBA_TOTAL_WEIGHT * rawNbaTotal + (1 - NBA_TOTAL_WEIGHT) * paceImpliedNbaTotal;
+  if (Math.abs(rawNbaTotal - calibratedNbaTotal) > 0.5) {
+    const nbaScale = calibratedNbaTotal / rawNbaTotal;
+    homeScore *= nbaScale;
+    awayScore *= nbaScale;
+  }
 
   // ── NBA-16 FIX: Raised ceiling from 148 to 155 for modern NBA ──
   homeScore = Math.max(85, Math.min(155, homeScore));

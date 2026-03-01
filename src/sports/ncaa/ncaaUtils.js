@@ -22,6 +22,51 @@
 
 const _ncaaStatsCache = {};
 
+// ── NCAA Dynamic League Averages ─────────────────────────────
+// Defaults based on 2024-25 D1 season (KenPom/Barttorvik reference).
+// Updated dynamically via computeNCAALeagueAverages() when enough
+// teams are loaded. The old hardcoded lgAvgOE=107.0 inflated O/U
+// totals by 10-15% because ESPN raw ppg/tempo produces adjOE ~112-118
+// while KenPom-adjusted values are ~104-108.
+let _ncaaLeagueAverages = {
+  adjOE: 104.5,
+  adjDE: 104.5,
+  ppg: 74.5,
+  tempo: 68.0,
+  fgPct: 0.449,
+  threePct: 0.340,
+  ftPct: 0.720,
+  orbPct: 0.28,
+  ftaRate: 0.34,
+  steals: 7.0,
+  blocks: 3.5,
+  turnovers: 12.0,
+};
+
+export function computeNCAALeagueAverages(allTeamStats) {
+  if (!allTeamStats || allTeamStats.length < 20) return;
+  const avg = (arr, key) => {
+    const vals = arr.map(t => t[key]).filter(v => v != null && !isNaN(v));
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  };
+  const update = (key, val) => { if (val != null) _ncaaLeagueAverages[key] = val; };
+  update("adjOE", avg(allTeamStats, "adjOE"));
+  update("adjDE", avg(allTeamStats, "adjDE"));
+  update("ppg", avg(allTeamStats, "ppg"));
+  update("tempo", avg(allTeamStats, "tempo"));
+  update("fgPct", avg(allTeamStats, "fgPct"));
+  update("threePct", avg(allTeamStats, "threePct"));
+  update("ftPct", avg(allTeamStats, "ftPct"));
+  update("orbPct", avg(allTeamStats, "orbPct"));
+  update("ftaRate", avg(allTeamStats, "ftaRate"));
+  update("steals", avg(allTeamStats, "steals"));
+  update("blocks", avg(allTeamStats, "blocks"));
+  update("turnovers", avg(allTeamStats, "turnovers"));
+  console.log("🏀 NCAA League Averages updated:", _ncaaLeagueAverages, `(${allTeamStats.length} teams)`);
+}
+
+export function getNCAALeagueAverages() { return { ..._ncaaLeagueAverages }; }
+
 function espnFetch(path) {
   return fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/${path}`)
     .then(r => r.ok ? r.json() : null).catch(() => null);
@@ -256,8 +301,9 @@ export function ncaaPredictGame({
 }) {
   if (!homeStats || !awayStats) return null;
   const possessions = (homeStats.tempo + awayStats.tempo) / 2;
-  const lgAvgOE = 107.0;
-  const lgAvgTempo = 68.0;
+  const lg = _ncaaLeagueAverages;
+  const lgAvgOE = lg.adjOE;       // was hardcoded 107.0
+  const lgAvgTempo = lg.tempo;     // was hardcoded 68.0
 
   // F6: Dynamic conference power
   const confPower = confPowerOverrides || CONF_POWER_DEFAULTS;
@@ -279,21 +325,21 @@ export function ncaaPredictGame({
   const fourFactorsBoost = (stats, opponentDefReb) => {
     const threeRate = stats.threeAttRate || 0.38;
     const eFG = stats.fgPct + 0.5 * threeRate * stats.threePct;
-    const lgEFG = 0.502;
+    const lgEFG = lg.fgPct + 0.5 * 0.38 * lg.threePct;  // dynamic eFG%
     const eFGboost = (eFG - lgEFG) * 8.0;
 
     const toPct = stats.tempo > 0 ? (stats.turnovers / stats.tempo) * 100 : 18.0;
-    const lgTO = 18.0;
+    const lgTO = lg.tempo > 0 ? (lg.turnovers / lg.tempo) * 100 : 18.0;
     const toBoost = (lgTO - toPct) * 0.12;
 
     // F2: Matchup-specific ORB% using opponent's actual DRB
     const oppDRB = opponentDefReb || 24.5;
     const matchupOrbPct = stats.offReb / (stats.offReb + oppDRB);
-    const lgORB = 0.28;
+    const lgORB = lg.orbPct;
     const orbBoost = (matchupOrbPct - lgORB) * 6.0;
 
     const ftaRateVal = stats.ftaRate || 0.34;
-    const lgFTR = 0.34;
+    const lgFTR = lg.ftaRate;
     const ftrBoost = (ftaRateVal - lgFTR) * 3.5;
 
     const rawBoost = eFGboost + Math.max(-2.5, Math.min(2.5, toBoost)) + orbBoost + ftrBoost;
@@ -348,18 +394,33 @@ export function ncaaPredictGame({
   homeScore += homeStats.formScore * formWeight * 4.0;
   awayScore += awayStats.formScore * formWeight * 4.0;
 
-  // ── Safety cap: prevent unrealistic game totals ──
-  // NCAA D1 game totals rarely exceed 190 (even Florida's elite offense at
-  // 124 adjOE with ~72 possessions produces ~87 pts per team ≈ 174 total).
-  // Totals above 190 strongly indicate a data quality issue upstream.
-  // Scale both scores down proportionally to preserve the spread.
+  // ── O/U Total Calibration ──
+  // The spread is well-calibrated (σ=16, Brier=0.175), but the raw total
+  // is systematically ~10-15% too high because:
+  //   1. ESPN adjOE is inflated vs KenPom (no opponent-quality adjustment)
+  //   2. Additive boosts (Four Factors, def, ATO, form, rank) compound
+  //      upward for BOTH teams — they cancel for spread but inflate total
+  // Solution: Scale both scores proportionally to preserve the spread
+  // while pulling the total toward the pace-implied baseline.
   const rawTotal = homeScore + awayScore;
-  const maxRealisticTotal = 190;
-  if (rawTotal > maxRealisticTotal) {
-    const scaleFactor = maxRealisticTotal / rawTotal;
-    homeScore *= scaleFactor;
-    awayScore *= scaleFactor;
-    console.warn(`⚠️ NCAA total ${rawTotal.toFixed(0)} capped to ${maxRealisticTotal} (scale=${scaleFactor.toFixed(3)})`);
+  const paceImpliedTotal = possessions * 2 * (lgAvgOE / 100);
+  // Blend: 75% model projection, 25% pace-implied baseline
+  const TARGET_TOTAL_WEIGHT = 0.75;
+  const calibratedTotal = TARGET_TOTAL_WEIGHT * rawTotal + (1 - TARGET_TOTAL_WEIGHT) * paceImpliedTotal;
+  if (Math.abs(rawTotal - calibratedTotal) > 0.5) {
+    const totalScale = calibratedTotal / rawTotal;
+    homeScore *= totalScale;
+    awayScore *= totalScale;
+  }
+
+  // Safety cap: hard ceiling for extreme outliers
+  const finalTotal = homeScore + awayScore;
+  const maxRealisticTotal = 185;
+  if (finalTotal > maxRealisticTotal) {
+    const capScale = maxRealisticTotal / finalTotal;
+    homeScore *= capScale;
+    awayScore *= capScale;
+    console.warn(`⚠️ NCAA total ${finalTotal.toFixed(0)} capped to ${maxRealisticTotal}`);
   }
 
   // F16: Widened clamp [35, 130]

@@ -6,7 +6,7 @@ import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
-import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma } from "./ncaaUtils.js";
+import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma, computeNCAALeagueAverages } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
 
 // Season start (Nov 1 of prior year) — keep in sync with ncaaSync.js
@@ -30,6 +30,18 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     setOddsData(odds);
     const enriched = await Promise.all(raw.map(async (g) => {
       const [homeStats, awayStats] = await Promise.all([fetchNCAATeamStats(g.homeTeamId), fetchNCAATeamStats(g.awayTeamId)]);
+      return { game: g, homeStats, awayStats };
+    }));
+    // Compute dynamic league averages from all unique teams loaded today
+    const uniqueStats = [];
+    const seen = new Set();
+    for (const { homeStats, awayStats } of enriched) {
+      if (homeStats && !seen.has(homeStats.teamId)) { seen.add(homeStats.teamId); uniqueStats.push(homeStats); }
+      if (awayStats && !seen.has(awayStats.teamId)) { seen.add(awayStats.teamId); uniqueStats.push(awayStats); }
+    }
+    if (uniqueStats.length >= 10) computeNCAALeagueAverages(uniqueStats);
+
+    const predicted = await Promise.all(enriched.map(async ({ game: g, homeStats, awayStats }) => {
       // v18: Detect injuries and game context in parallel with prediction
       const [injuryData, gameContext] = await Promise.all([
         detectMissingStarters(g.gameId, g.homeTeamId, g.awayTeamId).catch(() => null),
@@ -40,30 +52,22 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null;
       const rawOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
       // ── ODDS NORMALIZATION ──
-      // Fix 1: odds.js returns marketSpreadHome/marketTotal, but downstream
-      //         code expects homeSpread/ouLine. Normalize field names.
-      // Fix 2: The Odds API may designate home/away opposite to ESPN.
-      //         Detect swap by comparing odds homeTeam against ESPN homeTeamName.
-      //         If swapped, flip homeML↔awayML and negate the spread.
+      // Fix field names (odds.js returns marketSpreadHome/marketTotal) and
+      // detect home/away swap between The Odds API and ESPN
       const gameOdds = rawOdds ? (() => {
         const normalize = s => (s || "").toLowerCase().replace(/[^a-z]/g, "");
         const oddsHome = normalize(rawOdds.homeTeam);
         const espnHome = normalize(g.homeTeamName || g.homeAbbr);
         const espnAway = normalize(g.awayTeamName || g.awayAbbr);
-        // Check if the odds API has teams swapped relative to ESPN
         const homeMatchesHome = oddsHome.includes(espnHome.slice(0, 6)) || espnHome.includes(oddsHome.slice(0, 6));
         const homeMatchesAway = oddsHome.includes(espnAway.slice(0, 6)) || espnAway.includes(oddsHome.slice(0, 6));
         const isSwapped = !homeMatchesHome && homeMatchesAway;
-        if (isSwapped) {
-          console.warn(`⚠️ ODDS SWAP DETECTED: Odds has "${rawOdds.homeTeam}" as home, ESPN has "${g.homeTeamName}". Flipping ML/spread.`);
-        }
+        if (isSwapped) console.warn(`⚠️ ODDS SWAP DETECTED: Odds="${rawOdds.homeTeam}" vs ESPN="${g.homeTeamName}"`);
         return {
           ...rawOdds,
           homeML: isSwapped ? rawOdds.awayML : rawOdds.homeML,
           awayML: isSwapped ? rawOdds.homeML : rawOdds.awayML,
-          homeSpread: isSwapped
-            ? -(rawOdds.marketSpreadHome ?? null)
-            : (rawOdds.marketSpreadHome ?? null),
+          homeSpread: isSwapped ? -(rawOdds.marketSpreadHome ?? null) : (rawOdds.marketSpreadHome ?? null),
           ouLine: rawOdds.marketTotal ?? null,
           _swapped: isSwapped,
         };
@@ -176,8 +180,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       }
       return { ...g, homeStats, awayStats, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
-    setGames(enriched);
-    onGamesLoaded?.(enriched);
+    setGames(predicted);
+    onGamesLoaded?.(predicted);
     setLoading(false);
   }, [calibrationFactor]);
 
