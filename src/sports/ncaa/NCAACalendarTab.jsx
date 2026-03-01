@@ -105,17 +105,23 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-        // AMPLIFICATION FIX: Blend ML + heuristic win probability instead of
-        // pure ML override. This prevents the ML model from producing extreme
-        // probabilities that diverge wildly from the heuristic spread.
-        // Also clamp to [0.12, 0.88] — the prob→ML formula is exponentially
-        // sensitive above 0.70 (0.775 → -344, 0.85 → -567).
-        const ML_BLEND = 0.65; // ML gets 65%, heuristic gets 35%
-        const blendedWinHome = Math.max(0.12, Math.min(0.88,
-          ML_BLEND * mlResult.ml_win_prob_home + (1 - ML_BLEND) * pred.homeWinPct
-        ));
+
+        // CONSISTENCY FIX: The ML model returns two independent outputs:
+        //   1) ml_margin (from regressor) — e.g., -2.4 means away by 2.4
+        //   2) ml_win_prob_home (from classifier) — e.g., 0.77 means home 77%
+        // These can CONTRADICT each other (margin says away wins, prob says home wins).
+        // Solution: Derive win probability FROM the final margin using the same
+        // sigma-based formula the heuristic uses, so spread and win% always agree.
+        const SIGMA = 16.0; // Same sigma used in ncaaPredictGame
+        const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
+        // Blend margin-derived prob with ML classifier prob, but margin gets priority
+        // since it drives the displayed spread. 70% margin-based, 30% classifier.
+        const MARGIN_WEIGHT = 0.70;
+        const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
+        // Clamp to [0.12, 0.88] to prevent extreme moneylines
+        const blendedWinHome = Math.max(0.12, Math.min(0.88, rawBlended));
         const blendedWinAway = 1 - blendedWinHome;
-        // Cap moneyline at ±500 to prevent unrealistic displayed odds
+        // Cap moneyline at ±500
         const ML_CAP = 500;
         const newModelML_home = blendedWinHome >= 0.5
           ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
@@ -140,6 +146,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _heuristicSpread: pred.projectedSpread,
           _heuristicWinPct: pred.homeWinPct,
           _rawMlWinProb: mlResult.ml_win_prob_home,
+          _marginBasedWinProb: marginBasedWinProb,
         };
       })() : pred;
       // R9: MC uses ML-adjusted means when ML prediction is available

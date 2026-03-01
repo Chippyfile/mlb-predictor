@@ -66,11 +66,13 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-        // AMPLIFICATION FIX: Blend ML + heuristic win probability and cap moneyline
-        const ML_BLEND = 0.65;
-        const blendedWinHome = Math.max(0.12, Math.min(0.88,
-          ML_BLEND * mlResult.ml_win_prob_home + (1 - ML_BLEND) * pred.homeWinPct
-        ));
+        // CONSISTENCY FIX: Derive win prob FROM margin so spread and win% always agree.
+        // NBA sigma ~15.0 (similar spread-to-probability relationship)
+        const SIGMA = 15.0;
+        const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
+        const MARGIN_WEIGHT = 0.70;
+        const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
+        const blendedWinHome = Math.max(0.12, Math.min(0.88, rawBlended));
         const blendedWinAway = 1 - blendedWinHome;
         const ML_CAP = 500;
         const newModelML_home = blendedWinHome >= 0.5
