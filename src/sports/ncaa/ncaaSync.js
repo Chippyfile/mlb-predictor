@@ -1,8 +1,12 @@
 // src/sports/ncaa/ncaaSync.js
-// Lines 1166–1530 of App.jsx (extracted)
+// NCAAB v18 — Phase 1: Injury detection, tournament context, dynamic sigma
 import { supabaseQuery } from "../../utils/supabase.js";
 import { fetchOdds } from "../../utils/sharedUtils.js";
-import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame } from "./ncaaUtils.js";
+import {
+  fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame,
+  detectMissingStarters, getGameContext, calculateDynamicSigma,
+  batchProcess, createTTLCache,
+} from "./ncaaUtils.js";
 
 // NCAA season starts Nov 1 of the prior calendar year
 const _ncaaSeasonStart = (() => {
@@ -12,6 +16,16 @@ const _ncaaSeasonStart = (() => {
 })();
 
 const _sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// v18: TTL-based stats cache — prevents redundant ESPN API calls
+const _teamStatsCache = createTTLCache(4 * 60 * 60 * 1000); // 4-hour TTL
+async function _cachedTeamStats(teamId) {
+  const cached = _teamStatsCache.get(teamId);
+  if (cached) return cached;
+  const stats = await fetchNCAATeamStats(teamId);
+  if (stats) _teamStatsCache.set(teamId, stats);
+  return stats;
+}
 
 // R5: Compute rest days from team schedule
 // Returns the number of days since the team's last completed game
@@ -61,21 +75,25 @@ async function fetchNCAATeamRecord(teamId) {
 }
 
 async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
+  // v18: Use TTL-cached stats to avoid redundant API calls
   const [homeStats, awayStats] = await Promise.all([
-    fetchNCAATeamStats(game.homeTeamId),
-    fetchNCAATeamStats(game.awayTeamId),
+    _cachedTeamStats(game.homeTeamId),
+    _cachedTeamStats(game.awayTeamId),
   ]);
   if (!homeStats || !awayStats) return null;
 
   let homeSOSFactor = null, awaySOSFactor = null, homeSplits = null, awaySplits = null;
-  // R5: Compute rest days in parallel with SOS
   let homeRestDays = 3, awayRestDays = 3;
+  let injuryData = null;
+
+  // v18: Fetch SOS + rest days + injury detection in parallel
   try {
-    const [homeRecord, awayRecord, homeRest, awayRest] = await Promise.all([
+    const [homeRecord, awayRecord, homeRest, awayRest, injuries] = await Promise.all([
       fetchNCAATeamRecord(game.homeTeamId),
       fetchNCAATeamRecord(game.awayTeamId),
       _computeRestDays(game.homeTeamId, dateStr),
       _computeRestDays(game.awayTeamId, dateStr),
+      detectMissingStarters(game.gameId, game.homeTeamId, game.awayTeamId),
     ]);
     homeSOSFactor = homeRecord.sos;
     awaySOSFactor = awayRecord.sos;
@@ -83,10 +101,43 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     awaySplits = awayRecord.splits;
     homeRestDays = homeRest;
     awayRestDays = awayRest;
+    injuryData = injuries;
   } catch {}
 
-  const pred = ncaaPredictGame({ homeStats, awayStats, neutralSite: game.neutralSite, homeSOSFactor, awaySOSFactor, homeSplits, awaySplits });
+  // v18 P1-CTX: Detect game context (conference tournament, NCAA tournament, etc.)
+  const gameContext = getGameContext(dateStr, game.neutralSite);
+
+  // v18 P1-SIG: Calculate dynamic sigma
+  const dynamicSigma = calculateDynamicSigma(homeStats, awayStats, dateStr);
+
+  // Override neutral site for NCAA tournament games
+  const effectiveNeutral = gameContext.override_neutral || game.neutralSite;
+
+  const pred = ncaaPredictGame({
+    homeStats, awayStats,
+    neutralSite: effectiveNeutral,
+    homeSOSFactor, awaySOSFactor,
+    homeSplits, awaySplits,
+    sigma: dynamicSigma,
+  });
   if (!pred) return null;
+
+  // v18 P1-INJ: Apply injury adjustments to spread and win probability
+  let adjSpread = pred.projectedSpread;
+  let adjWinPct = pred.homeWinPct;
+  if (injuryData && (injuryData.home_injury_penalty > 0 || injuryData.away_injury_penalty > 0)) {
+    adjSpread = pred.projectedSpread - injuryData.home_injury_penalty + injuryData.away_injury_penalty;
+    adjWinPct = Math.min(0.97, Math.max(0.03,
+      1 / (1 + Math.pow(10, -adjSpread / dynamicSigma))
+    ));
+  }
+
+  // v18 P1-CTX: Apply tournament context importance multiplier to form differential
+  if (gameContext.importance_multiplier > 1.0) {
+    const formDiff = (homeStats.formScore || 0) - (awayStats.formScore || 0);
+    const contextBoost = formDiff * (gameContext.importance_multiplier - 1.0) * 0.5;
+    adjSpread += contextBoost;
+  }
 
   const market_spread_home = marketOdds?.marketSpreadHome ?? null;
   const market_ou_total = marketOdds?.marketTotal ?? null;
@@ -101,15 +152,15 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     home_team_id: game.homeTeamId,
     away_team_id: game.awayTeamId,
     model_ml_home: pred.modelML_home, model_ml_away: pred.modelML_away,
-    spread_home: pred.projectedSpread,
+    spread_home: parseFloat(adjSpread.toFixed(1)),
     ou_total: pred.ouTotal,
-    win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)),
+    win_pct_home: parseFloat(adjWinPct.toFixed(4)),
     confidence: pred.confidence,
     pred_home_score: parseFloat(pred.homeScore.toFixed(1)),
     pred_away_score: parseFloat(pred.awayScore.toFixed(1)),
     home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
-    neutral_site: game.neutralSite || false,
-    // Raw stats for ML training
+    neutral_site: effectiveNeutral,
+    // Raw stats for ML training (unchanged from v17)
     home_ppg: homeStats.ppg, away_ppg: awayStats.ppg,
     home_opp_ppg: homeStats.oppPpg, away_opp_ppg: awayStats.oppPpg,
     home_fgpct: homeStats.fgPct, away_fgpct: awayStats.fgPct,
@@ -133,6 +184,22 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     home_conference: homeStats.conferenceName, away_conference: awayStats.conferenceName,
     // R5: Rest days for ML training
     home_rest_days: homeRestDays, away_rest_days: awayRestDays,
+    // ── v18 NEW COLUMNS ──
+    // P1-INJ: Injury data for ML training
+    home_injury_penalty: injuryData?.home_injury_penalty ?? 0,
+    away_injury_penalty: injuryData?.away_injury_penalty ?? 0,
+    injury_diff: injuryData?.injury_diff ?? 0,
+    home_missing_starters: injuryData?.home_missing_starters ?? 0,
+    away_missing_starters: injuryData?.away_missing_starters ?? 0,
+    // P1-CTX: Tournament context flags for ML training
+    is_conference_tournament: gameContext.is_conference_tournament,
+    is_ncaa_tournament: gameContext.is_ncaa_tournament,
+    is_bubble_game: gameContext.is_bubble_game,
+    is_early_season: gameContext.is_early_season,
+    importance_multiplier: gameContext.importance_multiplier,
+    // P1-SIG: Dynamic sigma used (for auditing)
+    sigma_used: dynamicSigma,
+    // Market odds
     ...(market_spread_home !== null && { market_spread_home }),
     ...(market_ou_total !== null && { market_ou_total }),
   };
@@ -280,10 +347,11 @@ export async function ncaaAutoSync(onProgress) {
     const unsaved = games.filter(g => !savedKeys.has(g.gameId || `${dateStr}|${g.homeTeamId}|${g.awayTeamId}`));
     if (!unsaved.length) { await _sleep(80); continue; }
     const isToday = dateStr === today;
-    const rows = (await Promise.all(unsaved.map(g => {
+    // v18: Use batchProcess for parallel game processing
+    const rows = await batchProcess(unsaved, (g) => {
       const gameOdds = isToday ? (todayOddsGames.find(o => matchNCAAOddsToGame(o, g)) || null) : null;
       return ncaaBuildPredictionRow(g, dateStr, gameOdds);
-    }))).filter(Boolean);
+    }, 5, 100);
     if (rows.length) {
       // Normalize keys across all rows for batch insert
       const allKeys = new Set();
@@ -336,10 +404,11 @@ export async function ncaaFullBackfill(onProgress, signal) {
     if (!unsaved.length) { await _sleep(120); continue; }
     let rows;
     try {
-      rows = (await Promise.all(unsaved.map(g => {
+      // v18: Use batchProcess for parallel game processing
+      rows = await batchProcess(unsaved, (g) => {
         const gameOdds = (dateStr === today && backfillTodayOdds) ? (backfillTodayOdds.find(o => matchNCAAOddsToGame(o, g)) || null) : null;
         return ncaaBuildPredictionRow(g, dateStr, gameOdds);
-      }))).filter(Boolean);
+      }, 5, 100);
     } catch (e) { errors++; await _sleep(500); continue; }
     if (rows.length) {
       // Ensure all rows have identical keys (Supabase batch insert requires this)

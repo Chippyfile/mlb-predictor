@@ -21,6 +21,7 @@ import { ncaaAutoSync }  from "./sports/ncaa/ncaaSync.js";
 import { nbaAutoSync }   from "./sports/nba/nbaSync.js";
 import { nflAutoSync }   from "./sports/nfl/nflSync.js";
 import { ncaafAutoSync } from "./sports/ncaaf/ncaafSync.js";
+import ModelHealth from "./components/ModelHealth.jsx";
 
 // ─────────────────────────────────────────────────────────────
 // SPORT NAV CONFIG
@@ -141,6 +142,8 @@ export default function App() {
             transition: "all 0.15s",
           }}>🎯 PARLAY</button>
         </div>
+
+        <ModelHealth />
 
         {syncMsg && (
           <div style={{ fontSize: 9, color: C.dim, animation: "pulse 1.5s ease infinite", whiteSpace: "nowrap" }}>
