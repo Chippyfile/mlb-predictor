@@ -180,7 +180,39 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
     ouSignal?.verdict === "GO"   || ouSignal?.verdict === "LEAN" ||
     spreadSignal?.verdict === "LEAN";
 
-  return { ml: mlSignal, ou: ouSignal, spread: spreadSignal, conf: confSignal, dec: decSignal, anyEdge };
+  // ── BET SIZING (Quarter-Kelly) ─────────────────────────────
+  // Calculates suggested bet size as % of bankroll using Kelly Criterion.
+  // Only computed when there's an actionable ML signal with market odds.
+  let betSizing = null;
+  if (mlSignal && mlSignal.verdict !== "SKIP" && odds?.homeML && odds?.awayML) {
+    const KELLY_FRACTION = 0.25; // Quarter Kelly — conservative
+    const pickedHome = mlSignal.side === "HOME";
+    const winPct = pickedHome ? homeWin : awayWin;
+    const marketML = pickedHome ? odds.homeML : odds.awayML;
+    const decOdds = marketML > 0 ? (marketML / 100) + 1 : (100 / Math.abs(marketML)) + 1;
+    const b = decOdds - 1;
+    const fullKelly = b > 0 ? (b * winPct - (1 - winPct)) / b : 0;
+    const fraction = fullKelly > 0 ? Math.min(0.10, fullKelly * KELLY_FRACTION) : 0;
+    if (fraction > 0) {
+      const units = fraction >= 0.04 ? 3 : fraction >= 0.02 ? 2 : 1;
+      const label = units === 3 ? "MAX (3u)" : units === 2 ? "STRONG (2u)" : "LEAN (1u)";
+      const color = units === 3 ? "green" : units === 2 ? "yellow" : "muted";
+      betSizing = {
+        fraction: parseFloat(fraction.toFixed(4)),
+        pct: parseFloat((fraction * 100).toFixed(2)),
+        units,
+        label,
+        color,
+        side: mlSignal.side,
+        marketML,
+        winPct: parseFloat((winPct * 100).toFixed(1)),
+        edge: parseFloat(mlSignal.edgePct),
+        ev: parseFloat(((winPct * (decOdds - 1) - (1 - winPct)) * 100).toFixed(1)),
+      };
+    }
+  }
+
+  return { ml: mlSignal, ou: ouSignal, spread: spreadSignal, conf: confSignal, dec: decSignal, anyEdge, betSizing };
 }
 
 // ─────────────────────────────────────────────────────────────

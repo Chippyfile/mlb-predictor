@@ -563,6 +563,54 @@ export function BetSignalsPanel({ signals, pred, odds, sport, homeName, awayName
       {signals.spread && <Row label={`📏 ${sport === "mlb" ? "RUN LINE" : "SPREAD"}`} signal={signals.spread} />}
       <Row label="🎯 CONFIDENCE"      signal={signals.conf} />
 
+      {/* ── BET SIZING PANEL (Quarter-Kelly) ──────────────── */}
+      {signals.betSizing && (() => {
+        const sz = signals.betSizing;
+        const szColor = { green: C.green, yellow: C.yellow, muted: C.muted }[sz.color] || C.dim;
+        return (
+          <div style={{
+            padding: "10px 12px",
+            background: "linear-gradient(135deg, #0a1a0d, #0d1a12)",
+            border: `1px solid ${szColor}44`,
+            borderRadius: 7,
+            marginTop: 2,
+            marginBottom: 6,
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 10, color: C.dim, letterSpacing: 2 }}>💰 SUGGESTED BET SIZE</span>
+              <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: szColor }}>{sz.label}</span>
+            </div>
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 3 }}>
+                {[1, 2, 3].map(i => (
+                  <div key={i} style={{
+                    width: 18, height: 18, borderRadius: 4,
+                    background: i <= sz.units ? szColor : "#1a1e24",
+                    border: `1px solid ${i <= sz.units ? szColor : C.border}`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 9, fontWeight: 800, color: i <= sz.units ? "#0d1117" : C.dim,
+                  }}>{i}</div>
+                ))}
+              </div>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                <span style={{ color: szColor, fontWeight: 700 }}>{sz.pct}%</span> of bankroll
+              </div>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                Edge: <span style={{ color: C.green, fontWeight: 600 }}>+{sz.edge}%</span>
+              </div>
+              <div style={{ fontSize: 10, color: C.muted }}>
+                EV: <span style={{ color: sz.ev >= 0 ? C.green : C.red, fontWeight: 600 }}>
+                  {sz.ev > 0 ? "+" : ""}{sz.ev}%
+                </span> per $100
+              </div>
+            </div>
+            <div style={{ fontSize: 9, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>
+              Quarter-Kelly sizing · {sz.side} {sz.marketML > 0 ? "+" : ""}{sz.marketML} · Model: {sz.winPct}% win prob
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Edge Analysis */}
       {odds?.homeML && odds?.awayML && (() => {
         const market = trueImplied(odds.homeML, odds.awayML);
