@@ -55,15 +55,32 @@ export async function fetchNCAATeamStats(teamId) {
     const assists = getStat("avgAssists") || 14.0;
     const turnovers = getStat("avgTurnovers") || 12.0;
 
+    // Pre-compute games played for converting season totals to per-game if needed
+    const totalGamesForAvg = (recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0)
+      + (recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0);
+
     // ── Additional stats for Four Factors, defensive metrics, tempo ──
-    const fga = getStat("fieldGoalsAttempted") || getStat("avgFieldGoalsAttempted") || 58.0;
-    const fta = getStat("freeThrowsAttempted") || getStat("avgFreeThrowsAttempted") || 20.0;
+    // FIX: ESPN returns BOTH season totals (e.g. fieldGoalsAttempted=1685) and
+    // per-game averages (avgFieldGoalsAttempted=60.2). The old code tried season
+    // totals first, which are 28× too large and blow up the possession formula.
+    // Always prefer per-game average stats; only use totals if avg is unavailable.
+    const fga = getStat("avgFieldGoalsAttempted") || (() => {
+      const total = getStat("fieldGoalsAttempted");
+      return (total && totalGamesForAvg > 0) ? total / totalGamesForAvg : 58.0;
+    })();
+    const fta = getStat("avgFreeThrowsAttempted") || (() => {
+      const total = getStat("freeThrowsAttempted");
+      return (total && totalGamesForAvg > 0) ? total / totalGamesForAvg : 20.0;
+    })();
     const offReb = getStat("avgOffensiveRebounds") || getStat("offensiveReboundsPerGame") || 10.0;
     const defReb = getStat("avgDefensiveRebounds") || getStat("defensiveReboundsPerGame") || 24.0;
     const totalReb = getStat("avgRebounds") || getStat("reboundsPerGame") || (offReb + defReb);
     const steals = getStat("avgSteals") || getStat("stealsPerGame") || 7.0;
     const blocks = getStat("avgBlocks") || getStat("blocksPerGame") || 3.5;
-    const threeAtt = getStat("threePointFieldGoalsAttempted") || getStat("avgThreePointFieldGoalsAttempted") || (fga * 0.38);
+    const threeAtt = getStat("avgThreePointFieldGoalsAttempted") || (() => {
+      const total = getStat("threePointFieldGoalsAttempted");
+      return (total && totalGamesForAvg > 0) ? total / totalGamesForAvg : (fga * 0.38);
+    })();
 
     // Opponent defensive stats (if available from ESPN)
     const oppFGpct = normPct(getStat("opponentFieldGoalPct"), 0.430);
