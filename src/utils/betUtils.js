@@ -100,32 +100,70 @@ export const PARK_COORDINATES = {
   147:{lat:40.83,lng:-73.93},  158:{lat:43.03,lng:-88.09},
 };
 
-const _weatherCache    = {};
-const _weatherInFlight = {};
+// ─────────────────────────────────────────────────────────────
+// WEATHER FETCHER (v2 — rate-limited, cached, 429-retry)
+// ─────────────────────────────────────────────────────────────
+const _weatherCache      = {};
+const _weatherInFlight   = {};
+const _weatherQueue      = [];
+let   _weatherProcessing = false;
+
+function _wxCacheKey(teamId) {
+  const d = new Date();
+  return `wx_${teamId}_${d.toISOString().slice(0, 10)}_${Math.floor(d.getHours() / 6)}`;
+}
+
+async function _processWeatherQueue() {
+  if (_weatherProcessing) return;
+  _weatherProcessing = true;
+  while (_weatherQueue.length > 0) {
+    const { teamId, cacheKey, resolve } = _weatherQueue.shift();
+    if (_weatherCache[cacheKey]) { resolve(_weatherCache[cacheKey]); continue; }
+    try { resolve(await _fetchWeatherOnce(teamId, cacheKey)); }
+    catch { resolve(null); }
+    if (_weatherQueue.length > 0) await new Promise(r => setTimeout(r, 250));
+  }
+  _weatherProcessing = false;
+}
+
+async function _fetchWeatherOnce(teamId, cacheKey, attempt = 0) {
+  const coords = PARK_COORDINATES[teamId];
+  if (!coords) return null;
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lng}&current_weather=true&hourly=temperature_2m,windspeed_10m&forecast_days=1`;
+  const res = await fetch(url);
+  if (res.status === 429) {
+    if (attempt < 1) {
+      await new Promise(r => setTimeout(r, 2000));
+      return _fetchWeatherOnce(teamId, cacheKey, attempt + 1);
+    }
+    console.warn(`Weather 429 for team ${teamId} after retry`);
+    return null;
+  }
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data?.current_weather) return null;
+  const cw = data.current_weather;
+  const result = {
+    tempF:   Math.round(cw.temperature * 9 / 5 + 32),
+    windMph: Math.round(cw.windspeed * 0.621371),
+    windDir: cw.winddirection || 180,
+  };
+  _weatherCache[cacheKey] = result;
+  return result;
+}
 
 export async function fetchParkWeather(homeTeamId) {
   if (!homeTeamId) return null;
-  const coords   = PARK_COORDINATES[homeTeamId];
-  if (!coords)   return null;
-  const cacheKey = `wx_${homeTeamId}_${new Date().toISOString().slice(0, 13)}`;
-  if (_weatherCache[cacheKey])    return _weatherCache[cacheKey];
+  if (!PARK_COORDINATES[homeTeamId]) return null;
+  const cacheKey = _wxCacheKey(homeTeamId);
+  if (_weatherCache[cacheKey]) return _weatherCache[cacheKey];
   if (_weatherInFlight[homeTeamId]) return _weatherInFlight[homeTeamId];
-  const promise = (async () => {
-    try {
-      const url  = `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lng}&current_weather=true&hourly=temperature_2m,windspeed_10m&forecast_days=1`;
-      const data = await fetch(url).then(r => r.ok ? r.json() : null).catch(() => null);
-      if (!data?.current_weather) return null;
-      const wx = {
-        tempF:   Math.round(data.current_weather.temperature * 9 / 5 + 32),
-        windMph: Math.round(data.current_weather.windspeed * 0.621),
-        windDir: data.current_weather.winddirection,
-      };
-      _weatherCache[cacheKey] = wx;
-      return wx;
-    } catch { return null; }
-    finally { delete _weatherInFlight[homeTeamId]; }
-  })();
+  const promise = new Promise((resolve) => {
+    _weatherQueue.push({ teamId: homeTeamId, cacheKey, resolve });
+    _processWeatherQueue();
+  });
   _weatherInFlight[homeTeamId] = promise;
+  promise.finally(() => { delete _weatherInFlight[homeTeamId]; });
   return promise;
 }
 
