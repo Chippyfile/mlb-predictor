@@ -558,9 +558,9 @@ export function BetSignalsPanel({ signals, pred, odds, sport, homeName, awayName
   return (
     <div style={{ marginTop: 10 }}>
       <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 8 }}>BET SIGNALS</div>
-      <Row label="⚾ MONEYLINE"       signal={signals.ml} />
+      <Row label={`${sport === "mlb" ? "⚾" : sport === "nfl" || sport === "ncaaf" ? "🏈" : "🏀"} MONEYLINE`} signal={signals.ml} />
       <Row label="📊 OVER/UNDER"      signal={signals.ou} />
-      {signals.spread && <Row label="📏 SPREAD/RUN LINE" signal={signals.spread} />}
+      {signals.spread && <Row label={`📏 ${sport === "mlb" ? "RUN LINE" : "SPREAD"}`} signal={signals.spread} />}
       <Row label="🎯 CONFIDENCE"      signal={signals.conf} />
 
       {/* Edge Analysis */}

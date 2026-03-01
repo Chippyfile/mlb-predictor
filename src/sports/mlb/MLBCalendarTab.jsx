@@ -105,12 +105,24 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         }),
         mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
       ]);
-      const finalPred = pred && mlResult ? {
-        ...pred,
-        homeWinPct: mlResult.ml_win_prob_home,
-        awayWinPct: mlResult.ml_win_prob_away,
-        mlEnhanced: true,
-      } : pred;
+      // FIX: Recalculate modelML from ML win probability for display consistency
+      const finalPred = pred && mlResult ? (() => {
+        const mlWinHome = mlResult.ml_win_prob_home;
+        const newModelML_home = mlWinHome >= 0.5
+          ? -Math.round((mlWinHome / (1 - mlWinHome)) * 100)
+          : +Math.round(((1 - mlWinHome) / mlWinHome) * 100);
+        const newModelML_away = mlWinHome >= 0.5
+          ? +Math.round(((1 - mlWinHome) / mlWinHome) * 100)
+          : -Math.round((mlWinHome / (1 - mlWinHome)) * 100);
+        return {
+          ...pred,
+          homeWinPct: mlResult.ml_win_prob_home,
+          awayWinPct: mlResult.ml_win_prob_away,
+          modelML_home: newModelML_home,
+          modelML_away: newModelML_away,
+          mlEnhanced: true,
+        };
+      })() : pred;
       return { ...g, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
     setGames(enriched);

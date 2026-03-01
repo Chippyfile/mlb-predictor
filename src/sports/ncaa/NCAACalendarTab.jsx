@@ -96,14 +96,40 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const mcAway = pred.awayScore - mlMarginAdj;
         mcResult = await mlMonteCarlo("NCAAB", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
-      const finalPred = pred && mlResult ? {
-        ...pred,
-        homeWinPct: mlResult.ml_win_prob_home,
-        awayWinPct: mlResult.ml_win_prob_away,
-        projectedSpread: parseFloat(mlResult.ml_margin.toFixed(1)),
-        mlEnhanced: true,
-        biasCorrection: mlResult.bias_correction_applied ?? 0,
-      } : pred;
+      // FIX: Reconcile projected scores with ML margin so all displayed
+      // values are internally consistent. Without this, scores can say
+      // "Team A wins" while spread/winPct say "Team B wins".
+      const finalPred = pred && mlResult ? (() => {
+        const mlMargin = mlResult.ml_margin;
+        const heuristicMargin = pred.projectedSpread;
+        const marginShift = (mlMargin - heuristicMargin) / 2;
+        const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
+        const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
+        const mlWinHome = mlResult.ml_win_prob_home;
+        const newModelML_home = mlWinHome >= 0.5
+          ? -Math.round((mlWinHome / (1 - mlWinHome)) * 100)
+          : +Math.round(((1 - mlWinHome) / mlWinHome) * 100);
+        const newModelML_away = mlWinHome >= 0.5
+          ? +Math.round(((1 - mlWinHome) / mlWinHome) * 100)
+          : -Math.round((mlWinHome / (1 - mlWinHome)) * 100);
+        return {
+          ...pred,
+          homeScore: adjHomeScore,
+          awayScore: adjAwayScore,
+          homeWinPct: mlResult.ml_win_prob_home,
+          awayWinPct: mlResult.ml_win_prob_away,
+          projectedSpread: parseFloat(mlMargin.toFixed(1)),
+          ouTotal: pred.ouTotal,
+          modelML_home: newModelML_home,
+          modelML_away: newModelML_away,
+          mlEnhanced: true,
+          biasCorrection: mlResult.bias_correction_applied ?? 0,
+          _heuristicHomeScore: pred.homeScore,
+          _heuristicAwayScore: pred.awayScore,
+          _heuristicSpread: pred.projectedSpread,
+          _heuristicWinPct: pred.homeWinPct,
+        };
+      })() : pred;
       // R9: MC uses ML-adjusted means when ML prediction is available
       const mcHomeMean = mlResult ? pred.homeScore + (mlResult.ml_margin - pred.projectedSpread) / 2 : pred?.homeScore;
       const mcAwayMean = mlResult ? pred.awayScore - (mlResult.ml_margin - pred.projectedSpread) / 2 : pred?.awayScore;

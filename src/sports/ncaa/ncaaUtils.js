@@ -114,6 +114,14 @@ export async function fetchNCAATeamStats(teamId) {
       }
     } catch { }
 
+    // ── DIAGNOSTIC: Flag anomalous ESPN stat values ──
+    if (ppg > 90 || oppPpg > 90 || tempo < 58 || adjOE > 135 || adjDE > 135 || fga > 80 || fga < 30) {
+      console.warn(`⚠️ NCAA STATS ANOMALY [${team.abbreviation || teamId}]:`, {
+        ppg, oppPpg, fga, fta, offReb, turnovers,
+        offPoss, tempo, adjOE: adjOE.toFixed(1), adjDE: adjDE.toFixed(1), adjEM: adjEM.toFixed(1),
+      });
+    }
+
     const result = {
       teamId, name: team.displayName, abbr: team.abbreviation,
       ppg, oppPpg, ppgDiff: ppg - oppPpg, tempo, adjOE, adjDE, adjEM,
@@ -306,6 +314,19 @@ export function ncaaPredictGame({
   const formWeight = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames, 30) / 30));
   homeScore += homeStats.formScore * formWeight * 4.0;
   awayScore += awayStats.formScore * formWeight * 4.0;
+
+  // ── Safety cap: prevent unrealistic game totals ──
+  // NCAA D1 game totals almost never exceed 180. If the projection
+  // exceeds this, it indicates a data quality issue upstream.
+  // Scale both scores down proportionally to preserve the spread.
+  const rawTotal = homeScore + awayScore;
+  const maxRealisticTotal = 180;
+  if (rawTotal > maxRealisticTotal) {
+    const scaleFactor = maxRealisticTotal / rawTotal;
+    homeScore *= scaleFactor;
+    awayScore *= scaleFactor;
+    console.warn(`⚠️ NCAA total ${rawTotal.toFixed(0)} capped to ${maxRealisticTotal} (scale=${scaleFactor.toFixed(3)})`);
+  }
 
   // F16: Widened clamp [35, 130]
   homeScore = Math.max(35, Math.min(130, homeScore));

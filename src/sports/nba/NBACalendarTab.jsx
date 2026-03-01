@@ -58,13 +58,38 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           mlMonteCarlo("NBA", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal),
         ]);
       }
-      const finalPred = pred && mlResult ? {
-        ...pred,
-        homeWinPct: mlResult.ml_win_prob_home,
-        awayWinPct: mlResult.ml_win_prob_away,
-        projectedSpread: parseFloat(mlResult.ml_margin.toFixed(1)),
-        mlEnhanced: true,
-      } : pred;
+      // FIX: Reconcile projected scores with ML margin so all displayed
+      // values are internally consistent.
+      const finalPred = pred && mlResult ? (() => {
+        const mlMargin = mlResult.ml_margin;
+        const heuristicMargin = pred.projectedSpread;
+        const marginShift = (mlMargin - heuristicMargin) / 2;
+        const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
+        const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
+        const mlWinHome = mlResult.ml_win_prob_home;
+        const newModelML_home = mlWinHome >= 0.5
+          ? -Math.round((mlWinHome / (1 - mlWinHome)) * 100)
+          : +Math.round(((1 - mlWinHome) / mlWinHome) * 100);
+        const newModelML_away = mlWinHome >= 0.5
+          ? +Math.round(((1 - mlWinHome) / mlWinHome) * 100)
+          : -Math.round((mlWinHome / (1 - mlWinHome)) * 100);
+        return {
+          ...pred,
+          homeScore: adjHomeScore,
+          awayScore: adjAwayScore,
+          homeWinPct: mlResult.ml_win_prob_home,
+          awayWinPct: mlResult.ml_win_prob_away,
+          projectedSpread: parseFloat(mlMargin.toFixed(1)),
+          ouTotal: pred.ouTotal,
+          modelML_home: newModelML_home,
+          modelML_away: newModelML_away,
+          mlEnhanced: true,
+          _heuristicHomeScore: pred.homeScore,
+          _heuristicAwayScore: pred.awayScore,
+          _heuristicSpread: pred.projectedSpread,
+          _heuristicWinPct: pred.homeWinPct,
+        };
+      })() : pred;
       return { ...g, homeStats: hs, awayStats: as_, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
     setGames(enriched); onGamesLoaded?.(enriched); setLoading(false);
