@@ -6,7 +6,7 @@ import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
-import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame } from "./ncaaUtils.js";
+import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
 
 // Season start (Nov 1 of prior year) — keep in sync with ncaaSync.js
@@ -30,7 +30,14 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     setOddsData(odds);
     const enriched = await Promise.all(raw.map(async (g) => {
       const [homeStats, awayStats] = await Promise.all([fetchNCAATeamStats(g.homeTeamId), fetchNCAATeamStats(g.awayTeamId)]);
-      const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: g.neutralSite, calibrationFactor }) : null;
+      // v18: Detect injuries and game context in parallel with prediction
+      const [injuryData, gameContext] = await Promise.all([
+        detectMissingStarters(g.gameId, g.homeTeamId, g.awayTeamId).catch(() => null),
+        Promise.resolve(getGameContext(d, g.neutralSite)),
+      ]);
+      const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 16.0;
+      const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
+      const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null;
       const gameOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
       let mlResult = null, mcResult = null;
       if (pred) {
@@ -40,7 +47,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
             win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
             model_ml_home: pred.modelML_home,
-            neutral_site: g.neutralSite,
+            neutral_site: effectiveNeutral,
             spread_home: pred.projectedSpread,
             market_spread_home: gameOdds?.homeSpread ?? null,
             market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
@@ -48,7 +55,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             // R3: Conference + date for conference game detection + season phase
             home_conference: homeStats?.conferenceName || "",
             away_conference: awayStats?.conferenceName || "",
-            game_date: selectedDate,
+            game_date: d,
             // Raw stats for expanded ML features
             home_ppg: homeStats?.ppg, away_ppg: awayStats?.ppg,
             home_opp_ppg: homeStats?.oppPpg, away_opp_ppg: awayStats?.oppPpg,
@@ -70,6 +77,18 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             home_form: homeStats?.formScore, away_form: awayStats?.formScore,
             home_sos: null, away_sos: null,
             home_rank: g.homeRank || 200, away_rank: g.awayRank || 200,
+            // v18 P1-INJ: Injury features for ML
+            home_injury_penalty: injuryData?.home_injury_penalty ?? 0,
+            away_injury_penalty: injuryData?.away_injury_penalty ?? 0,
+            injury_diff: injuryData?.injury_diff ?? 0,
+            home_missing_starters: injuryData?.home_missing_starters ?? 0,
+            away_missing_starters: injuryData?.away_missing_starters ?? 0,
+            // v18 P1-CTX: Tournament context for ML
+            is_conference_tournament: gameContext?.is_conference_tournament ?? false,
+            is_ncaa_tournament: gameContext?.is_ncaa_tournament ?? false,
+            is_bubble_game: gameContext?.is_bubble_game ?? false,
+            is_early_season: gameContext?.is_early_season ?? false,
+            importance_multiplier: gameContext?.importance_multiplier ?? 1.0,
           });
         // R9: MC uses ML-adjusted means when ML is available
         const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
