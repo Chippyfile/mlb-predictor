@@ -44,12 +44,51 @@ export default function ModelHealth() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [retraining, setRetraining] = useState(null); // sport key being retrained
 
   const fetchStatus = useCallback(async () => {
+    setLoading(true);
     try {
-      const res = await fetch(`${ML_API}/cron/status`, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) throw new Error();
-      setData(await res.json());
+      // Hit /health to get list of trained models
+      const healthRes = await fetch(`${ML_API}/health`, { signal: AbortSignal.timeout(5000) });
+      if (!healthRes.ok) throw new Error();
+      const health = await healthRes.json();
+      const trainedModels = health.trained_models || [];
+
+      // Fetch /model-info for each sport in parallel
+      const sportKeys = ["mlb", "nba", "ncaa", "nfl", "ncaaf"];
+      const infoResults = await Promise.all(sportKeys.map(async s => {
+        try {
+          const res = await fetch(`${ML_API}/model-info/${s}`, { signal: AbortSignal.timeout(5000) });
+          if (!res.ok) return { sport: s, trained: false, freshness: "no_model" };
+          const info = await res.json();
+          if (info.error) return { sport: s, trained: false, freshness: "no_model" };
+          // Calculate freshness from trained_at
+          const trainedAt = info.trained_at ? new Date(info.trained_at) : null;
+          const ageHours = trainedAt ? (Date.now() - trainedAt.getTime()) / (1000 * 60 * 60) : null;
+          const freshness = ageHours == null ? "no_model"
+            : ageHours < 48 ? "fresh"
+            : ageHours < 168 ? "stale"   // > 2 days
+            : "very_stale";               // > 7 days
+          return {
+            sport: s, trained: true, freshness,
+            age_hours: ageHours,
+            n_train: info.n_train || null,
+            mae_cv: info.mae_cv || null,
+            trained_at: info.trained_at,
+            model_type: info.model_type || null,
+            features: info.features?.length || null,
+          };
+        } catch { return { sport: s, trained: false, freshness: "no_model" }; }
+      }));
+
+      const models = {};
+      for (const info of infoResults) models[info.sport] = info;
+
+      // Determine active sports (any sport with data in the current season)
+      const activeSports = sportKeys.filter(s => trainedModels.includes(s));
+
+      setData({ models, active_sports: activeSports.length > 0 ? activeSports : sportKeys });
       setError(false);
     } catch {
       setError(true);
@@ -58,9 +97,27 @@ export default function ModelHealth() {
     }
   }, []);
 
+  const handleRetrain = useCallback(async (sport) => {
+    setRetraining(sport);
+    try {
+      const res = await fetch(`${ML_API}/train/${sport}`, {
+        method: "POST",
+        signal: AbortSignal.timeout(120000), // 2 min timeout for training
+      });
+      if (res.ok) {
+        // Refresh status after retrain
+        await fetchStatus();
+      }
+    } catch (e) {
+      console.warn(`Retrain ${sport} failed:`, e);
+    } finally {
+      setRetraining(null);
+    }
+  }, [fetchStatus]);
+
   useEffect(() => {
     fetchStatus();
-    const id = setInterval(fetchStatus, 5 * 60 * 1000); // refresh every 5 min
+    const id = setInterval(fetchStatus, 5 * 60 * 1000);
     return () => clearInterval(id);
   }, [fetchStatus]);
 
@@ -160,6 +217,7 @@ export default function ModelHealth() {
           {sportKeys.map(s => {
             const m = models[s] || {};
             const active = activeSet.has(s);
+            const isRetraining = retraining === s;
             return (
               <div key={s} style={{
                 display: "flex", alignItems: "center", gap: 8,
@@ -199,25 +257,32 @@ export default function ModelHealth() {
                     {m.n_train.toLocaleString()} gm · {m.mae_cv?.toFixed(2)}
                   </span>
                 )}
+
+                {/* Retrain button */}
+                {active && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleRetrain(s); }}
+                    disabled={retraining !== null}
+                    style={{
+                      fontSize: 7, color: isRetraining ? C.yellow : C.blue,
+                      background: "transparent", border: `1px solid ${isRetraining ? C.yellow : C.blue}33`,
+                      borderRadius: 3, padding: "1px 5px", cursor: retraining ? "not-allowed" : "pointer",
+                      fontFamily: "inherit", fontWeight: 700, letterSpacing: 0.5,
+                    }}
+                  >
+                    {isRetraining ? "⏳" : "⟳"}
+                  </button>
+                )}
               </div>
             );
           })}
 
-          {/* Last cron run */}
-          {data.last_cron_run && (
-            <div style={{
-              marginTop: 8, paddingTop: 8,
-              borderTop: `1px solid ${C.border}`,
-              fontSize: 8, color: C.dim, letterSpacing: 1,
-              display: "flex", justifyContent: "space-between",
-            }}>
-              <span>Last auto-train: {new Date(data.last_cron_run.run_at).toLocaleDateString()}</span>
-              <span>{data.last_cron_run.duration_sec?.toFixed(0)}s · {data.last_cron_run.status}</span>
-            </div>
-          )}
-
-          {/* Refresh button */}
-          <div style={{ marginTop: 8, textAlign: "center" }}>
+          {/* Action buttons */}
+          <div style={{
+            marginTop: 8, paddingTop: 8,
+            borderTop: `1px solid ${C.border}`,
+            display: "flex", justifyContent: "center", gap: 8,
+          }}>
             <button
               onClick={(e) => { e.stopPropagation(); fetchStatus(); }}
               style={{
@@ -228,6 +293,28 @@ export default function ModelHealth() {
               }}
             >
               ↻ REFRESH
+            </button>
+            <button
+              onClick={async (e) => {
+                e.stopPropagation();
+                setRetraining("all");
+                try {
+                  await fetch(`${ML_API}/train/all`, { method: "POST", signal: AbortSignal.timeout(300000) });
+                  await fetchStatus();
+                } catch (err) { console.warn("Train all failed:", err); }
+                finally { setRetraining(null); }
+              }}
+              disabled={retraining !== null}
+              style={{
+                fontSize: 8, color: retraining === "all" ? C.yellow : C.green,
+                background: "transparent",
+                border: `1px solid ${retraining === "all" ? C.yellow : C.green}33`,
+                borderRadius: 4, padding: "3px 12px",
+                cursor: retraining ? "not-allowed" : "pointer",
+                letterSpacing: 1, fontWeight: 700, fontFamily: "inherit",
+              }}
+            >
+              {retraining === "all" ? "⏳ TRAINING…" : "⚡ TRAIN ALL"}
             </button>
           </div>
         </div>
