@@ -114,12 +114,28 @@ export async function fetchNCAATeamStats(teamId) {
       }
     } catch { }
 
-    // ── DIAGNOSTIC: Flag anomalous ESPN stat values ──
-    if (ppg > 90 || oppPpg > 90 || tempo < 58 || adjOE > 135 || adjDE > 135 || fga > 80 || fga < 30) {
-      console.warn(`⚠️ NCAA STATS ANOMALY [${team.abbreviation || teamId}]:`, {
-        ppg, oppPpg, fga, fta, offReb, turnovers,
-        offPoss, tempo, adjOE: adjOE.toFixed(1), adjDE: adjDE.toFixed(1), adjEM: adjEM.toFixed(1),
-      });
+    // ── DIAGNOSTIC: Always log raw ESPN values for inflation debugging ──
+    // Check browser console and compare against KenPom/Barttorvik reference
+    // Expected: ppg 60-85, fga 50-65 (per game), tempo 58-75, adjOE 95-125
+    // Any _raw_ field showing null means ESPN changed the stat name
+    console.log(`🏀 NCAA STATS [${team.abbreviation || teamId}]:`, {
+      ppg, oppPpg, fga, fta, offReb, turnovers,
+      offPoss: parseFloat(offPoss.toFixed(1)), tempo,
+      adjOE: parseFloat(adjOE.toFixed(1)), adjDE: parseFloat(adjDE.toFixed(1)),
+      adjEM: parseFloat(adjEM.toFixed(1)),
+      // Raw ESPN stat lookups — null = stat name not found in ESPN response
+      _raw_fga_attempted: getStat("fieldGoalsAttempted"),
+      _raw_fga_avg: getStat("avgFieldGoalsAttempted"),
+      _raw_fta_attempted: getStat("freeThrowsAttempted"),
+      _raw_fta_avg: getStat("avgFreeThrowsAttempted"),
+      _raw_ppg_avg: getStat("avgPoints"),
+      _raw_ppg_per: getStat("pointsPerGame"),
+      _raw_offReb_avg: getStat("avgOffensiveRebounds"),
+      _raw_offReb_per: getStat("offensiveReboundsPerGame"),
+      _raw_turnovers: getStat("avgTurnovers"),
+    });
+    if (ppg > 90 || oppPpg > 90 || adjOE > 135 || adjDE > 135 || fga > 80 || fga < 30) {
+      console.warn(`⚠️ NCAA STATS ANOMALY [${team.abbreviation || teamId}]: Check values above`);
     }
 
     const result = {
