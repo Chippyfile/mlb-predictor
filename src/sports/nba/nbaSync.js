@@ -1,8 +1,22 @@
 // src/sports/nba/nbaSync.js
-// Lines 1764–1845 of App.jsx (extracted)
+// NBA v15 — Forensic Audit Implementation
+//
+// Fixes implemented:
+//   NBA-07: Persist 30+ raw stat columns to Supabase for ML training
+//   NBA-10: Real B2B rest detection from schedule data
+//   NBA-11: Real travel distance from previous game city
+//   NBA-14: Uses canonical fetchNBARealPace from nbaUtils (not local copy)
+
 import { supabaseQuery } from "../../utils/supabase.js";
 import { fetchOdds } from "../../utils/sharedUtils.js";
-import { fetchNBATeamStats, fetchNBAGamesForDate, nbaPredictGame, matchNBAOddsToGame } from "./nbaUtils.js";
+import {
+  fetchNBATeamStats,
+  fetchNBAGamesForDate,
+  fetchNBARealPace,   // NBA-14: now imported from canonical source (was local stub)
+  nbaPredictGame,
+  matchNBAOddsToGame,
+  haversineDistance,
+} from "./nbaUtils.js";
 
 const _nbaSeason = (() => {
   const n = new Date();
@@ -11,16 +25,26 @@ const _nbaSeason = (() => {
 
 const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Fetch real NBA pace/ratings from NBA Stats API (optional enhancement)
-async function fetchNBARealPace(abbr) {
+// ─────────────────────────────────────────────────────────────
+// NBA-10 FIX: Compute real days of rest from schedule data
+// ─────────────────────────────────────────────────────────────
+function computeDaysRest(teamStats, gameDateStr) {
+  if (!teamStats?.lastGameDate || !gameDateStr) return 2; // safe default
   try {
-    // NBA Stats API proxy — requires backend relay due to CORS
-    const res = await fetch(`/api/nba-stats?team=${abbr}`);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch { return null; }
+    const lastDate = new Date(teamStats.lastGameDate);
+    const gameDate = new Date(gameDateStr);
+    const diffMs = gameDate.getTime() - lastDate.getTime();
+    const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24));
+    // Clamp to reasonable range: 0 (B2B) to 7+
+    return Math.max(0, Math.min(14, diffDays - 1)); // -1 because day-of counts as 0 rest
+  } catch {
+    return 2;
+  }
 }
 
+// ─────────────────────────────────────────────────────────────
+// RESULT GRADING
+// ─────────────────────────────────────────────────────────────
 export async function nbaFillFinalScores(pendingRows) {
   if (!pendingRows.length) return 0;
   let filled = 0;
@@ -72,6 +96,9 @@ export async function nbaFillFinalScores(pendingRows) {
   return filled;
 }
 
+// ─────────────────────────────────────────────────────────────
+// MAIN SYNC — now saves 30+ raw stat columns per game
+// ─────────────────────────────────────────────────────────────
 export async function nbaAutoSync(onProgress) {
   onProgress?.("🏀 Syncing NBA…");
   const today = new Date().toISOString().split("T")[0];
@@ -103,9 +130,24 @@ export async function nbaAutoSync(onProgress) {
       if (!hs || !as_) return null;
       let nbaRealH = null, nbaRealA = null;
       try { [nbaRealH, nbaRealA] = await Promise.all([fetchNBARealPace(g.homeAbbr), fetchNBARealPace(g.awayAbbr)]); } catch {}
-      const pred = nbaPredictGame({ homeStats: hs, awayStats: as_, neutralSite: g.neutralSite, homeRealStats: nbaRealH, awayRealStats: nbaRealA, homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr });
+
+      // NBA-10: Compute real days of rest
+      const homeDaysRest = computeDaysRest(hs, dateStr);
+      const awayDaysRest = computeDaysRest(as_, dateStr);
+      // NBA-11: Get previous city for travel distance
+      const awayPrevCityAbbr = as_.lastGameCity || null;
+
+      const pred = nbaPredictGame({
+        homeStats: hs, awayStats: as_,
+        neutralSite: g.neutralSite,
+        homeRealStats: nbaRealH, awayRealStats: nbaRealA,
+        homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr,
+        homeDaysRest, awayDaysRest,
+        awayPrevCityAbbr,
+      });
       if (!pred) return null;
       const odds = isToday ? (todayOdds.find(o => matchNBAOddsToGame(o, g)) || null) : null;
+
       return {
         game_date: dateStr, game_id: g.gameId,
         home_team: g.homeAbbr, away_team: g.awayAbbr,
@@ -118,6 +160,33 @@ export async function nbaAutoSync(onProgress) {
         home_net_rtg: pred.homeNetRtg, away_net_rtg: pred.awayNetRtg,
         ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
         ...(odds?.marketTotal != null && { market_ou_total: odds.marketTotal }),
+        // ══════════════════════════════════════════════════════
+        // NBA-07 FIX: Raw stats persisted for ML training
+        // (mirrors NCAAB ncaaSync.js pattern — 30+ columns)
+        // ══════════════════════════════════════════════════════
+        home_ppg: hs.ppg, away_ppg: as_.ppg,
+        home_opp_ppg: hs.oppPpg, away_opp_ppg: as_.oppPpg,
+        home_fgpct: hs.fgPct, away_fgpct: as_.fgPct,
+        home_threepct: hs.threePct, away_threepct: as_.threePct,
+        home_ftpct: hs.ftPct, away_ftpct: as_.ftPct,
+        home_assists: hs.assists, away_assists: as_.assists,
+        home_turnovers: hs.turnovers, away_turnovers: as_.turnovers,
+        home_tempo: hs.pace, away_tempo: as_.pace,
+        home_orb_pct: hs.orbPct, away_orb_pct: as_.orbPct,
+        home_fta_rate: hs.ftaRate, away_fta_rate: as_.ftaRate,
+        home_ato_ratio: hs.atoRatio, away_ato_ratio: as_.atoRatio,
+        home_opp_fgpct: hs.oppFgPct, away_opp_fgpct: as_.oppFgPct,
+        home_opp_threepct: hs.oppThreePct, away_opp_threepct: as_.oppThreePct,
+        home_steals: hs.steals, away_steals: as_.steals,
+        home_blocks: hs.blocks, away_blocks: as_.blocks,
+        home_wins: hs.wins, away_wins: as_.wins,
+        home_losses: hs.losses, away_losses: as_.losses,
+        home_form: hs.formScore, away_form: as_.formScore,
+        // NBA-10/11: rest + travel context
+        home_days_rest: homeDaysRest, away_days_rest: awayDaysRest,
+        away_travel_dist: awayPrevCityAbbr && g.homeAbbr
+          ? Math.round(haversineDistance(awayPrevCityAbbr, g.homeAbbr))
+          : null,
       };
     }))).filter(Boolean);
     if (rows.length) {

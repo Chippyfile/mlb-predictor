@@ -1,12 +1,15 @@
 // src/sports/nfl/nflSync.js
-// Lines 2178–2267 of App.jsx (extracted)
+// NFL v15 — Forensic Audit Implementation
+// N-03: Persist 30+ raw stats to Supabase for ML training
+// N-12: Auto-detect rest days / bye weeks
+// N-14: Fix spread grading logic
 
 import { supabaseQuery } from "../../utils/supabase.js";
 import { fetchOdds, _sleep } from "../../utils/sharedUtils.js";
-import { fetchNFLGamesForDate, fetchNFLTeamStats, nflPredictGame } from "./nflUtils.js";
-
-// fetchNFLRealEPA is defined in nflUtils or betUtils depending on your build;
-// import it from wherever you place the nflverse EPA fetch function.
+import {
+  fetchNFLGamesForDate, fetchNFLTeamStats, nflPredictGame,
+  calcRestDays, isDivisionalGame,
+} from "./nflUtils.js";
 import { fetchNFLRealEPA } from "../../utils/betUtils.js";
 
 // ─────────────────────────────────────────────────────────────
@@ -24,7 +27,70 @@ function matchNFLOddsToGame(o, g) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// FILL FINAL SCORES
+// RAW STAT EXTRACTION (N-03 fix: persist raw data for ML)
+// ─────────────────────────────────────────────────────────────
+function extractRawStats(homeStats, awayStats, homeRealEpa, awayRealEpa, restDaysH, restDaysA, divisional) {
+  return {
+    // Home offensive stats
+    home_ppg:           homeStats.ppg,
+    home_opp_ppg:       homeStats.oppPpg,
+    home_ypp:           homeStats.ypPlay,
+    home_opp_ypp:       homeStats.oppYpPlay,
+    home_third_pct:     homeStats.thirdPct,
+    home_rz_pct:        homeStats.rzPct,
+    home_qb_rating:     homeStats.qbRating,
+    home_rush_ypc:      homeStats.rushYpc,
+    home_sacks:         homeStats.sacks,
+    home_sacks_allowed: homeStats.sacksAllowed,
+    home_to_margin:     homeStats.turnoverMargin,
+    home_pass_ypg:      homeStats.passYpg,
+    home_rush_ypg:      homeStats.rushYpg,
+    home_completion_pct: homeStats.completionPct,
+    home_penalty_ypg:   homeStats.penaltyYpg,
+    home_first_downs_pg: homeStats.firstDownsPg,
+    home_pass_rate:     homeStats.passRate,
+    home_opp_passer_rtg: homeStats.oppPasserRtg,
+    home_time_of_poss:  homeStats.timeOfPoss,
+    home_form_score:    homeStats.formScore,
+    // Away offensive stats
+    away_ppg:           awayStats.ppg,
+    away_opp_ppg:       awayStats.oppPpg,
+    away_ypp:           awayStats.ypPlay,
+    away_opp_ypp:       awayStats.oppYpPlay,
+    away_third_pct:     awayStats.thirdPct,
+    away_rz_pct:        awayStats.rzPct,
+    away_qb_rating:     awayStats.qbRating,
+    away_rush_ypc:      awayStats.rushYpc,
+    away_sacks:         awayStats.sacks,
+    away_sacks_allowed: awayStats.sacksAllowed,
+    away_to_margin:     awayStats.turnoverMargin,
+    away_pass_ypg:      awayStats.passYpg,
+    away_rush_ypg:      awayStats.rushYpg,
+    away_completion_pct: awayStats.completionPct,
+    away_penalty_ypg:   awayStats.penaltyYpg,
+    away_first_downs_pg: awayStats.firstDownsPg,
+    away_pass_rate:     awayStats.passRate,
+    away_opp_passer_rtg: awayStats.oppPasserRtg,
+    away_time_of_poss:  awayStats.timeOfPoss,
+    away_form_score:    awayStats.formScore,
+    // EPA data
+    home_real_epa_off:  homeRealEpa?.offEPA ?? null,
+    home_real_epa_def:  homeRealEpa?.defEPA ?? null,
+    home_real_epa_pass: homeRealEpa?.passEPA ?? null,
+    home_real_epa_rush: homeRealEpa?.rushEPA ?? null,
+    away_real_epa_off:  awayRealEpa?.offEPA ?? null,
+    away_real_epa_def:  awayRealEpa?.defEPA ?? null,
+    away_real_epa_pass: awayRealEpa?.passEPA ?? null,
+    away_real_epa_rush: awayRealEpa?.rushEPA ?? null,
+    // Context
+    home_rest_days:     restDaysH,
+    away_rest_days:     restDaysA,
+    is_divisional:      divisional,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
+// FILL FINAL SCORES (N-14 fix: correct spread grading)
 // ─────────────────────────────────────────────────────────────
 export async function nflFillFinalScores(pendingRows) {
   if (!pendingRows.length) return 0;
@@ -36,6 +102,10 @@ export async function nflFillFinalScores(pendingRows) {
   }
   for (const [dateStr, rows] of Object.entries(byDate)) {
     try {
+      // Fetch closing odds for CLV tracking
+      let closingOdds = null;
+      try { closingOdds = (await fetchOdds("americanfootball_nfl"))?.games || []; } catch {}
+
       const games = await fetchNFLGamesForDate(dateStr);
       for (const g of games) {
         if (g.status !== "Final" || g.homeScore === null) continue;
@@ -44,32 +114,51 @@ export async function nflFillFinalScores(pendingRows) {
           (r.home_team === g.homeAbbr && r.away_team === g.awayAbbr)
         );
         if (!row) continue;
+
         const hW = g.homeScore > g.awayScore;
         const mH = (row.win_pct_home ?? 0.5) >= 0.5;
         const ml = mH ? hW : !hW;
+
+        // N-14 FIX: Correct spread grading using ATS standard
         const margin = g.homeScore - g.awayScore;
         const mktSpr = row.market_spread_home ?? null;
         let rl = null;
         if (mktSpr !== null) {
-          if (margin > mktSpr) rl = true;
-          else if (margin < mktSpr) rl = false;
-        } else {
-          const ps = row.spread_home || 0;
-          if (margin === 0) rl = null;
-          else if (margin > 0 && ps > 0) rl = true;
-          else if (margin < 0 && ps < 0) rl = true;
-          else rl = false;
+          // ATS: home covers if actual margin > spread (spread is negative for favorites)
+          // margin + spread > 0 means home covered
+          const atsResult = margin + mktSpr;
+          if (atsResult > 0) rl = true;       // home covered
+          else if (atsResult < 0) rl = false;  // home didn't cover
+          // atsResult === 0 is a push → rl stays null
         }
+        // No fallback heuristic — if no market spread, rl = null
+
         const total = g.homeScore + g.awayScore;
         const ouL = row.market_ou_total ?? row.ou_total ?? null;
         const predT = (row.pred_home_score ?? 0) + (row.pred_away_score ?? 0);
         let ou = null;
         if (ouL !== null && total !== ouL) ou = ((total > ouL) === (predT > ouL)) ? "OVER" : "UNDER";
         else if (ouL !== null && total === ouL) ou = "PUSH";
+
+        // Closing odds for CLV tracking
+        const updateObj = {
+          actual_home_score: g.homeScore, actual_away_score: g.awayScore,
+          result_entered: true, ml_correct: ml, rl_correct: rl, ou_correct: ou,
+        };
+
+        // Capture closing line if available
+        if (closingOdds) {
+          const closingMatch = closingOdds.find(o => matchNFLOddsToGame(o, g));
+          if (closingMatch) {
+            if (closingMatch.marketSpreadHome != null) updateObj.closing_spread_home = closingMatch.marketSpreadHome;
+            if (closingMatch.marketTotal != null) updateObj.closing_ou_total = closingMatch.marketTotal;
+            if (closingMatch.homeOdds) updateObj.closing_home_ml = closingMatch.homeOdds;
+            if (closingMatch.awayOdds) updateObj.closing_away_ml = closingMatch.awayOdds;
+          }
+        }
+
         await supabaseQuery(
-          `/nfl_predictions?id=eq.${row.id}`, "PATCH",
-          { actual_home_score: g.homeScore, actual_away_score: g.awayScore,
-            result_entered: true, ml_correct: ml, rl_correct: rl, ou_correct: ou }
+          `/nfl_predictions?id=eq.${row.id}`, "PATCH", updateObj
         );
         filled++;
       }
@@ -120,10 +209,11 @@ export async function nflAutoSync(onProgress) {
     const isToday = dateStr === today;
     const rows = (await Promise.all(unsaved.map(async g => {
       const [hs, as_] = await Promise.all([
-        fetchNFLTeamStats(g.homeAbbr),
-        fetchNFLTeamStats(g.awayAbbr),
+        fetchNFLTeamStats(g.homeAbbr, g.season),
+        fetchNFLTeamStats(g.awayAbbr, g.season),
       ]);
       if (!hs || !as_) return null;
+
       let nflRealH = null, nflRealA = null;
       try {
         [nflRealH, nflRealA] = await Promise.all([
@@ -131,13 +221,29 @@ export async function nflAutoSync(onProgress) {
           fetchNFLRealEPA(as_.abbr),
         ]);
       } catch {}
+
+      // N-12: Calculate rest days from schedule
+      const restH = calcRestDays(hs.lastGameDate, dateStr);
+      const restA = calcRestDays(as_.lastGameDate, dateStr);
+
+      // N-13: Detect divisional game
+      const divisional = isDivisionalGame(g.homeAbbr, g.awayAbbr);
+
       const pred = nflPredictGame({
         homeStats: hs, awayStats: as_,
         neutralSite: g.neutralSite, weather: g.weather,
         homeRealEpa: nflRealH, awayRealEpa: nflRealA,
+        homeRestDays: restH, awayRestDays: restA,
+        gameDate: dateStr, season: g.season,
+        isDivisional: divisional,
       });
       if (!pred) return null;
+
       const odds = isToday ? (todayOdds.find(o => matchNFLOddsToGame(o, g)) || null) : null;
+
+      // N-03: Extract raw stats for ML training
+      const rawStats = extractRawStats(hs, as_, nflRealH, nflRealA, restH, restA, divisional);
+
       return {
         game_date: dateStr, game_id: g.gameId,
         home_team: g.homeAbbr, away_team: g.awayAbbr,
@@ -150,8 +256,13 @@ export async function nflAutoSync(onProgress) {
         pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
         home_epa: pred.homeEPA, away_epa: pred.awayEPA,
         key_factors: pred.factors,
+        // N-03: Raw stats for ML
+        ...rawStats,
+        // Odds
         ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
         ...(odds?.marketTotal      != null && { market_ou_total:    odds.marketTotal }),
+        ...(odds?.homeOdds         != null && { opening_home_ml:    odds.homeOdds }),
+        ...(odds?.awayOdds         != null && { opening_away_ml:    odds.awayOdds }),
       };
     }))).filter(Boolean);
 
