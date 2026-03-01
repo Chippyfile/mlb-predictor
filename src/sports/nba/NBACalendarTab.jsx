@@ -66,19 +66,25 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-        const mlWinHome = mlResult.ml_win_prob_home;
-        const newModelML_home = mlWinHome >= 0.5
-          ? -Math.round((mlWinHome / (1 - mlWinHome)) * 100)
-          : +Math.round(((1 - mlWinHome) / mlWinHome) * 100);
-        const newModelML_away = mlWinHome >= 0.5
-          ? +Math.round(((1 - mlWinHome) / mlWinHome) * 100)
-          : -Math.round((mlWinHome / (1 - mlWinHome)) * 100);
+        // AMPLIFICATION FIX: Blend ML + heuristic win probability and cap moneyline
+        const ML_BLEND = 0.65;
+        const blendedWinHome = Math.max(0.12, Math.min(0.88,
+          ML_BLEND * mlResult.ml_win_prob_home + (1 - ML_BLEND) * pred.homeWinPct
+        ));
+        const blendedWinAway = 1 - blendedWinHome;
+        const ML_CAP = 500;
+        const newModelML_home = blendedWinHome >= 0.5
+          ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100));
+        const newModelML_away = blendedWinHome >= 0.5
+          ? +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100))
+          : -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100));
         return {
           ...pred,
           homeScore: adjHomeScore,
           awayScore: adjAwayScore,
-          homeWinPct: mlResult.ml_win_prob_home,
-          awayWinPct: mlResult.ml_win_prob_away,
+          homeWinPct: blendedWinHome,
+          awayWinPct: blendedWinAway,
           projectedSpread: parseFloat(mlMargin.toFixed(1)),
           ouTotal: pred.ouTotal,
           modelML_home: newModelML_home,
@@ -88,6 +94,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _heuristicAwayScore: pred.awayScore,
           _heuristicSpread: pred.projectedSpread,
           _heuristicWinPct: pred.homeWinPct,
+          _rawMlWinProb: mlResult.ml_win_prob_home,
         };
       })() : pred;
       return { ...g, homeStats: hs, awayStats: as_, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
