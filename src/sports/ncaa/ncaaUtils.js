@@ -1,5 +1,5 @@
 // src/sports/ncaa/ncaaUtils.js
-// NCAAB v18 — Audit-compliant efficiency engine + Phase 1 enhancements
+// NCAAB v19 — v18 + oppPpg schedule computation fix + variadic getStat
 // Changelog v15→v16:
 //   F1:  adjOE/adjDE now uses proper offensive/defensive possession estimates
 //   F2:  ORB% uses opponent's actual DRB instead of hardcoded 25.0
@@ -13,6 +13,12 @@
 //   F16: Score clamp widened to [35, 130]
 //   F11: Added turnover margin and steals/TO ratio to prediction output
 //   F26: Improved odds matching with longer substring
+// Changelog v18→v19:
+//   V19-1: getStat() upgraded to variadic (...names) — matches NBA/NFL pattern
+//   V19-2: oppPpg computed from schedule when ESPN stats endpoint lacks it
+//          (was falling back to 72.0 constant for ALL teams)
+//   V19-3: Schedule fetch moved into initial Promise.all for parallelism
+//   V19-4: Diagnostic logging enhanced with oppPpg source tracking
 // Changelog v16→v18 (Phase 1):
 //   P1-INJ:  detectMissingStarters() — injury/roster detection from ESPN summary
 //   P1-CTX:  getGameContext() — tournament context flags (conf tourney, NCAA, bubble)
@@ -31,23 +37,55 @@ export async function fetchNCAATeamStats(teamId) {
   if (!teamId) return null;
   if (_ncaaStatsCache[teamId]) return _ncaaStatsCache[teamId];
   try {
-    const [teamData, recordData] = await Promise.all([
+    const [teamData, recordData, schedData, statsData] = await Promise.all([
       espnFetch(`teams/${teamId}`),
       espnFetch(`teams/${teamId}/record`),
+      espnFetch(`teams/${teamId}/schedule`),
+      espnFetch(`teams/${teamId}/statistics`),
     ]);
     if (!teamData) return null;
     const team = teamData.team;
-    const statsData = await espnFetch(`teams/${teamId}/statistics`);
     const stats = statsData?.results?.stats?.categories || [];
-    const getStat = (name) => {
+    // V19-1: Variadic getStat — try multiple stat name variants (matches NBA/NFL pattern)
+    const getStat = (...names) => {
       for (const cat of stats) {
-        const s = cat.stats?.find(s => s.name === name || s.displayName === name);
-        if (s) return parseFloat(s.value) || null;
+        for (const name of names) {
+          const s = cat.stats?.find(st => st.name === name || st.abbreviation === name || st.displayName?.toLowerCase() === name.toLowerCase());
+          if (s) { const v = parseFloat(s.value); return isNaN(v) ? null : v; }
+        }
       }
       return null;
     };
-    const ppg = getStat("avgPoints") || getStat("pointsPerGame") || 75.0;
-    const oppPpg = getStat("avgPointsAllowed") || getStat("opponentPointsPerGame") || 72.0;
+    const ppg = getStat("avgPoints", "pointsPerGame") || 75.0;
+
+    // V19-2: oppPpg — ESPN NCAAB team stats endpoint does NOT return opponent PPG.
+    // Try multiple stat name variants first, then compute from completed schedule games.
+    let oppPpg = getStat("avgPointsAllowed", "opponentPointsPerGame", "avgPointsAgainst", "pointsAgainstPerGame", "scoringDefenseAverage");
+    if (oppPpg == null) {
+      try {
+        const events = schedData?.events || [];
+        const completed = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+        if (completed.length >= 3) {
+          let totalOppPts = 0, validGames = 0;
+          for (const ev of completed) {
+            const comp = ev.competitions?.[0];
+            const oppComp = comp?.competitors?.find(c => String(c.team?.id) !== String(teamId));
+            const oppScore = parseInt(oppComp?.score);
+            if (!isNaN(oppScore) && oppScore > 0) {
+              totalOppPts += oppScore;
+              validGames++;
+            }
+          }
+          if (validGames >= 3) {
+            oppPpg = totalOppPts / validGames;
+          }
+        }
+      } catch (schedErr) {
+        console.warn(`⚠️ NCAA oppPpg schedule fallback failed [${teamId}]:`, schedErr.message);
+      }
+    }
+    const _oppPpgSource = oppPpg != null ? (getStat("avgPointsAllowed", "opponentPointsPerGame", "avgPointsAgainst") != null ? "ESPN_STAT" : "SCHEDULE_CALC") : "FALLBACK";
+    oppPpg = oppPpg || 72.0;
     const normPct = (v, fallback) => { const p = (v != null && v !== 0) ? v : fallback; return p > 1 ? p / 100 : p; };
     const fgPct = normPct(getStat("fieldGoalPct"), 0.455);
     const threePct = normPct(getStat("threePointFieldGoalPct"), 0.340);
@@ -72,11 +110,11 @@ export async function fetchNCAATeamStats(teamId) {
       const total = getStat("freeThrowsAttempted");
       return (total && totalGamesForAvg > 0) ? total / totalGamesForAvg : 20.0;
     })();
-    const offReb = getStat("avgOffensiveRebounds") || getStat("offensiveReboundsPerGame") || 10.0;
-    const defReb = getStat("avgDefensiveRebounds") || getStat("defensiveReboundsPerGame") || 24.0;
-    const totalReb = getStat("avgRebounds") || getStat("reboundsPerGame") || (offReb + defReb);
-    const steals = getStat("avgSteals") || getStat("stealsPerGame") || 7.0;
-    const blocks = getStat("avgBlocks") || getStat("blocksPerGame") || 3.5;
+    const offReb = getStat("avgOffensiveRebounds", "offensiveReboundsPerGame") || 10.0;
+    const defReb = getStat("avgDefensiveRebounds", "defensiveReboundsPerGame") || 24.0;
+    const totalReb = getStat("avgRebounds", "reboundsPerGame") || (offReb + defReb);
+    const steals = getStat("avgSteals", "stealsPerGame") || 7.0;
+    const blocks = getStat("avgBlocks", "blocksPerGame") || 3.5;
     const threeAtt = getStat("avgThreePointFieldGoalsAttempted") || (() => {
       const total = getStat("threePointFieldGoalsAttempted");
       return (total && totalGamesForAvg > 0) ? total / totalGamesForAvg : (fga * 0.38);
@@ -110,9 +148,9 @@ export async function fetchNCAATeamStats(teamId) {
     const totalGames = wins + losses;
 
     // ── F13: Symmetric form score with exponential decay ──
+    // V19-3: Uses schedData from initial Promise.all (was a separate fetch)
     let formScore = 0;
     try {
-      const schedData = await espnFetch(`teams/${teamId}/schedule`);
       const events = schedData?.events || [];
       const recent = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(-10);
       if (recent.length) {
@@ -132,11 +170,10 @@ export async function fetchNCAATeamStats(teamId) {
     } catch { }
 
     // ── DIAGNOSTIC: Always log raw ESPN values for inflation debugging ──
-    // Check browser console and compare against KenPom/Barttorvik reference
-    // Expected: ppg 60-85, fga 50-65 (per game), tempo 58-75, adjOE 95-125
-    // Any _raw_ field showing null means ESPN changed the stat name
+    // V19-4: Added oppPpg source tracking — shows ESPN_STAT, SCHEDULE_CALC, or FALLBACK
     console.log(`🏀 NCAA STATS [${team.abbreviation || teamId}]:`, {
-      ppg, oppPpg, fga, fta, offReb, turnovers,
+      ppg, oppPpg: parseFloat(oppPpg.toFixed(1)), oppPpgSource: _oppPpgSource,
+      fga, fta, offReb, turnovers,
       offPoss: parseFloat(offPoss.toFixed(1)), tempo,
       adjOE: parseFloat(adjOE.toFixed(1)), adjDE: parseFloat(adjDE.toFixed(1)),
       adjEM: parseFloat(adjEM.toFixed(1)),
@@ -146,10 +183,11 @@ export async function fetchNCAATeamStats(teamId) {
       _raw_fta_attempted: getStat("freeThrowsAttempted"),
       _raw_fta_avg: getStat("avgFreeThrowsAttempted"),
       _raw_ppg_avg: getStat("avgPoints"),
-      _raw_ppg_per: getStat("pointsPerGame"),
+      _raw_ppg_per: getStat("pointsPerGame"),  // null expected — ESPN NCAAB uses "avgPoints"
       _raw_offReb_avg: getStat("avgOffensiveRebounds"),
-      _raw_offReb_per: getStat("offensiveReboundsPerGame"),
+      _raw_offReb_per: getStat("offensiveReboundsPerGame"),  // null expected — ESPN NCAAB uses "avgOffensiveRebounds"
       _raw_turnovers: getStat("avgTurnovers"),
+      _raw_oppPpg_stat: getStat("avgPointsAllowed", "opponentPointsPerGame", "avgPointsAgainst", "scoringDefenseAverage"),
     });
     if (ppg > 90 || oppPpg > 90 || adjOE > 135 || adjDE > 135 || fga > 80 || fga < 30) {
       console.warn(`⚠️ NCAA STATS ANOMALY [${team.abbreviation || teamId}]: Check values above`);
