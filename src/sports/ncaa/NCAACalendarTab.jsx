@@ -161,14 +161,20 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
 
   const getBannerInfo = (pred, odds) => {
     if (!pred) return { color: "yellow", label: "⚠ No prediction" };
+    // Green banner = model decisiveness meets calibration-backed threshold (≥25 = 83.7% accuracy)
+    const dec = pred.decisiveness ?? (Math.abs(pred.homeWinPct - 0.5) * 100);
+    const favSide = pred.homeWinPct >= 0.5 ? "HOME" : "AWAY";
+    const favPct = Math.max(pred.homeWinPct, 1 - pred.homeWinPct);
     if (odds?.homeML && odds?.awayML) {
       const market = trueImplied(odds.homeML, odds.awayML);
       const homeEdge = pred.homeWinPct - market.home;
+      if (dec >= 25 && Math.abs(homeEdge) >= EDGE_THRESHOLD)
+        return { color: "green", edge: homeEdge, label: `+${(Math.abs(homeEdge) * 100).toFixed(1)}% ${homeEdge >= 0 ? "HOME" : "AWAY"} edge` };
       if (Math.abs(homeEdge) >= EDGE_THRESHOLD)
-        return { color: "green", edge: homeEdge, label: homeEdge >= EDGE_THRESHOLD ? `+${(homeEdge * 100).toFixed(1)}% HOME edge` : `+${((-homeEdge) * 100).toFixed(1)}% AWAY edge` };
+        return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge (lean)` };
       return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge` };
     }
-    if (pred.homeWinPct >= 0.65 || pred.homeWinPct <= 0.35) return { color: "green", label: "Strong signal" };
+    if (dec >= 25) return { color: "green", label: `${favSide} ${(favPct * 100).toFixed(0)}%` };
     return { color: "neutral", label: "Close matchup" };
   };
 

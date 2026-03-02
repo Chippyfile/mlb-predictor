@@ -53,6 +53,14 @@ export const EDGE_THRESHOLD    = 0.035;
 export const OU_EDGE_THRESHOLD = 0.04;   // model total must differ from market by 4%+
 export const CONF_BET_THRESHOLD = "HIGH";
 
+// ── DECISIVENESS GATE (calibration-backed) ──────────────────
+// Minimum decisiveness (|winPct - 0.5| × 100) to trigger green banner + Kelly sizing.
+// Derived from walk-forward backtesting confidence calibration data.
+// NCAA: ≥25 → 83.7% accuracy on 65% of games (cumulative ≥0.25 margin)
+// NBA:  ≥15 → ~78% accuracy (tighter spreads, more parity)
+// MLB:  ≥10 → ~72% accuracy (highest variance sport, 60% edge is strong)
+export const DECISIVENESS_GATE = { mlb: 10, nba: 15, ncaa: 25, nfl: 15, ncaaf: 20 };
+
 // ─────────────────────────────────────────────────────────────
 // BET SIGNALS
 // Returns individual bet signals for ML, O/U, spread, confidence
@@ -182,9 +190,12 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
 
   // ── BET SIZING (Quarter-Kelly) ─────────────────────────────
   // Calculates suggested bet size as % of bankroll using Kelly Criterion.
-  // Only computed when there's an actionable ML signal with market odds.
+  // Only triggers when model decisiveness meets sport-specific threshold
+  // (backed by walk-forward calibration data — see DECISIVENESS_GATE).
   let betSizing = null;
-  if (mlSignal && mlSignal.verdict !== "SKIP" && odds?.homeML && odds?.awayML) {
+  const _decGate = DECISIVENESS_GATE[sport] || 15;
+  const _decisiveness = pred.decisiveness ?? (Math.abs(pred.homeWinPct - 0.5) * 100);
+  if (mlSignal && mlSignal.verdict !== "SKIP" && odds?.homeML && odds?.awayML && _decisiveness >= _decGate) {
     const KELLY_FRACTION = 0.25; // Quarter Kelly — conservative
     const pickedHome = mlSignal.side === "HOME";
     const winPct = pickedHome ? homeWin : awayWin;
