@@ -502,6 +502,29 @@ export function calcCLV(bettingML, closingML) {
   };
 }
 
+/**
+ * Compute CLV for a completed game and return fields to persist to Supabase.
+ *
+ * 1. Determine which side the model bet (home if win_pct_home >= 0.5)
+ * 2. Use the opening line as the "bet" line (falls back to market ML)
+ * 3. Compare against the closing line on that same side
+ * 4. Return { bet_ml, clv_pct } for Supabase PATCH
+ */
+export function computeAndStoreCLV(row, closingHomeML, closingAwayML) {
+  const modelWinPct = row.win_pct_home ?? 0.5;
+  const betSide = modelWinPct >= 0.5 ? "home" : "away";
+  const betML = betSide === "home"
+    ? (row.opening_home_ml ?? row.market_home_ml ?? null)
+    : (row.opening_away_ml ?? row.market_away_ml ?? null);
+  const closingML = betSide === "home" ? closingHomeML : closingAwayML;
+  if (!betML || !closingML) return null;
+  const clvResult = calcCLV(betML, closingML);
+  return {
+    bet_ml: betML,
+    clv_pct: clvResult?.clvPct ?? null,
+  };
+}
+
 // ═══════════════════════════════════════════════════════════════
 // SECTION 8 — BEAT VEGAS FRAMEWORK
 // ═══════════════════════════════════════════════════════════════
@@ -623,10 +646,14 @@ export const EnhancedPredictionEngine = {
 export function computeAccuracyEnhanced(records) {
   const base = computeAccuracy(records);
   if (!base) return null;
-  const withCLV = records.filter(r => r.bet_ml != null && r.closing_ml != null);
+  const withCLV = records.filter(r => r.bet_ml != null && (r.closing_home_ml != null || r.closing_away_ml != null));
   let avgCLV = null, positiveCLVPct = null;
   if (withCLV.length > 0) {
-    const clvs     = withCLV.map(r => calcCLV(r.bet_ml, r.closing_ml)).filter(Boolean);
+    const clvs = withCLV.map(r => {
+      const betSide = (r.win_pct_home ?? 0.5) >= 0.5 ? "home" : "away";
+      const closingML = betSide === "home" ? r.closing_home_ml : r.closing_away_ml;
+      return calcCLV(r.bet_ml, closingML);
+    }).filter(Boolean);
     avgCLV         = clvs.reduce((s, c) => s + c.clvPct, 0) / clvs.length;
     positiveCLVPct = (clvs.filter(c => c.isPositiveCLV).length / clvs.length * 100).toFixed(1);
   }

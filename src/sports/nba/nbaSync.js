@@ -13,6 +13,7 @@
 
 import { supabaseQuery } from "../../utils/supabase.js";
 import { fetchOdds } from "../../utils/sharedUtils.js";
+import { calcCLV } from "../../utils/betUtils.js";
 import {
   fetchNBATeamStats,
   fetchNBAGamesForDate,
@@ -60,6 +61,14 @@ export async function nbaFillFinalScores(pendingRows) {
   }
   for (const [dateStr, rows] of Object.entries(byDate)) {
     try {
+      // ── CLV: Fetch closing odds for today's games ──────────
+      let closingOdds = null;
+      const todayStr = new Date().toISOString().split("T")[0];
+      if (dateStr === todayStr) {
+        try { closingOdds = (await fetchOdds("basketball_nba"))?.games || []; }
+        catch (e) { console.warn("NBA CLV: Could not fetch closing odds:", e.message); }
+      }
+
       const games = await fetchNBAGamesForDate(dateStr);
       for (const g of games) {
         if (g.status !== "Final" || g.homeScore === null) continue;
@@ -90,10 +99,36 @@ export async function nbaFillFinalScores(pendingRows) {
         let ou = null;
         if (ouL !== null && total !== ouL) ou = ((total > ouL) === (predT > ouL)) ? "OVER" : "UNDER";
         else if (ouL !== null && total === ouL) ou = "PUSH";
-        await supabaseQuery(`/nba_predictions?id=eq.${row.id}`, "PATCH", {
+
+        const updateObj = {
           actual_home_score: g.homeScore, actual_away_score: g.awayScore,
           result_entered: true, ml_correct: ml, rl_correct: rl, ou_correct: ou,
-        });
+        };
+
+        // ── CLV: Capture closing lines and compute CLV ───────
+        if (closingOdds?.length) {
+          const match = closingOdds.find(o => matchNBAOddsToGame(o, g));
+          if (match) {
+            if (match.homeOdds) updateObj.closing_home_ml = match.homeOdds;
+            if (match.awayOdds) updateObj.closing_away_ml = match.awayOdds;
+            if (match.marketTotal != null) updateObj.closing_ou_total = match.marketTotal;
+            // CLV computation
+            const betSide = (row.win_pct_home ?? 0.5) >= 0.5 ? "home" : "away";
+            const betML = betSide === "home"
+              ? (row.opening_home_ml ?? null)
+              : (row.opening_away_ml ?? null);
+            const closeML = betSide === "home" ? match.homeOdds : match.awayOdds;
+            if (betML && closeML) {
+              const clvResult = calcCLV(betML, closeML);
+              if (clvResult) {
+                updateObj.bet_ml = betML;
+                updateObj.clv_pct = clvResult.clvPct;
+              }
+            }
+          }
+        }
+
+        await supabaseQuery(`/nba_predictions?id=eq.${row.id}`, "PATCH", updateObj);
         filled++;
       }
     } catch (e) { console.warn("nbaFillFinalScores:", dateStr, e); }
@@ -165,6 +200,9 @@ export async function nbaAutoSync(onProgress) {
         home_net_rtg: pred.homeNetRtg, away_net_rtg: pred.awayNetRtg,
         ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
         ...(odds?.marketTotal != null && { market_ou_total: odds.marketTotal }),
+        // ── CLV: Opening lines captured at prediction time ──
+        ...(odds?.homeOdds != null && { opening_home_ml: odds.homeOdds }),
+        ...(odds?.awayOdds != null && { opening_away_ml: odds.awayOdds }),
         // ══════════════════════════════════════════════════════
         // NBA-07 FIX: Raw stats persisted for ML training
         // (mirrors NCAAB ncaaSync.js pattern — 30+ columns)

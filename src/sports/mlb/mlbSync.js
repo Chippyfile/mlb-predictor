@@ -2,6 +2,7 @@
 // Step 5: Persist raw features + Step 6: Closing line tracking
 import { supabaseQuery } from "../../utils/supabase.js";
 import { getMLBGameType, MLB_SEASON_START, fetchOdds } from "../../utils/sharedUtils.js";
+import { calcCLV } from "../../utils/betUtils.js";
 import {
   MLB_TEAMS,
   mlbTeamById,
@@ -221,6 +222,21 @@ export async function mlbFillFinalScores(pendingRows, oddsData) {
             });
             if (closingMatch) {
               closingFields = extractClosingOdds(closingMatch);
+              // ── CLV: Compare opening line (bet time) vs closing line ──
+              const betSide = (matchedRow.win_pct_home ?? 0.5) >= 0.5 ? "home" : "away";
+              const betML = betSide === "home"
+                ? (matchedRow.opening_home_ml ?? matchedRow.market_home_ml ?? null)
+                : (matchedRow.opening_away_ml ?? matchedRow.market_away_ml ?? null);
+              const closeML = betSide === "home"
+                ? closingMatch.homeML
+                : closingMatch.awayML;
+              if (betML && closeML) {
+                const clvResult = calcCLV(betML, closeML);
+                if (clvResult) {
+                  closingFields.bet_ml = betML;
+                  closingFields.clv_pct = clvResult.clvPct;
+                }
+              }
             }
           }
 
