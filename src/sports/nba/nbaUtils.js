@@ -522,7 +522,7 @@ export function nbaPredictGame({
   // weak opponents compared to NCAA's 30-game sample.
   // NBA-H2 FIX (v16): Apply small HCA to O/U components — home teams
   // score ~1.2 pts more and road teams ~1.2 pts less at home venues.
-  const NBA_TOTAL_SHRINK = 0.96;
+  const NBA_TOTAL_SHRINK = 0.925;  // Calibrated: model avg 234.3 → 225.7 (matches market 225.85)
   const ouHCA = neutralSite ? 0 : 1.2;
   const ouHomeScore = ((homeStats.ppg + awayStats.oppPpg) / 2 + ouHCA / 2) * NBA_TOTAL_SHRINK;
   const ouAwayScore = ((awayStats.ppg + homeStats.oppPpg) / 2 - ouHCA / 2) * NBA_TOTAL_SHRINK;
