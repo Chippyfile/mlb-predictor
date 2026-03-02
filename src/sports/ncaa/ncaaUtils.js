@@ -23,16 +23,17 @@
 const _ncaaStatsCache = {};
 
 // ── NCAA Dynamic League Averages ─────────────────────────────
-// Defaults based on 2024-25 D1 season (KenPom/Barttorvik reference).
-// Updated dynamically via computeNCAALeagueAverages() when enough
-// teams are loaded. The old hardcoded lgAvgOE=107.0 inflated O/U
-// totals by 10-15% because ESPN raw ppg/tempo produces adjOE ~112-118
-// while KenPom-adjusted values are ~104-108.
+// Defaults based on ESPN-derived adjOE values (ppg/tempo*100).
+// These are HIGHER than KenPom because ESPN PPG is not opponent-adjusted.
+// The dynamic computation from computeNCAALeagueAverages() will override
+// these with actual values from the day's games.
+// CRITICAL: These defaults must be on the SAME SCALE as team adjOE values.
+// ESPN-derived adjOE for D1 teams averages ~113-115, not KenPom's ~104.
 let _ncaaLeagueAverages = {
-  adjOE: 104.5,
-  adjDE: 104.5,
-  ppg: 74.5,
-  tempo: 68.0,
+  adjOE: 113.5,     // ESPN-scale D1 average (ppg/tempo*100)
+  adjDE: 113.5,     // ESPN-scale D1 average (oppPpg/tempo*100)
+  ppg: 76.5,        // D1 average points per game
+  tempo: 67.5,      // D1 average possessions per game
   fgPct: 0.449,
   threePct: 0.340,
   ftPct: 0.720,
@@ -66,6 +67,117 @@ export function computeNCAALeagueAverages(allTeamStats) {
 }
 
 export function getNCAALeagueAverages() { return { ..._ncaaLeagueAverages }; }
+
+// ── KenPom Ratings Reader ────────────────────────────────────
+// Fetches opponent-adjusted efficiency ratings from Railway API
+// (computed nightly by /compute/ncaa-efficiency endpoint).
+const ML_API = "https://sports-predictor-api-production.up.railway.app";
+let _kenPomCache = null;
+let _kenPomFetchTime = 0;
+const KENPOM_TTL = 4 * 60 * 60 * 1000; // 4 hours
+
+export async function fetchNCAAKenPomRatings() {
+  if (_kenPomCache && (Date.now() - _kenPomFetchTime) < KENPOM_TTL) return _kenPomCache;
+  try {
+    const res = await fetch(`${ML_API}/ratings/ncaa`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.ratings?.length) return null;
+    const map = new Map();
+    for (const r of data.ratings) map.set(String(r.team_id), r);
+    _kenPomCache = map;
+    _kenPomFetchTime = Date.now();
+    console.log(`🏀 KenPom ratings loaded: ${map.size} teams (updated ${data.updated_at})`);
+    return map;
+  } catch (e) {
+    console.warn("KenPom ratings unavailable:", e.message);
+    return null;
+  }
+}
+
+export function applyKenPomRatings(teamStats, kenPomMap) {
+  if (!teamStats || !kenPomMap) return;
+  const rating = kenPomMap.get(String(teamStats.teamId));
+  if (!rating) return;
+  teamStats._oppAdj = {
+    adjOE: rating.adj_oe,
+    adjDE: rating.adj_de,
+    adjPPG: rating.adj_ppg,
+    adjOppPpg: rating.adj_opp_ppg,
+    gamesUsed: rating.games_used,
+    totalGames: (rating.wins || 0) + (rating.losses || 0),
+    source: "kenpom-railway",
+  };
+  teamStats._kenPomRank = rating.rank_adj_em;
+  teamStats._kenPomEM = rating.adj_em;
+}
+
+// ── Opponent-Adjusted Efficiency ─────────────────────────────
+// Approximates KenPom-style opponent-adjusted adjOE/adjDE using
+// per-game scores from the schedule and each opponent's season stats.
+//
+// For each game: adjScore = myScore * (lgPPG / oppSeasonOppPpg)
+// This scales each game's scoring by how good the opponent's defense is.
+// If Duke scored 85 vs a team that allows 80 (better than avg 76.5):
+//   adjScore = 85 * (76.5 / 80) = 81.3  (scaled DOWN — opponent was weak D)
+// If Duke scored 60 vs a team that allows 65 (much better than avg):
+//   adjScore = 60 * (76.5 / 65) = 70.6  (scaled UP — opponent was elite D)
+//
+// This single pass captures ~80% of KenPom's iterative adjustment.
+// Call AFTER all teams for the day are loaded via fetchNCAATeamStats.
+export function computeOpponentAdjustedEfficiency(teamStats) {
+  if (!teamStats?.gameLog?.length) return null;
+  const lg = _ncaaLeagueAverages;
+  const lgPPG = lg.ppg || 76.5;
+
+  let adjOEsum = 0, adjDEsum = 0, adjCount = 0;
+  let adjPPGsum = 0, adjOppPpgSum = 0;
+
+  for (const game of teamStats.gameLog) {
+    // Look up opponent's season stats from cache
+    const oppStats = _ncaaStatsCache[game.oppId];
+    if (!oppStats) continue; // opponent not cached — skip this game
+
+    // Opponent's defensive quality: what do they allow per game?
+    const oppDefPPG = oppStats.oppPpg || lgPPG; // what opponent allows
+    // Opponent's offensive quality: what do they score per game?
+    const oppOffPPG = oppStats.ppg || lgPPG;    // what opponent scores
+
+    // Adjust this team's scoring: scale by opponent defensive quality
+    // If opponent allows less than average → our score is more impressive
+    // If opponent allows more than average → our score is less impressive
+    const adjMyScore = game.myScore * (lgPPG / oppDefPPG);
+    // Adjust opponent's scoring against us: scale by opponent offensive quality
+    // If opponent usually scores a lot → them scoring on us is less damning
+    const adjOppScore = game.oppScore * (lgPPG / oppOffPPG);
+
+    adjPPGsum += adjMyScore;
+    adjOppPpgSum += adjOppScore;
+
+    // Also compute per-possession efficiency if we have tempo
+    if (teamStats.tempo > 0) {
+      // Estimate game possessions as team's tempo (rough but consistent)
+      const gamePoss = teamStats.tempo;
+      adjOEsum += (adjMyScore / gamePoss) * 100;
+      adjDEsum += (adjOppScore / gamePoss) * 100;
+    }
+    adjCount++;
+  }
+
+  if (adjCount < 5) return null; // need enough games for meaningful adjustment
+
+  const adjPPG = adjPPGsum / adjCount;
+  const adjOppPpg = adjOppPpgSum / adjCount;
+  const result = {
+    adjPPG: parseFloat(adjPPG.toFixed(1)),
+    adjOppPpg: parseFloat(adjOppPpg.toFixed(1)),
+    adjOE: teamStats.tempo > 0 ? parseFloat((adjOEsum / adjCount).toFixed(1)) : null,
+    adjDE: teamStats.tempo > 0 ? parseFloat((adjDEsum / adjCount).toFixed(1)) : null,
+    gamesUsed: adjCount,
+    totalGames: teamStats.gameLog.length,
+  };
+  return result;
+}
 
 function espnFetch(path) {
   return fetch(`https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/${path}`)
@@ -155,11 +267,34 @@ export async function fetchNCAATeamStats(teamId) {
     const totalGames = wins + losses;
 
     // ── F13: Symmetric form score with exponential decay ──
+    // Also extract per-game data for opponent-adjusted efficiency calculation
     let formScore = 0;
+    let gameLog = []; // per-game scores + opponent IDs for adjOE computation
     try {
       const schedData = await espnFetch(`teams/${teamId}/schedule`);
       const events = schedData?.events || [];
-      const recent = events.filter(e => e.competitions?.[0]?.status?.type?.completed).slice(-10);
+      const completed = events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+
+      // Extract per-game data for opponent-adjusted efficiency
+      completed.forEach(e => {
+        const comp = e.competitions?.[0];
+        const teamComp = comp?.competitors?.find(c => c.team?.id === String(teamId));
+        const oppComp = comp?.competitors?.find(c => c.team?.id !== String(teamId));
+        if (teamComp && oppComp) {
+          const myScore = parseInt(teamComp.score) || 0;
+          const oppScore = parseInt(oppComp.score) || 0;
+          gameLog.push({
+            oppId: oppComp.team?.id,
+            myScore,
+            oppScore,
+            isHome: teamComp.homeAway === "home",
+            date: e.date?.split("T")[0],
+          });
+        }
+      });
+
+      // Form score from last 5
+      const recent = completed.slice(-10);
       if (recent.length) {
         const last5 = recent.slice(-5);
         let weightedSum = 0, totalWeight = 0;
@@ -168,7 +303,6 @@ export async function fetchNCAATeamStats(teamId) {
           const teamComp = comp?.competitors?.find(c => c.team?.id === String(teamId));
           const won = teamComp?.winner || false;
           const weight = Math.exp(-0.2 * (last5.length - 1 - i));
-          // F13: Symmetric weights: +1 win, -1 loss
           weightedSum += (won ? 1 : -1) * weight;
           totalWeight += weight;
         });
@@ -210,6 +344,14 @@ export async function fetchNCAATeamStats(teamId) {
       wins, losses, totalGames, formScore,
       rank: team.rank || null,
       conferenceName: team.conference?.name,
+      gameLog, // per-game scores + opponent IDs for opponent-adjusted efficiency
+      // SOS: opponent win% from ESPN record endpoint (already fetched above)
+      // Used in ncaaPredictGame to regress raw adjOE/adjDE toward league mean
+      sos: (() => {
+        const sosItem = recordData?.items?.find(i => i.type === "sos");
+        const v = sosItem?.stats?.find(s => s.name === "opponentWinPercent")?.value;
+        return v != null ? parseFloat(v) : null;
+      })(),
     };
     _ncaaStatsCache[teamId] = result;
     return result;
@@ -310,15 +452,41 @@ export function ncaaPredictGame({
   const homeConfPower = confPower[homeStats.conferenceName] || 1.0;
   const awayConfPower = confPower[awayStats.conferenceName] || 1.0;
 
-  // F14: Symmetric SOS adjustment (70% OE, 70% DE)
-  const sosMultiplier = 3.5;
-  const sosSplit = 0.70;
-  const homeSOSAdj = homeSOSFactor != null ? (homeSOSFactor - 0.500) * sosMultiplier * homeConfPower : 0;
-  const awaySOSAdj = awaySOSFactor != null ? (awaySOSFactor - 0.500) * sosMultiplier * awayConfPower : 0;
-  const homeAdjOE = homeStats.adjOE + homeSOSAdj * sosSplit;
-  const awayAdjOE = awayStats.adjOE + awaySOSAdj * sosSplit;
-  const homeAdjDE = homeStats.adjDE - homeSOSAdj * sosSplit;
-  const awayAdjDE = awayStats.adjDE - awaySOSAdj * sosSplit;
+  // ── Opponent-Adjusted Efficiency ──
+  // Use per-game opponent-adjusted values when available (computed by
+  // computeOpponentAdjustedEfficiency after all teams are loaded).
+  // Falls back to SOS regression if opponent data isn't cached yet.
+  const homeOppAdj = homeStats._oppAdj || null;
+  const awayOppAdj = awayStats._oppAdj || null;
+
+  let homeAdjOE, awayAdjOE, homeAdjDE, awayAdjDE;
+
+  if (homeOppAdj?.adjOE && awayOppAdj?.adjOE) {
+    // Best case: per-game opponent-adjusted values available for both teams
+    homeAdjOE = homeOppAdj.adjOE;
+    awayAdjOE = awayOppAdj.adjOE;
+    homeAdjDE = homeOppAdj.adjDE;
+    awayAdjDE = awayOppAdj.adjDE;
+  } else {
+    // Fallback: SOS-based regression to mean
+    const regressToMean = (rawVal, sos, lgMean) => {
+      if (sos == null) return rawVal;
+      const sosCredit = Math.max(0.40, Math.min(0.95, 0.70 + (sos - 0.500) * 3.0));
+      return lgMean + (rawVal - lgMean) * sosCredit;
+    };
+    const homeSOS = homeSOSFactor ?? homeStats.sos ?? null;
+    const awaySOS = awaySOSFactor ?? awayStats.sos ?? null;
+    homeAdjOE = regressToMean(homeStats.adjOE, homeSOS, lgAvgOE);
+    awayAdjOE = regressToMean(awayStats.adjOE, awaySOS, lgAvgOE);
+    homeAdjDE = regressToMean(homeStats.adjDE, homeSOS, lgAvgOE);
+    awayAdjDE = regressToMean(awayStats.adjDE, awaySOS, lgAvgOE);
+  }
+
+  // Diagnostic: show regression effect
+  if (homeSOS != null || awaySOS != null) {
+    const src = (homeStats._oppAdj && awayStats._oppAdj) ? 'OPP-ADJ' : 'SOS-REGRESS';
+    console.log(`📊 ${src}: Home ${homeStats.abbr} rawOE=${homeStats.adjOE.toFixed(1)} → adjOE=${homeAdjOE.toFixed(1)} | Away ${awayStats.abbr} rawOE=${awayStats.adjOE.toFixed(1)} → adjOE=${awayAdjOE.toFixed(1)}`);
+  }
 
   // ── F7: Four Factors scaled by tempo ──
   const tempoScale = possessions / lgAvgTempo;
@@ -394,33 +562,33 @@ export function ncaaPredictGame({
   homeScore += homeStats.formScore * formWeight * 4.0;
   awayScore += awayStats.formScore * formWeight * 4.0;
 
-  // ── O/U Total Calibration ──
-  // The spread is well-calibrated (σ=16, Brier=0.175), but the raw total
-  // is systematically ~10-15% too high because:
-  //   1. ESPN adjOE is inflated vs KenPom (no opponent-quality adjustment)
-  //   2. Additive boosts (Four Factors, def, ATO, form, rank) compound
-  //      upward for BOTH teams — they cancel for spread but inflate total
-  // Solution: Scale both scores proportionally to preserve the spread
-  // while pulling the total toward the pace-implied baseline.
-  const rawTotal = homeScore + awayScore;
-  const paceImpliedTotal = possessions * 2 * (lgAvgOE / 100);
-  // Blend: 75% model projection, 25% pace-implied baseline
-  const TARGET_TOTAL_WEIGHT = 0.75;
-  const calibratedTotal = TARGET_TOTAL_WEIGHT * rawTotal + (1 - TARGET_TOTAL_WEIGHT) * paceImpliedTotal;
-  if (Math.abs(rawTotal - calibratedTotal) > 0.5) {
-    const totalScale = calibratedTotal / rawTotal;
-    homeScore *= totalScale;
-    awayScore *= totalScale;
-  }
+  // ── O/U Total: PPG-based estimation (separate from spread) ──
+  // Use opponent-adjusted PPG when available (most accurate),
+  // fall back to raw PPG with shrink factor.
+  // When opponent-adjusted: values are already de-inflated by schedule quality,
+  //   so we only need a minimal 0.98 shrink for pace correlation bias.
+  // When raw PPG: season averages are inflated by weak opponents,
+  //   so we apply a 0.94 shrink to compensate.
+  const homeOppAdj = homeStats._oppAdj || null;
+  const awayOppAdj = awayStats._oppAdj || null;
+  const homePPG = homeOppAdj?.adjPPG ?? homeStats.ppg;
+  const homeDefPPG = homeOppAdj?.adjOppPpg ?? homeStats.oppPpg;
+  const awayPPG = awayOppAdj?.adjPPG ?? awayStats.ppg;
+  const awayDefPPG = awayOppAdj?.adjOppPpg ?? awayStats.oppPpg;
+  // Opp-adjusted removes schedule inflation but defense-constrains effect remains (0.93)
+  // Raw PPG has both schedule inflation + defense-constrains (~0.94 combined)
+  const shrink = (homeOppAdj && awayOppAdj) ? 0.93 : 0.94;
+  const ouHomeScore = (homePPG + awayDefPPG) / 2 * shrink;
+  const ouAwayScore = (awayPPG + homeDefPPG) / 2 * shrink;
+  const ouTotal = parseFloat((ouHomeScore + ouAwayScore).toFixed(1));
 
-  // Safety cap: hard ceiling for extreme outliers
-  const finalTotal = homeScore + awayScore;
+  // Safety cap on spread-derived scores (for display only)
+  const rawTotal = homeScore + awayScore;
   const maxRealisticTotal = 185;
-  if (finalTotal > maxRealisticTotal) {
-    const capScale = maxRealisticTotal / finalTotal;
+  if (rawTotal > maxRealisticTotal) {
+    const capScale = maxRealisticTotal / rawTotal;
     homeScore *= capScale;
     awayScore *= capScale;
-    console.warn(`⚠️ NCAA total ${finalTotal.toFixed(0)} capped to ${maxRealisticTotal}`);
   }
 
   // F16: Widened clamp [35, 130]
@@ -461,7 +629,7 @@ export function ncaaPredictGame({
     awayScore: parseFloat(awayScore.toFixed(1)),
     homeWinPct, awayWinPct: 1 - homeWinPct,
     projectedSpread: spread,
-    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    ouTotal,  // PPG-based (not from homeScore+awayScore which is spread-optimized)
     modelML_home, modelML_away, confidence, confScore,
     decisiveness: parseFloat(decisiveness.toFixed(1)),
     decisivenessLabel,

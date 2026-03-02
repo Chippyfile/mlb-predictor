@@ -6,7 +6,7 @@ import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
-import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma, computeNCAALeagueAverages } from "./ncaaUtils.js";
+import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma, computeNCAALeagueAverages, computeOpponentAdjustedEfficiency, fetchNCAAKenPomRatings, applyKenPomRatings } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
 
 // Season start (Nov 1 of prior year) — keep in sync with ncaaSync.js
@@ -40,6 +40,36 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (awayStats && !seen.has(awayStats.teamId)) { seen.add(awayStats.teamId); uniqueStats.push(awayStats); }
     }
     if (uniqueStats.length >= 10) computeNCAALeagueAverages(uniqueStats);
+
+    // ── Apply opponent-adjusted efficiency ratings ──
+    // Priority 1: Pre-computed KenPom ratings from Railway API (nightly batch)
+    // Priority 2: Client-side per-game opponent adjustment (fetches ~200 opponents)
+    // Priority 3: SOS regression fallback (no extra API calls)
+    const kenPomMap = await fetchNCAAKenPomRatings();
+    if (kenPomMap && kenPomMap.size > 100) {
+      for (const { homeStats, awayStats } of enriched) {
+        if (homeStats) applyKenPomRatings(homeStats, kenPomMap);
+        if (awayStats) applyKenPomRatings(awayStats, kenPomMap);
+      }
+      console.log("📊 Using Railway KenPom ratings for predictions");
+    } else {
+      // Fallback: client-side opponent-adjusted efficiency
+      console.log("📊 KenPom ratings unavailable — computing client-side");
+      const allOpponentIds = new Set();
+      for (const s of uniqueStats) {
+        if (s.gameLog) s.gameLog.forEach(g => { if (g.oppId) allOpponentIds.add(g.oppId); });
+      }
+      const missingOppIds = [...allOpponentIds].filter(id => !seen.has(id));
+      if (missingOppIds.length > 0) {
+        for (let i = 0; i < missingOppIds.length; i += 10) {
+          await Promise.all(missingOppIds.slice(i, i + 10).map(id => fetchNCAATeamStats(id).catch(() => null)));
+        }
+      }
+      for (const s of uniqueStats) {
+        const oppAdj = computeOpponentAdjustedEfficiency(s);
+        if (oppAdj) s._oppAdj = oppAdj;
+      }
+    }
 
     const predicted = await Promise.all(enriched.map(async ({ game: g, homeStats, awayStats }) => {
       // v18: Detect injuries and game context in parallel with prediction

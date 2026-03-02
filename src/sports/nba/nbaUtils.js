@@ -516,20 +516,16 @@ export function nbaPredictGame({
   homeScore += homeStats.formScore * fw * 3;
   awayScore += awayStats.formScore * fw * 3;
 
-  // ── O/U Total Calibration ──
-  // Additive boosts (Four Factors, TS%, defBoost, ATO, rim protection,
-  // form) add to BOTH scores. Net spread effect ≈ 0, but total inflates.
-  // Blend toward pace-implied baseline to correct.
-  const rawNbaTotal = homeScore + awayScore;
-  const paceImpliedNbaTotal = poss * 2 * (lgAvg / 100);
-  // Blend: 78% model, 22% pace baseline
-  const NBA_TOTAL_WEIGHT = 0.78;
-  const calibratedNbaTotal = NBA_TOTAL_WEIGHT * rawNbaTotal + (1 - NBA_TOTAL_WEIGHT) * paceImpliedNbaTotal;
-  if (Math.abs(rawNbaTotal - calibratedNbaTotal) > 0.5) {
-    const nbaScale = calibratedNbaTotal / rawNbaTotal;
-    homeScore *= nbaScale;
-    awayScore *= nbaScale;
-  }
+  // ── O/U Total: PPG-based estimation (separate from spread) ──
+  // Same approach as NCAA: the adjOE matchup formula is spread-optimized
+  // but inflates totals. Compute ouTotal from PPG with additive matchup.
+  // NBA shrink factor is slightly higher (0.96) because NBA teams play
+  // more games → season averages are more stable and less inflated by
+  // weak opponents compared to NCAA's 30-game sample.
+  const NBA_TOTAL_SHRINK = 0.96;
+  const ouHomeScore = (homeStats.ppg + awayStats.oppPpg) / 2 * NBA_TOTAL_SHRINK;
+  const ouAwayScore = (awayStats.ppg + homeStats.oppPpg) / 2 * NBA_TOTAL_SHRINK;
+  const ouTotal = parseFloat((ouHomeScore + ouAwayScore).toFixed(1));
 
   // ── NBA-16 FIX: Raised ceiling from 148 to 155 for modern NBA ──
   homeScore = Math.max(85, Math.min(155, homeScore));
@@ -564,7 +560,7 @@ export function nbaPredictGame({
     awayScore: parseFloat(awayScore.toFixed(1)),
     homeWinPct: hwp, awayWinPct: 1 - hwp,
     projectedSpread: spread,
-    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    ouTotal,  // PPG-based (not from homeScore+awayScore which is spread-optimized)
     modelML_home: mml, modelML_away: aml,
     confidence: cs >= 62 ? "HIGH" : cs >= 35 ? "MEDIUM" : "LOW", confScore: cs,
     possessions: parseFloat(poss.toFixed(1)),
