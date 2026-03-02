@@ -159,6 +159,9 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     pred_home_score: parseFloat(pred.homeScore.toFixed(1)),
     pred_away_score: parseFloat(pred.awayScore.toFixed(1)),
     home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
+    // AUDIT P1: Timestamp when ratings were captured — if >24h after game_date,
+    // the adj_em values may contain post-game data (timing leak for ML training).
+    rating_synced_at: new Date().toISOString(),
     neutral_site: effectiveNeutral,
     // Raw stats for ML training (unchanged from v17)
     home_ppg: homeStats.ppg, away_ppg: awayStats.ppg,
@@ -306,12 +309,22 @@ export async function ncaaRegradeAllResults(onProgress) {
       ou_correct = "PUSH";
     }
     let confidence = "MEDIUM";
-    if (row.home_adj_em != null && row.away_adj_em != null) {
-      const emGap = Math.abs(row.home_adj_em - row.away_adj_em);
-      const winPctStrength = Math.abs(winPctHome - 0.5) * 2;
-      const confScore = Math.round((Math.min(emGap, 10) / 10) * 40 + winPctStrength * 35 + 20 + 5);
-      confidence = confScore >= 62 ? "HIGH" : confScore >= 35 ? "MEDIUM" : "LOW";
-    }
+    // AUDIT: Confidence = DATA QUALITY only (not prediction strength).
+    // During regrade we don't have full team stats, so use stored proxies:
+    // - adj_em present = KenPom ratings were available (major data source)
+    // - win/loss records = season maturity
+    // - game_date = season progress (later = more data)
+    const hasEM = row.home_adj_em != null && row.away_adj_em != null;
+    const hasRawStats = row.home_ppg != null && row.away_ppg != null;
+    const homeW = (row.home_wins ?? 0) + (row.home_losses ?? 0);
+    const awayW = (row.away_wins ?? 0) + (row.away_losses ?? 0);
+    const minGames = Math.min(homeW || 5, awayW || 5);
+    const seasonPts = Math.round(Math.min(1.0, minGames / 25) * 25);
+    const dataPts = (hasRawStats ? 20 : 10) + (row.home_opp_ppg != null && row.home_opp_ppg !== 72 ? 5 : 0) + (row.home_form != null ? 5 : 0);
+    const extraPts = (hasEM ? 15 : 0) + (row.home_sos != null ? 5 : 0);
+    const basePts = minGames >= 3 ? 20 : 10;
+    const confScore = Math.min(100, basePts + seasonPts + dataPts + extraPts);
+    confidence = confScore >= 70 ? "HIGH" : confScore >= 45 ? "MEDIUM" : "LOW";
     await supabaseQuery(`/ncaa_predictions?id=eq.${row.id}`, "PATCH", { ml_correct, rl_correct, ou_correct, confidence });
     fixed++;
     if (fixed % 100 === 0) onProgress?.(`⏳ Regraded ${fixed}/${allGraded.length}…`);

@@ -6,7 +6,7 @@ import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
-import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings } from "./ncaaUtils.js";
+import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
 
 // Season start (Nov 1 of prior year) — keep in sync with ncaaSync.js
@@ -39,10 +39,12 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         if (homeStats) applyKenPomRatings(homeStats, kenPomMap);
         if (awayStats) applyKenPomRatings(awayStats, kenPomMap);
       }
-      // v18: Detect injuries and game context in parallel with prediction
-      const [injuryData, gameContext] = await Promise.all([
+      // v18+AUDIT P3: Detect injuries, game context, and actual rest days in parallel
+      const [injuryData, gameContext, homeRestDays, awayRestDays] = await Promise.all([
         detectMissingStarters(g.gameId, g.homeTeamId, g.awayTeamId).catch(() => null),
         Promise.resolve(getGameContext(d, g.neutralSite)),
+        computeRestDays(g.homeTeamId, d).catch(() => 3),
+        computeRestDays(g.awayTeamId, d).catch(() => 3),
       ]);
       const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 16.0;
       const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
@@ -98,6 +100,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             is_bubble_game: gameContext?.is_bubble_game ?? false,
             is_early_season: gameContext?.is_early_season ?? false,
             importance_multiplier: gameContext?.importance_multiplier ?? 1.0,
+            // AUDIT P3: Actual rest days (was defaulting to 3/3)
+            home_rest_days: homeRestDays,
+            away_rest_days: awayRestDays,
           });
         // R9: MC uses ML-adjusted means when ML is available
         const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
@@ -145,7 +150,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (pred && !mcResult) {
         mcResult = await mlMonteCarlo("NCAAB", mcHomeMean, mcAwayMean, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
-      return { ...g, homeStats, awayStats, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
+      return { ...g, homeStats, awayStats, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult, homeRestDays, awayRestDays };
     }));
     setGames(enriched);
     onGamesLoaded?.(enriched);
@@ -212,7 +217,6 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN"} />
                       {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
                       <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO" || sigs.ou?.verdict === "LEAN"} />
-                      <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={sigs.conf?.verdict === "GO"} />
                     </div>
                   );
                 })() : <div style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "⚠ Stats unavailable"}</div>}
@@ -237,6 +241,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     {game.awayStats && <Kv k={`${aName} Avg PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
                     <Kv k="Ratings" v={`${game.pred.ratingsSource || 'SOS'}${game.pred.venueAware ? ' + H/A' : ''}`} />
+                    {game.homeRestDays != null && <Kv k={`${hName} Rest`} v={`${game.homeRestDays}d`} />}
+                    {game.awayRestDays != null && <Kv k={`${aName} Rest`} v={`${game.awayRestDays}d`} />}
                     {game.neutralSite && <Kv k="Site" v="Neutral" />}
                     {game.venue && <Kv k="Venue" v={game.venue} />}
                   </div>

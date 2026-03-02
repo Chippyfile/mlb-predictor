@@ -523,22 +523,45 @@ export function ncaaPredictGame({
   const decisiveness = Math.abs(homeWinPct - 0.5) * 100;
   const decisivenessLabel = decisiveness >= 15 ? "STRONG" : decisiveness >= 7 ? "MODERATE" : "LEAN";
 
-  // FIX #4: Use KenPom EM when available (same source as display/prediction).
-  // Previously used homeStats.adjEM (ESPN-derived) while display showed _kenPomEM,
-  // causing elite matchups like #3 vs #8 to show LOW confidence.
-  const effectiveHomeEM = homeStats._kenPomEM ?? homeStats.adjEM;
-  const effectiveAwayEM = awayStats._kenPomEM ?? awayStats.adjEM;
-  const emGap = Math.abs(effectiveHomeEM - effectiveAwayEM);
-  const winPctStrength = Math.abs(homeWinPct - 0.5) * 2;
+  // ── CONFIDENCE = DATA QUALITY (how much info the model has) ──
+  // AUDIT FIX: Previously mixed prediction strength (emGap, winPctStrength) into
+  // confidence, causing HIGH confidence on lopsided games even when data was sparse.
+  // Now matches MLB pattern: confidence is ONLY about data completeness, season progress,
+  // and extra data sources. Decisiveness (how far from 50%) is computed separately.
+  //
+  // A 52% pick with HIGH confidence can be more valuable than an 80% pick with LOW
+  // confidence — because you TRUST the 52% number enough to bet on the edge.
   const homeGames = homeStats._oppAdj?.totalGames || homeStats.totalGames;
   const awayGames = awayStats._oppAdj?.totalGames || awayStats.totalGames;
   const minGames = Math.min(homeGames, awayGames);
-  const sampleWeight = Math.min(1.0, minGames / 15);
-  const hasData = minGames >= 5 ? 1 : 0;
-  const confScore = Math.round(
-    (Math.min(emGap, 10) / 10) * 40 + winPctStrength * 35 + sampleWeight * 20 + hasData * 5
-  );
-  const confidence = confScore >= 62 ? "HIGH" : confScore >= 35 ? "MEDIUM" : "LOW";
+
+  // Component 1: Season maturity (0-25 pts) — more games = more stable stats
+  const sampleWeight = Math.min(1.0, minGames / 25); // full credit at 25+ games
+  const seasonPts = Math.round(sampleWeight * 25);
+
+  // Component 2: Data completeness (0-30 pts) — which stat sources are available?
+  const dataChecks = [
+    homeStats.ppg > 0 && awayStats.ppg > 0,           // basic stats loaded
+    homeStats.fgPct > 0 && awayStats.fgPct > 0,       // shooting stats
+    homeStats.tempo > 0 && awayStats.tempo > 0,        // tempo available
+    homeStats.oppPpg !== 72.0 || awayStats.oppPpg !== 72.0, // real defensive stats (not default)
+    homeStats.formScore != null && awayStats.formScore != null, // form/trend data
+    minGames >= 5,                                      // enough games for basic stats
+  ];
+  const dataScore = dataChecks.filter(Boolean).length / dataChecks.length;
+  const dataPts = Math.round(dataScore * 30);
+
+  // Component 3: KenPom/advanced ratings available (0-25 pts)
+  const hasKenPom = !!(homeStats._kenPomEM != null && awayStats._kenPomEM != null);
+  const hasVenueSplits = !!(homeStats._oppAdj?.homeOE && awayStats._oppAdj?.awayOE);
+  const hasSOS = !!(homeStats.sos || awayStats.sos);
+  const extraPts = (hasKenPom ? 15 : 0) + (hasVenueSplits ? 5 : 0) + (hasSOS ? 5 : 0);
+
+  // Component 4: Base (20 pts) — minimum for any game with data
+  const basePts = minGames >= 3 ? 20 : 10;
+
+  const confScore = Math.min(100, basePts + seasonPts + dataPts + extraPts);
+  const confidence = confScore >= 70 ? "HIGH" : confScore >= 45 ? "MEDIUM" : "LOW";
 
   // FIX #3: Round scores first, then compute ouTotal from rounded values
   // so displayed individual scores always sum to the displayed O/U.
@@ -921,5 +944,30 @@ export function applyKenPomRatings(teamStats, kenPomMap) {
     }
     console.log(`🔧 NCAA oppPpg backfilled [${teamStats.abbr}]: ${oldOppPpg} → ${rating.adj_opp_ppg.toFixed(1)} (Railway)`);
   }
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// AUDIT P3: Rest Days — exported for CalendarTab live predictions
+// Mirrors _computeRestDays from ncaaSync.js (which is module-private).
+// Uses ESPN team schedule to find days since last completed game.
+// Impact: +0.5-1% accuracy, especially in tournament back-to-backs.
+// ─────────────────────────────────────────────────────────────
+export async function computeRestDays(teamId, gameDateStr) {
+  try {
+    const data = await espnFetch(`teams/${teamId}/schedule`);
+    if (!data?.events) return 3;
+    const gameDate = new Date(gameDateStr + "T00:00:00");
+    let lastGameDate = null;
+    for (const ev of data.events) {
+      const evDate = new Date(ev.date);
+      const completed = ev.competitions?.[0]?.status?.type?.completed;
+      if (completed && evDate < gameDate) {
+        if (!lastGameDate || evDate > lastGameDate) lastGameDate = evDate;
+      }
+    }
+    if (!lastGameDate) return 7; // season opener
+    return Math.max(0, Math.round((gameDate - lastGameDate) / (1000 * 60 * 60 * 24)));
+  } catch { return 3; }
 }
 
