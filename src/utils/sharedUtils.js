@@ -317,7 +317,12 @@ export function computeAccuracy(records) {
 }
 
 export function computeCalibration(records) {
-  const valid = records.filter(r => r.win_pct_home != null && r.ml_correct !== null && r.result_entered);
+  // Filter to records where we have home win probability AND actual scores to determine home win
+  const valid = records.filter(r => r.win_pct_home != null && r.result_entered && (
+    // Need actual scores to determine home_won (not ml_correct, which tracks picked-side accuracy)
+    (r.actual_home_score != null && r.actual_away_score != null) ||
+    (r.actual_home_runs != null && r.actual_away_runs != null)
+  ));
   if (valid.length < 20) return null;
 
   const bins = Array.from({ length: 10 }, (_, i) => ({
@@ -328,9 +333,13 @@ export function computeCalibration(records) {
   }));
 
   valid.forEach(r => {
-    const p      = parseFloat(r.win_pct_home);
+    const p = parseFloat(r.win_pct_home);
     const binIdx = Math.min(9, Math.floor(p * 10));
-    bins[binIdx].predictions.push({ p, actual: r.ml_correct ? 1 : 0 });
+    // Determine if HOME actually won (to match win_pct_home, which is home probability)
+    const homeScore = r.actual_home_score ?? r.actual_home_runs;
+    const awayScore = r.actual_away_score ?? r.actual_away_runs;
+    const homeWon = homeScore > awayScore ? 1 : 0;
+    bins[binIdx].predictions.push({ p, actual: homeWon });
   });
 
   const calibrationCurve = bins
@@ -348,9 +357,13 @@ export function computeCalibration(records) {
       };
     });
 
-  const brierScore  = valid.reduce((sum, r) =>
-    sum + Math.pow(parseFloat(r.win_pct_home) - (r.ml_correct ? 1 : 0), 2), 0
-  ) / valid.length;
+  // Brier score: (predicted_home_win_pct - home_actually_won)^2
+  const brierScore = valid.reduce((sum, r) => {
+    const homeScore = r.actual_home_score ?? r.actual_home_runs;
+    const awayScore = r.actual_away_score ?? r.actual_away_runs;
+    const homeWon = homeScore > awayScore ? 1 : 0;
+    return sum + Math.pow(parseFloat(r.win_pct_home) - homeWon, 2);
+  }, 0) / valid.length;
 
   const overallBias = calibrationCurve.reduce((s, b) => s + (b.actual - b.expected) * b.n, 0) /
     (calibrationCurve.reduce((s, b) => s + b.n, 0) || 1);
