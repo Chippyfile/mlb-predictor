@@ -219,10 +219,10 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   return (
                     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                       <Pill label="PROJ" value={`${aName} ${game.pred.awayScore.toFixed(0)} — ${hName} ${game.pred.homeScore.toFixed(0)}`} />
-                      <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${hName} -${game.pred.projectedSpread.toFixed(1)}` : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`} highlight={sigs.spread?.verdict === "LEAN"} />
-                      <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN"} />
+                      <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${hName} -${game.pred.projectedSpread.toFixed(1)}` : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`} highlight={sigs.spread?.verdict === "GO"} lean={sigs.spread?.verdict === "LEAN"} />
+                      <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO"} lean={sigs.ml?.verdict === "LEAN"} />
                       {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                      <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO" || sigs.ou?.verdict === "LEAN"} />
+                      <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO"} lean={sigs.ou?.verdict === "LEAN"} />
                     </div>
                   );
                 })() : <div style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "⚠ Stats unavailable"}</div>}
