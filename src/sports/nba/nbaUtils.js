@@ -74,6 +74,18 @@ export const NBA_CITY_COORDS = {
 };
 
 // ─────────────────────────────────────────────────────────────
+// ESPN ABBREVIATION NORMALIZATION
+// ESPN scoreboard API returns non-standard abbreviations for some teams.
+// This maps them to our canonical codes used in NBA_ESPN_IDS.
+// ─────────────────────────────────────────────────────────────
+const ESPN_ABBR_MAP = {
+  "GS":"GSW","NY":"NYK","NO":"NOP","SA":"SAS",
+  "WSH":"WAS","UTAH":"UTA","UTH":"UTA","PHO":"PHX",
+  "BKLYN":"BKN","BK":"BKN",
+};
+export const mapNBAAbbr = a => ESPN_ABBR_MAP[a] || a;
+
+// ─────────────────────────────────────────────────────────────
 // NBA-13 FIX: Dynamic league averages
 // Defaults based on 2024-25 season — updated dynamically via computeLeagueAverages()
 // ─────────────────────────────────────────────────────────────
@@ -271,8 +283,7 @@ export async function fetchNBATeamStats(abbr) {
           const homeTeam = lastComp?.competitors?.find(c => c.homeAway === "home");
           const homeAbbr = homeTeam?.team?.abbreviation;
           if (homeAbbr) {
-            const mapAbbr = a => ({"GS":"GSW","NY":"NYK","NO":"NOP","SA":"SAS"}[a] || a);
-            lastGameCity = mapAbbr(homeAbbr);
+            lastGameCity = mapNBAAbbr(homeAbbr);
           }
         }
       }
@@ -331,7 +342,6 @@ export async function fetchNBAGamesForDate(dateStr) {
       `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates=${compact}&limit=50`
     ).then(r => r.ok ? r.json() : null).catch(() => null);
     if (!data?.events) return [];
-    const mapAbbr = a => ({"GS":"GSW","NY":"NYK","NO":"NOP","SA":"SAS"}[a] || a);
     return data.events.map(ev => {
       const comp = ev.competitions?.[0];
       const home = comp?.competitors?.find(c => c.homeAway === "home");
@@ -340,8 +350,8 @@ export async function fetchNBAGamesForDate(dateStr) {
       return {
         gameId: ev.id, gameDate: ev.date,
         status: status?.completed ? "Final" : status?.state === "in" ? "Live" : "Preview",
-        homeAbbr: mapAbbr(home?.team?.abbreviation || ""),
-        awayAbbr: mapAbbr(away?.team?.abbreviation || ""),
+        homeAbbr: mapNBAAbbr(home?.team?.abbreviation || ""),
+        awayAbbr: mapNBAAbbr(away?.team?.abbreviation || ""),
         homeTeamName: home?.team?.displayName,
         awayTeamName: away?.team?.displayName,
         homeScore: status?.completed ? parseInt(home?.score) : null,
