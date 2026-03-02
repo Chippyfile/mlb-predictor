@@ -291,16 +291,8 @@ export function ncaaPredictGame({
       homeAdjDE = homeOppAdj.adjDE;
       awayAdjDE = awayOppAdj.adjDE;
     }
-    // Scale KenPom values to our lgAvgOE if needed
-    // KenPom uses 109.7 league average, our formulas assume lgAvgOE=107.0
-    // Rescale: val_107 = lgAvgOE + (val_kp - 109.7) * (lgAvgOE / 109.7)
-    const KP_LG = 109.7;
-    const scale = lgAvgOE / KP_LG;
-    homeAdjOE = lgAvgOE + (homeAdjOE - KP_LG) * scale;
-    awayAdjOE = lgAvgOE + (awayAdjOE - KP_LG) * scale;
-    homeAdjDE = lgAvgOE + (homeAdjDE - KP_LG) * scale;
-    awayAdjDE = lgAvgOE + (awayAdjDE - KP_LG) * scale;
-
+    // When using additive KenPom formula, keep values in KenPom scale (109.7 avg).
+    // No rescaling needed — the additive formula handles the scale internally.
     const src = homeOppAdj.homeOE != null && !neutralSite ? 'KENPOM-VENUE' : 'KENPOM';
     console.log(`📊 ${src}: Home ${homeStats.abbr} OE=${homeAdjOE.toFixed(1)} DE=${homeAdjDE.toFixed(1)} | Away ${awayStats.abbr} OE=${awayAdjOE.toFixed(1)} DE=${awayAdjDE.toFixed(1)}`);
   } else {
@@ -361,19 +353,39 @@ export function ncaaPredictGame({
   const toMarginBoost = (toMarginHome - toMarginAway) * 0.08;
 
   // ── Core score projection ──
-  const homeOffVsAwayDef = (homeAdjOE / lgAvgOE) * (lgAvgOE / awayAdjDE) * lgAvgOE;
-  const awayOffVsHomeDef = (awayAdjOE / lgAvgOE) * (lgAvgOE / homeAdjDE) * lgAvgOE;
+  // KenPom path: use additive formula (teamOE + oppDE - lgAvg)
+  // This is how KenPom actually projects games. The multiplicative formula
+  // (OE/lg * lg/DE * lg) inflates when the value distribution is wide.
+  // SOS fallback path: keep multiplicative (values are narrower in ESPN scale).
+  const usingKenPom = !!(homeOppAdj?.adjOE && awayOppAdj?.adjOE);
+  let homeOffVsAwayDef, awayOffVsHomeDef;
+  if (usingKenPom) {
+    // Additive: predicted efficiency = teamOE + oppDE - lgAvg
+    // Use KenPom-scale league average (109.7) for the additive calc,
+    // then convert to points using tempo
+    const KP_LG = 109.7;
+    homeOffVsAwayDef = homeAdjOE + awayAdjDE - KP_LG;
+    awayOffVsHomeDef = awayAdjOE + homeAdjDE - KP_LG;
+    // No rescaling needed — values stay in KenPom efficiency scale
+  } else {
+    homeOffVsAwayDef = (homeAdjOE / lgAvgOE) * (lgAvgOE / awayAdjDE) * lgAvgOE;
+    awayOffVsHomeDef = (awayAdjOE / lgAvgOE) * (lgAvgOE / homeAdjDE) * lgAvgOE;
+  }
   let homeScore = (homeOffVsAwayDef / 100) * possessions
     + homeFFactors * 0.35 + homeDefBoost * 0.20 + atoBoost * 0.5 + toMarginBoost * 0.5;
   let awayScore = (awayOffVsHomeDef / 100) * possessions
     + awayFFactors * 0.35 + awayDefBoost * 0.20 - atoBoost * 0.5 - toMarginBoost * 0.5;
 
   // ── Home court advantage ──
+  // When using venue-aware KenPom splits, the home OE/DE already captures
+  // most of the home court effect. Apply only a reduced HCA to avoid double-counting.
   const hcaBase = neutralSite ? 0 : (CONF_HCA[homeStats.conferenceName] || DEFAULT_HCA);
   const splitAdj = (!neutralSite && homeSplits?.homeAvgMargin != null)
     ? Math.min(2.5, Math.max(-2.5, (homeSplits.homeAvgMargin - (homeStats.ppgDiff || 0)) * 0.25))
     : 0;
-  const hca = hcaBase + splitAdj;
+  const venueAlreadyApplied = usingKenPom && homeOppAdj.homeOE != null && !neutralSite;
+  const hcaScale = venueAlreadyApplied ? 0.35 : 1.0;  // 35% HCA when venue splits active
+  const hca = (hcaBase + splitAdj) * hcaScale;
   homeScore += hca / 2;
   awayScore -= hca / 2;
 
