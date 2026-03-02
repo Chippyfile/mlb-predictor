@@ -565,13 +565,13 @@ export function ncaaPredictGame({
 
   // ── O/U Total: PPG-based estimation (separate from spread) ──
   // homeScore/awayScore are adjOE-matchup based, optimized for spread accuracy.
-  // They systematically inflate totals by ~10 pts (model avg 162 vs market 152).
-  // Compute O/U from PPG matchup with Bayesian shrink toward league average,
-  // matching the pattern NBA already uses (NBA_TOTAL_SHRINK).
-  const NCAA_TOTAL_SHRINK = 0.935;  // Calibrated: 162.2 * 0.935 ≈ 151.7 (matches market 152.05)
-  const ouHCA = neutralSite ? 0 : 1.5;  // Home teams score ~1.5 more in NCAA
-  const ouHomeScore = ((homeStats.ppg + awayStats.oppPpg) / 2 + ouHCA / 2) * NCAA_TOTAL_SHRINK;
-  const ouAwayScore = ((awayStats.ppg + homeStats.oppPpg) / 2 - ouHCA / 2) * NCAA_TOTAL_SHRINK;
+  // They systematically inflate totals by ~35 pts (model avg 186 vs actual 151.5).
+  // Compute O/U from PPG matchup: (teamPPG + oppOppPPG) / 2 per side.
+  // The averaging already provides natural regression toward the mean, so
+  // no additional shrink factor is needed. HCA adds ~1.5 pts to home side.
+  const ouHCA = neutralSite ? 0 : 1.5;
+  const ouHomeScore = (homeStats.ppg + awayStats.oppPpg) / 2 + ouHCA / 2;
+  const ouAwayScore = (awayStats.ppg + homeStats.oppPpg) / 2 - ouHCA / 2;
   const ouTotal = parseFloat((ouHomeScore + ouAwayScore).toFixed(1));
 
   // Round spread-optimized scores for display (these still drive spread/ML)
@@ -582,7 +582,7 @@ export function ncaaPredictGame({
     awayScore: finalAway,
     homeWinPct, awayWinPct: 1 - homeWinPct,
     projectedSpread: spread,
-    ouTotal,  // PPG-based (NOT finalHome + finalAway which inflates totals)
+    ouTotal,  // PPG-based (NOT finalHome + finalAway which inflates totals by 35 pts)
     modelML_home, modelML_away, confidence, confScore,
     decisiveness: parseFloat(decisiveness.toFixed(1)),
     decisivenessLabel,
