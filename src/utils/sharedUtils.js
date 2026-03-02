@@ -138,21 +138,29 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
   }
 
   // ── SPREAD SIGNAL ──────────────────────────────────────────
-  // projSpread = homeScore - awayScore (negative = away favored)
-  // mktSpread  = homeSpread from odds (positive = home is underdog)
-  // Standard: negative = favorite, positive = underdog
+  // projSpread = homeScore - awayScore (positive = home wins by X)
+  // mktSpread  = homeSpread from odds (negative = home favored by X)
+  // These are INVERTED conventions: model +8 = home wins by 8, market -8 = home favored by 8
+  // To compare: spreadDiff = projSpread + mktSpread (add, not subtract)
+  //   Duke@NCSU: proj -8.5 + mkt +9.5 = +1.0 (model 1pt more bullish on home)
   let spreadSignal = null;
   const projSpread = sport === "mlb" ? pred.runLineHome : pred.projectedSpread;
   const mktSpread  = odds?.homeSpread ?? odds?.marketSpreadHome ?? null;
   if (mktSpread !== null && mktSpread !== undefined) {
-    const spreadDiff = projSpread - mktSpread;
-    const fmtSpread = (val) => val <= 0 ? `−${Math.abs(val).toFixed(1)}` : `+${Math.abs(val).toFixed(1)}`;
-    if (Math.abs(spreadDiff) >= (sport === "mlb" ? 0.5 : 3.0)) {
+    const spreadDiff = projSpread + mktSpread;  // ADD because signs are inverted
+    const threshold = sport === "mlb" ? 0.5 : 3.0;
+    // Display in standard betting notation (home perspective):
+    // projSpread -8.5 → "home +8.5" (model: home loses by 8.5)
+    // mktSpread  +9.5 → "home +9.5" (market: home is 9.5 underdog)
+    const fmtModel = projSpread >= 0 ? `−${projSpread.toFixed(1)}` : `+${Math.abs(projSpread).toFixed(1)}`;
+    const fmtMarket = mktSpread >= 0 ? `+${mktSpread.toFixed(1)}` : `−${Math.abs(mktSpread).toFixed(1)}`;
+    if (Math.abs(spreadDiff) >= threshold) {
       spreadSignal = {
         verdict: "LEAN",
-        side:    spreadDiff > 0 ? "HOME -" : "AWAY +",
+        // spreadDiff > 0 means model is more bullish on home → bet HOME to cover
+        side:    spreadDiff > 0 ? "HOME" : "AWAY",
         diff:    Math.abs(spreadDiff).toFixed(1),
-        reason:  `Home spread: model ${fmtSpread(projSpread)} vs market ${fmtSpread(mktSpread)}`,
+        reason:  `Model ${fmtModel} vs market ${fmtMarket} — ${Math.abs(spreadDiff).toFixed(1)} pt gap`,
       };
     } else {
       spreadSignal = {
@@ -306,7 +314,7 @@ export function computeAccuracy(records) {
     rlAcc: rl.length ? (rl.filter(r => r.rl_correct).length / rl.length * 100).toFixed(1) : null,
     rlGames: rl.length, hasMarketSpreads,
     ouAcc: ou.length
-      ? (ou.filter(r => r.ou_correct === "OVER").length / ou.filter(r => r.ou_correct !== "PUSH").length * 100).toFixed(1)
+      ? (ou.filter(r => r.ou_correct === "OVER" || r.ou_correct === true).length / ou.filter(r => r.ou_correct !== "PUSH").length * 100).toFixed(1)
       : null,
     ouGames: ou.filter(r => r.ou_correct !== "PUSH").length,
     tiers,

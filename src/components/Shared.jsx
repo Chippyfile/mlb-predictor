@@ -382,7 +382,7 @@ export function HistoryTab({ table, refreshKey }) {
                       <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayName} {awayScore} — {homeName} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.rl_correct === null ? "🔲" : r.rl_correct ? "✅" : "❌") : "—"}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? <span style={{ color: r.ou_correct === "PUSH" ? C.yellow : "#e2e8f0", fontSize: 10 }}>{r.ou_correct}</span> : "—"}</td>
+                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ou_correct === "PUSH" ? <span style={{ color: C.yellow, fontSize: 10 }}>🔲</span> : r.ou_correct === "OVER" || r.ou_correct === true ? "✅" : r.ou_correct === "UNDER" || r.ou_correct === false ? "❌" : <span style={{ color: C.dim, fontSize: 10 }}>—</span>) : "—"}</td>
                       <td style={{ padding: "7px 8px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: C.dim, cursor: "pointer", fontSize: 12 }}>🗑</button></td>
                     </tr>
                   );
