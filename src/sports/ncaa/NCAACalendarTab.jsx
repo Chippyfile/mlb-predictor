@@ -6,7 +6,7 @@ import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
-import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma, computeNCAALeagueAverages, computeOpponentAdjustedEfficiency, fetchNCAAKenPomRatings, applyKenPomRatings } from "./ncaaUtils.js";
+import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
 
 // Season start (Nov 1 of prior year) — keep in sync with ncaaSync.js
@@ -26,52 +26,19 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
 
   const loadGames = useCallback(async (d) => {
     setLoading(true); setGames([]);
-    const [raw, odds] = await Promise.all([fetchNCAAGamesForDate(d), fetchOdds("basketball_ncaab")]);
+    const [raw, odds, kenPomMap] = await Promise.all([
+      fetchNCAAGamesForDate(d),
+      fetchOdds("basketball_ncaab"),
+      fetchNCAAKenPomRatings(),
+    ]);
     setOddsData(odds);
     const enriched = await Promise.all(raw.map(async (g) => {
       const [homeStats, awayStats] = await Promise.all([fetchNCAATeamStats(g.homeTeamId), fetchNCAATeamStats(g.awayTeamId)]);
-      return { game: g, homeStats, awayStats };
-    }));
-    // Compute dynamic league averages from all unique teams loaded today
-    const uniqueStats = [];
-    const seen = new Set();
-    for (const { homeStats, awayStats } of enriched) {
-      if (homeStats && !seen.has(homeStats.teamId)) { seen.add(homeStats.teamId); uniqueStats.push(homeStats); }
-      if (awayStats && !seen.has(awayStats.teamId)) { seen.add(awayStats.teamId); uniqueStats.push(awayStats); }
-    }
-    if (uniqueStats.length >= 10) computeNCAALeagueAverages(uniqueStats);
-
-    // ── Apply opponent-adjusted efficiency ratings ──
-    // Priority 1: Pre-computed KenPom ratings from Railway API (nightly batch)
-    // Priority 2: Client-side per-game opponent adjustment (fetches ~200 opponents)
-    // Priority 3: SOS regression fallback (no extra API calls)
-    const kenPomMap = await fetchNCAAKenPomRatings();
-    if (kenPomMap && kenPomMap.size > 100) {
-      for (const { homeStats, awayStats } of enriched) {
+      // Apply KenPom ratings (with home/away splits) if available
+      if (kenPomMap && kenPomMap.size > 100) {
         if (homeStats) applyKenPomRatings(homeStats, kenPomMap);
         if (awayStats) applyKenPomRatings(awayStats, kenPomMap);
       }
-      console.log("📊 Using Railway KenPom ratings for predictions");
-    } else {
-      // Fallback: client-side opponent-adjusted efficiency
-      console.log("📊 KenPom ratings unavailable — computing client-side");
-      const allOpponentIds = new Set();
-      for (const s of uniqueStats) {
-        if (s.gameLog) s.gameLog.forEach(g => { if (g.oppId) allOpponentIds.add(g.oppId); });
-      }
-      const missingOppIds = [...allOpponentIds].filter(id => !seen.has(id));
-      if (missingOppIds.length > 0) {
-        for (let i = 0; i < missingOppIds.length; i += 10) {
-          await Promise.all(missingOppIds.slice(i, i + 10).map(id => fetchNCAATeamStats(id).catch(() => null)));
-        }
-      }
-      for (const s of uniqueStats) {
-        const oppAdj = computeOpponentAdjustedEfficiency(s);
-        if (oppAdj) s._oppAdj = oppAdj;
-      }
-    }
-
-    const predicted = await Promise.all(enriched.map(async ({ game: g, homeStats, awayStats }) => {
       // v18: Detect injuries and game context in parallel with prediction
       const [injuryData, gameContext] = await Promise.all([
         detectMissingStarters(g.gameId, g.homeTeamId, g.awayTeamId).catch(() => null),
@@ -80,28 +47,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 16.0;
       const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
       const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null;
-      const rawOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
-      // ── ODDS NORMALIZATION ──
-      // Fix field names (odds.js returns marketSpreadHome/marketTotal) and
-      // detect home/away swap between The Odds API and ESPN
-      const gameOdds = rawOdds ? (() => {
-        const normalize = s => (s || "").toLowerCase().replace(/[^a-z]/g, "");
-        const oddsHome = normalize(rawOdds.homeTeam);
-        const espnHome = normalize(g.homeTeamName || g.homeAbbr);
-        const espnAway = normalize(g.awayTeamName || g.awayAbbr);
-        const homeMatchesHome = oddsHome.includes(espnHome.slice(0, 6)) || espnHome.includes(oddsHome.slice(0, 6));
-        const homeMatchesAway = oddsHome.includes(espnAway.slice(0, 6)) || espnAway.includes(oddsHome.slice(0, 6));
-        const isSwapped = !homeMatchesHome && homeMatchesAway;
-        if (isSwapped) console.warn(`⚠️ ODDS SWAP DETECTED: Odds="${rawOdds.homeTeam}" vs ESPN="${g.homeTeamName}"`);
-        return {
-          ...rawOdds,
-          homeML: isSwapped ? rawOdds.awayML : rawOdds.homeML,
-          awayML: isSwapped ? rawOdds.homeML : rawOdds.awayML,
-          homeSpread: isSwapped ? -(rawOdds.marketSpreadHome ?? null) : (rawOdds.marketSpreadHome ?? null),
-          ouLine: rawOdds.marketTotal ?? null,
-          _swapped: isSwapped,
-        };
-      })() : null;
+      const gameOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
       let mlResult = null, mcResult = null;
       if (pred) {
         // Run ML prediction first
@@ -139,7 +85,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             home_losses: homeStats?.losses, away_losses: awayStats?.losses,
             home_form: homeStats?.formScore, away_form: awayStats?.formScore,
             home_sos: null, away_sos: null,
-            home_rank: g.homeRank || 200, away_rank: g.awayRank || 200,
+            home_rank: homeStats?._kenPomRank || g.homeRank || 200, away_rank: awayStats?._kenPomRank || g.awayRank || 200,
             // v18 P1-INJ: Injury features for ML
             home_injury_penalty: injuryData?.home_injury_penalty ?? 0,
             away_injury_penalty: injuryData?.away_injury_penalty ?? 0,
@@ -168,26 +114,19 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-        // CONSISTENCY FIX: Derive win probability FROM margin so spread/win%/ML always agree.
-        const SIGMA = 16.0;
-        const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
-        const MARGIN_WEIGHT = 0.70;
-        const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
-        const blendedWinHome = Math.max(0.12, Math.min(0.88, rawBlended));
-        const blendedWinAway = 1 - blendedWinHome;
-        const ML_CAP = 500;
-        const newModelML_home = blendedWinHome >= 0.5
-          ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100));
-        const newModelML_away = blendedWinHome >= 0.5
-          ? +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100))
-          : -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100));
+        const mlWinHome = mlResult.ml_win_prob_home;
+        const newModelML_home = mlWinHome >= 0.5
+          ? -Math.round((mlWinHome / (1 - mlWinHome)) * 100)
+          : +Math.round(((1 - mlWinHome) / mlWinHome) * 100);
+        const newModelML_away = mlWinHome >= 0.5
+          ? +Math.round(((1 - mlWinHome) / mlWinHome) * 100)
+          : -Math.round((mlWinHome / (1 - mlWinHome)) * 100);
         return {
           ...pred,
           homeScore: adjHomeScore,
           awayScore: adjAwayScore,
-          homeWinPct: blendedWinHome,
-          awayWinPct: blendedWinAway,
+          homeWinPct: mlResult.ml_win_prob_home,
+          awayWinPct: mlResult.ml_win_prob_away,
           projectedSpread: parseFloat(mlMargin.toFixed(1)),
           ouTotal: pred.ouTotal,
           modelML_home: newModelML_home,
@@ -198,8 +137,6 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _heuristicAwayScore: pred.awayScore,
           _heuristicSpread: pred.projectedSpread,
           _heuristicWinPct: pred.homeWinPct,
-          _rawMlWinProb: mlResult.ml_win_prob_home,
-          _marginBasedWinProb: marginBasedWinProb,
         };
       })() : pred;
       // R9: MC uses ML-adjusted means when ML prediction is available
@@ -210,8 +147,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       }
       return { ...g, homeStats, awayStats, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
-    setGames(predicted);
-    onGamesLoaded?.(predicted);
+    setGames(enriched);
+    onGamesLoaded?.(enriched);
     setLoading(false);
   }, [calibrationFactor]);
 
@@ -256,13 +193,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 200 }}>
                   <div style={{ textAlign: "center" }}>
                     <div style={{ fontSize: 16, fontWeight: 800 }}>{aName}</div>
-                    {game.awayRank && <div style={{ fontSize: 9, color: C.orange }}>#{game.awayRank}</div>}
+                    {(game.awayStats?._kenPomRank || game.awayRank) && <div style={{ fontSize: 9, color: C.orange }}>#{game.awayStats?._kenPomRank || game.awayRank}</div>}
                     <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
                   </div>
                   <div style={{ fontSize: 13, color: C.dim }}>@</div>
                   <div style={{ textAlign: "center" }}>
                     <div style={{ fontSize: 16, fontWeight: 800 }}>{hName}</div>
-                    {game.homeRank && <div style={{ fontSize: 9, color: C.orange }}>#{game.homeRank}</div>}
+                    {(game.homeStats?._kenPomRank || game.homeRank) && <div style={{ fontSize: 9, color: C.orange }}>#{game.homeStats?._kenPomRank || game.homeRank}</div>}
                     <div style={{ fontSize: 9, color: C.dim }}>HOME{game.neutralSite ? " (N)" : ""}</div>
                   </div>
                 </div>
@@ -294,11 +231,12 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     <Kv k="O/U Total" v={game.pred.ouTotal} />
                     <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${hName} -${game.pred.projectedSpread.toFixed(1)}` : `${aName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
                     <Kv k="Possessions" v={game.pred.possessions.toFixed(1)} />
-                    {game.homeStats && <Kv k={`${hName} Adj EM`} v={game.pred.homeAdjEM} />}
-                    {game.awayStats && <Kv k={`${aName} Adj EM`} v={game.pred.awayAdjEM} />}
+                    {game.homeStats && <Kv k={`${hName} Adj EM`} v={`${game.pred.homeAdjEM}${game.homeStats._kenPomRank ? ` (#${game.homeStats._kenPomRank})` : ''}`} />}
+                    {game.awayStats && <Kv k={`${aName} Adj EM`} v={`${game.pred.awayAdjEM}${game.awayStats._kenPomRank ? ` (#${game.awayStats._kenPomRank})` : ''}`} />}
                     {game.homeStats && <Kv k={`${hName} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
                     {game.awayStats && <Kv k={`${aName} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
+                    <Kv k="Ratings" v={`${game.pred.ratingsSource || 'SOS'}${game.pred.venueAware ? ' + H/A' : ''}`} />
                     {game.neutralSite && <Kv k="Site" v="Neutral" />}
                     {game.venue && <Kv k="Venue" v={game.venue} />}
                   </div>
