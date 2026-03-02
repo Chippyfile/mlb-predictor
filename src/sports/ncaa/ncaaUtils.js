@@ -353,24 +353,14 @@ export function ncaaPredictGame({
   const toMarginBoost = (toMarginHome - toMarginAway) * 0.08;
 
   // ── Core score projection ──
-  // KenPom path: use additive formula (teamOE + oppDE - lgAvg)
-  // This is how KenPom actually projects games. The multiplicative formula
-  // (OE/lg * lg/DE * lg) inflates when the value distribution is wide.
-  // SOS fallback path: keep multiplicative (values are narrower in ESPN scale).
+  // Additive formula: predicted efficiency = teamOE + oppDE - lgAvg
+  // This is how KenPom projects games. The multiplicative formula
+  // (OE/lg * lg/DE * lg) inflates when both teams are above average.
+  // KenPom path uses 109.7 league avg; SOS path uses lgAvgOE (107.0).
   const usingKenPom = !!(homeOppAdj?.adjOE && awayOppAdj?.adjOE);
-  let homeOffVsAwayDef, awayOffVsHomeDef;
-  if (usingKenPom) {
-    // Additive: predicted efficiency = teamOE + oppDE - lgAvg
-    // Use KenPom-scale league average (109.7) for the additive calc,
-    // then convert to points using tempo
-    const KP_LG = 109.7;
-    homeOffVsAwayDef = homeAdjOE + awayAdjDE - KP_LG;
-    awayOffVsHomeDef = awayAdjOE + homeAdjDE - KP_LG;
-    // No rescaling needed — values stay in KenPom efficiency scale
-  } else {
-    homeOffVsAwayDef = (homeAdjOE / lgAvgOE) * (lgAvgOE / awayAdjDE) * lgAvgOE;
-    awayOffVsHomeDef = (awayAdjOE / lgAvgOE) * (lgAvgOE / homeAdjDE) * lgAvgOE;
-  }
+  const additiveLgAvg = usingKenPom ? 109.7 : lgAvgOE;
+  const homeOffVsAwayDef = homeAdjOE + awayAdjDE - additiveLgAvg;
+  const awayOffVsHomeDef = awayAdjOE + homeAdjDE - additiveLgAvg;
   let homeScore = (homeOffVsAwayDef / 100) * possessions
     + homeFFactors * 0.35 + homeDefBoost * 0.20 + atoBoost * 0.5 + toMarginBoost * 0.5;
   let awayScore = (awayOffVsHomeDef / 100) * possessions
