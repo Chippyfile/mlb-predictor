@@ -158,7 +158,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           const awayColor = NBA_TEAM_COLORS[game.awayAbbr] || "#334";
           const isOpen = expanded === game.gameId;
           const sigs = game.pred ? getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" }) : null;
-          const hasBet = sigs && (sigs.ml?.verdict === "GO" || sigs.spread?.verdict === "LEAN" || sigs.ou?.verdict === "GO");
+          const dec = game.pred ? (game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100)) : 0;
+          const hasBet = sigs && dec >= 15 && (sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN" || sigs.spread?.verdict === "GO" || sigs.ou?.verdict === "GO");
           return (
             <div key={game.gameId} style={{ background: hasBet ? "linear-gradient(135deg,#0b2012,#0e2315)" : "linear-gradient(135deg,#0d1117,#111822)", border: `1px solid ${hasBet ? "#2ea043" : C.border}`, borderRadius: 10, overflow: "hidden" }}>
               <div style={{ height: 3, background: `linear-gradient(90deg,${awayColor},${homeColor})` }} />
@@ -178,11 +179,10 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 {game.pred ? (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                     <Pill label="PROJ" value={`${game.awayAbbr} ${game.pred.awayScore.toFixed(0)}–${game.pred.homeScore.toFixed(0)} ${game.homeAbbr}`} />
-                    <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${game.homeAbbr} -${game.pred.projectedSpread}` : `${game.awayAbbr} -${-game.pred.projectedSpread}`} highlight={sigs?.spread?.verdict === "LEAN"} />
-                    <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs?.ml?.verdict === "GO" || sigs?.ml?.verdict === "LEAN"} />
+                    <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${game.homeAbbr} -${game.pred.projectedSpread}` : `${game.awayAbbr} -${-game.pred.projectedSpread}`} highlight={sigs?.spread?.verdict === "GO"} lean={sigs?.spread?.verdict === "LEAN"} />
+                    <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs?.ml?.verdict === "GO"} lean={sigs?.ml?.verdict === "LEAN"} />
                     {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                    <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs?.ou?.verdict === "GO"} />
-                    <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={game.pred.confidence === "HIGH"} />
+                    <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs?.ou?.verdict === "GO"} lean={sigs?.ou?.verdict === "LEAN"} />
                   </div>
                 ) : (
                   <span style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "Stats unavailable"}</span>

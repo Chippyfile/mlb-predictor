@@ -135,14 +135,19 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
   const getBannerInfo = (pred, odds, hasStarter) => {
     if (!pred) return { color: "yellow", label: "⚠ No prediction" };
     if (!hasStarter) return { color: "yellow", label: "⚠ Starters TBD" };
+    const dec = pred.decisiveness ?? (Math.abs(pred.homeWinPct - 0.5) * 100);
+    const favSide = pred.homeWinPct >= 0.5 ? "HOME" : "AWAY";
+    const favPct = Math.max(pred.homeWinPct, 1 - pred.homeWinPct);
     if (odds?.homeML && odds?.awayML) {
       const market = trueImplied(odds.homeML, odds.awayML);
       const homeEdge = pred.homeWinPct - market.home;
+      if (dec >= 10 && Math.abs(homeEdge) >= EDGE_THRESHOLD)
+        return { color: "green", edge: homeEdge, label: `+${(Math.abs(homeEdge) * 100).toFixed(1)}% ${homeEdge >= 0 ? "HOME" : "AWAY"} edge` };
       if (Math.abs(homeEdge) >= EDGE_THRESHOLD)
-        return { color: "green", edge: homeEdge, label: homeEdge >= EDGE_THRESHOLD ? `+${(homeEdge * 100).toFixed(1)}% HOME edge` : `+${((-homeEdge) * 100).toFixed(1)}% AWAY edge` };
+        return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge (lean)` };
       return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge` };
     }
-    if (pred.homeWinPct >= 0.60 || pred.homeWinPct <= 0.40) return { color: "green", label: "Strong signal" };
+    if (dec >= 10) return { color: "green", label: `${favSide} ${(favPct * 100).toFixed(0)}%` };
     return { color: "neutral", label: "Close matchup" };
   };
 
@@ -186,11 +191,10 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                     return (
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
                         <Pill label="PROJ" value={`${away.abbr} ${game.pred.awayRuns.toFixed(1)} — ${home.abbr} ${game.pred.homeRuns.toFixed(1)}`} />
-                        <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN"} />
+                        <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO"} lean={sigs.ml?.verdict === "LEAN"} />
                         {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                        <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO" || sigs.ou?.verdict === "LEAN"} />
+                        <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO"} lean={sigs.ou?.verdict === "LEAN"} />
                         <Pill label="WIN%" value={`${Math.round(game.pred.homeWinPct * 100)}%`} color={game.pred.homeWinPct >= 0.55 ? C.green : "#e2e8f0"} />
-                        <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={sigs.conf?.verdict === "GO"} />
                       </div>
                     );
                   })() : <div style={{ color: C.dim, fontSize: 11 }}>⚠ Data unavailable</div>}
