@@ -138,17 +138,21 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
   }
 
   // ── SPREAD SIGNAL ──────────────────────────────────────────
+  // projSpread = homeScore - awayScore (negative = away favored)
+  // mktSpread  = homeSpread from odds (positive = home is underdog)
+  // Standard: negative = favorite, positive = underdog
   let spreadSignal = null;
   const projSpread = sport === "mlb" ? pred.runLineHome : pred.projectedSpread;
   const mktSpread  = odds?.homeSpread ?? odds?.marketSpreadHome ?? null;
   if (mktSpread !== null && mktSpread !== undefined) {
     const spreadDiff = projSpread - mktSpread;
+    const fmtSpread = (val) => val <= 0 ? `−${Math.abs(val).toFixed(1)}` : `+${Math.abs(val).toFixed(1)}`;
     if (Math.abs(spreadDiff) >= (sport === "mlb" ? 0.5 : 3.0)) {
       spreadSignal = {
         verdict: "LEAN",
         side:    spreadDiff > 0 ? "HOME -" : "AWAY +",
         diff:    Math.abs(spreadDiff).toFixed(1),
-        reason:  `Model spread ${projSpread > 0 ? "-" : "+"}${Math.abs(projSpread).toFixed(1)} vs market ${mktSpread > 0 ? "-" : "+"}${Math.abs(mktSpread).toFixed(1)}`,
+        reason:  `Home spread: model ${fmtSpread(projSpread)} vs market ${fmtSpread(mktSpread)}`,
       };
     } else {
       spreadSignal = {
