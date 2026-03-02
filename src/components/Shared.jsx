@@ -21,22 +21,27 @@ export const C = {
 export const confColor2 = c => c === "HIGH" ? C.green : c === "MEDIUM" ? C.yellow : C.muted;
 
 // ── PILL ──────────────────────────────────────────────────────
-export function Pill({ label, value, color, highlight }) {
+export function Pill({ label, value, color, highlight, lean }) {
+  const active = highlight || lean;
+  const badgeColor = highlight ? "#2ea043" : "#d29922";
+  const badgeText = highlight ? "BET" : "LEAN";
+  const valueColor = highlight ? "#3fb950" : lean ? "#e3b341" : (color || "#e2e8f0");
+  const bgColor = highlight ? "rgba(46,160,67,0.15)" : lean ? "rgba(227,179,65,0.10)" : "transparent";
+  const borderClr = highlight ? "#2ea04355" : lean ? "#d2992244" : "transparent";
   return (
     <div style={{
       textAlign: "center", minWidth: 44, position: "relative",
-      background: highlight ? "rgba(46,160,67,0.15)" : "transparent",
-      border: highlight ? "1px solid #2ea04355" : "1px solid transparent",
-      borderRadius: 6, padding: highlight ? "2px 6px" : "0",
+      background: bgColor, border: `1px solid ${borderClr}`,
+      borderRadius: 6, padding: active ? "2px 6px" : "0",
     }}>
-      {highlight && (
+      {active && (
         <div style={{
           position: "absolute", top: -7, right: -4, fontSize: 8,
-          background: "#2ea043", color: "#fff", borderRadius: 3,
+          background: badgeColor, color: "#fff", borderRadius: 3,
           padding: "0 3px", fontWeight: 800, letterSpacing: 0.5, lineHeight: "14px",
-        }}>BET</div>
+        }}>{badgeText}</div>
       )}
-      <div style={{ fontSize: 14, fontWeight: 800, color: highlight ? "#3fb950" : (color || "#e2e8f0") }}>{value}</div>
+      <div style={{ fontSize: 14, fontWeight: 800, color: valueColor }}>{value}</div>
       <div style={{ fontSize: 8, color: "#484f58", letterSpacing: 1.5, textTransform: "uppercase" }}>{label}</div>
     </div>
   );
