@@ -1,8 +1,9 @@
 // src/sports/ncaa/ncaaUtils.js
-// NCAAB v20 — Real ESPN possessions, 3-tier oppPpg, variadic getStat, parallel fetches
-// Changelog v18→v20:
+// NCAAB v20.1 — Real ESPN possessions, 3-tier oppPpg, variadic getStat, parallel fetches
+// Changelog v18→v20.1:
 //   V20-1: getStat() upgraded to variadic (...names) — matches NBA/NFL pattern
 //   V20-2: oppPpg 3-tier resolution: ESPN stat → schedule computation → 72.0 fallback
+//          Fixed: robust score parser handles ESPN dict/string/number score formats
 //   V20-3: All 4 ESPN fetches (team, record, schedule, statistics) in single Promise.all
 //   V20-4: ESPN's estimatedPossessions + pointsPerEstimatedPossessions wired for real tempo/efficiency
 //   V20-5: applyKenPomRatings now backfills oppPpg from Railway adj_opp_ppg when ESPN lacks it
@@ -58,6 +59,15 @@ export async function fetchNCAATeamStats(teamId) {
       }
       return null;
     };
+
+    // V20-2: Robust score parser — ESPN returns score as string, number, or dict
+    // Railway Python has same fix: score can be {"displayValue":"75","value":75.0}
+    const parseScore = (s) => {
+      if (s == null) return NaN;
+      if (typeof s === 'object') return parseInt(s.displayValue || s.value || 0);
+      return parseInt(s);
+    };
+
     const ppg = getStat("avgPoints", "pointsPerGame") || 75.0;
 
     // V20-2: oppPpg — 3-tier resolution
@@ -70,24 +80,43 @@ export async function fetchNCAATeamStats(teamId) {
       try {
         const completed = schedData.events.filter(e => e.competitions?.[0]?.status?.type?.completed);
         let totalOppPts = 0, validGames = 0;
+        // One-shot debug: log first competitor structure
+        let _debugLogged = false;
         for (const ev of completed) {
           const comp = ev.competitions?.[0];
           const competitors = comp?.competitors || [];
-          for (const c of competitors) {
-            const cId = c.team?.id != null ? String(c.team.id) : null;
-            if (cId && cId !== String(teamId)) {
-              const score = parseInt(c.score);
-              if (!isNaN(score) && score > 0) {
-                totalOppPts += score;
-                validGames++;
-              }
-              break;
+          if (!_debugLogged && competitors.length >= 2) {
+            console.log(`🔍 NCAA sched structure [${teamId}]:`, {
+              n_competitors: competitors.length,
+              c0_teamId: competitors[0]?.team?.id,
+              c0_teamIdType: typeof competitors[0]?.team?.id,
+              c0_score: competitors[0]?.score,
+              c0_scoreType: typeof competitors[0]?.score,
+              c1_teamId: competitors[1]?.team?.id,
+              c1_score: competitors[1]?.score,
+              ourTeamId: teamId,
+              ourTeamIdType: typeof teamId,
+            });
+            _debugLogged = true;
+          }
+          // Find opponent: use same pattern as form score (line ~123 in v18)
+          // Match our team first, then take the other competitor
+          const ourComp = competitors.find(c => String(c.team?.id) === String(teamId));
+          const oppComp = competitors.find(c => String(c.team?.id) !== String(teamId));
+          if (oppComp) {
+            const score = parseScore(oppComp.score);
+            if (!isNaN(score) && score > 0) {
+              totalOppPts += score;
+              validGames++;
             }
           }
         }
         if (validGames >= 3) {
           oppPpg = totalOppPts / validGames;
           _oppPpgSource = "SCHEDULE_CALC";
+          console.log(`✅ NCAA oppPpg [${team.abbreviation || teamId}]: ${oppPpg.toFixed(1)} from ${validGames} games`);
+        } else {
+          console.warn(`⚠️ NCAA oppPpg [${team.abbreviation || teamId}]: only ${validGames} valid games from ${completed.length} completed, using fallback`);
         }
       } catch (schedErr) {
         console.warn(`⚠️ NCAA oppPpg schedule fallback failed [${teamId}]:`, schedErr.message);
@@ -142,7 +171,6 @@ export async function fetchNCAATeamStats(teamId) {
     const deanOliverPoss = fga - offReb + turnovers + 0.475 * fta;
     let offPoss, _possSource;
     if (espnPoss != null && espnPoss > 40 && espnPoss < 90) {
-      // ESPN provides per-game possessions directly
       offPoss = espnPoss;
       _possSource = "ESPN_REAL";
     } else {
@@ -154,7 +182,6 @@ export async function fetchNCAATeamStats(teamId) {
     // ── V20-4: Efficiency — prefer ESPN's pointsPerEstimatedPossessions ──
     let adjOE, adjDE, _effSource;
     if (espnPtsPer100 != null && espnPtsPer100 > 0.5 && espnPtsPer100 < 1.5) {
-      // ESPN gives points per possession (e.g. 1.12), convert to per-100
       adjOE = espnPtsPer100 * 100;
       adjDE = tempo > 0 ? (oppPpg / tempo) * 100 : 107.0;
       _effSource = "ESPN_PPP";
@@ -207,7 +234,6 @@ export async function fetchNCAATeamStats(teamId) {
       tempo, effSource: _effSource,
       adjOE: parseFloat(adjOE.toFixed(1)), adjDE: parseFloat(adjDE.toFixed(1)),
       adjEM: parseFloat(adjEM.toFixed(1)),
-      // ESPN real possession fields (null = not available)
       _espn_poss: espnPoss, _espn_ppp: espnPtsPer100,
       _raw_oppPpg_stat: getStat("avgPointsAllowed", "opponentPointsPerGame", "avgPointsAgainst"),
     });
@@ -865,12 +891,10 @@ export function applyKenPomRatings(teamStats, kenPomMap) {
   teamStats._kenPomEM = rating.adj_em;
 
   // V20-5: Backfill oppPpg from Railway if ESPN/schedule couldn't provide it
-  // This fixes adjDE for the Tier 3 SOS fallback path
   if (teamStats.oppPpg === 72.0 && rating.adj_opp_ppg != null && rating.adj_opp_ppg !== 72.0) {
     const oldOppPpg = teamStats.oppPpg;
     teamStats.oppPpg = rating.adj_opp_ppg;
     teamStats.ppgDiff = teamStats.ppg - teamStats.oppPpg;
-    // Recalculate adjDE with real oppPpg
     if (teamStats.tempo > 0) {
       teamStats.adjDE = (teamStats.oppPpg / teamStats.tempo) * 100;
       teamStats.adjEM = teamStats.adjOE - teamStats.adjDE;
