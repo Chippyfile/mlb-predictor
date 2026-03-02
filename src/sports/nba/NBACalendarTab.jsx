@@ -1,11 +1,12 @@
 // src/sports/nba/NBACalendarTab.jsx
+// v16 fixes: NBA-H3 (rest/travel in CalendarTab), NBA-M2 (wider ML caps), NBA-M6 (parlay prop)
 import { useState, useEffect, useCallback } from "react";
 import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, BetSignalsPanel } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
-import { nbaAutoSync } from "./nbaSync.js";
+import { nbaAutoSync, computeDaysRest } from "./nbaSync.js";
 import {
   fetchNBAGamesForDate,
   fetchNBATeamStats,
@@ -49,12 +50,21 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     if (uniqueNbaStats.length >= 10) computeLeagueAverages(uniqueNbaStats);
 
     const enriched = await Promise.all(allStatsPairs.map(async ({ game: g, hs, as_, nbaRealH, nbaRealA }) => {
+      // NBA-H3 FIX (v16): Compute rest + travel for CalendarTab predictions
+      // Previously these defaulted to homeDaysRest=2, awayDaysRest=2, missing
+      // the ±1.8–2.2 pt B2B penalties entirely for live predictions.
+      const homeDaysRest = hs ? computeDaysRest(hs, d) : 2;
+      const awayDaysRest = as_ ? computeDaysRest(as_, d) : 2;
+      const awayPrevCityAbbr = as_?.lastGameCity || null;
+
       const pred = hs && as_ ? nbaPredictGame({
         homeStats: hs, awayStats: as_,
         neutralSite: g.neutralSite,
         calibrationFactor,
         homeRealStats: nbaRealH, awayRealStats: nbaRealA,
         homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr,
+        homeDaysRest, awayDaysRest,
+        awayPrevCityAbbr,
       }) : null;
       const rawOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
       // ── ODDS NORMALIZATION ──
@@ -105,7 +115,9 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
         const MARGIN_WEIGHT = 0.70;
         const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
-        const blendedWinHome = Math.max(0.12, Math.min(0.88, rawBlended));
+        // NBA-M2 FIX (v16): Widened caps from [0.12, 0.88] to [0.08, 0.92]
+        // to match the wider caps in nbaPredictGame and allow edge detection on heavies
+        const blendedWinHome = Math.max(0.08, Math.min(0.92, rawBlended));
         const blendedWinAway = 1 - blendedWinHome;
         const ML_CAP = 500;
         const newModelML_home = blendedWinHome >= 0.5
@@ -250,7 +262,7 @@ export function NBASection({ nbaGames, setNbaGames, calibrationNBA, setCalibrati
       {tab === "calendar" && <NBACalendarTab calibrationFactor={calibrationNBA} onGamesLoaded={setNbaGames} />}
       {tab === "accuracy" && <AccuracyDashboard table="nba_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNBA} spreadLabel="Spread" />}
       {tab === "history" && <HistoryTab table="nba_predictions" refreshKey={refreshKey} />}
-      {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={nbaGames} />}
+      {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={[]} nbaGames={nbaGames} />}
     </div>
   );
 }

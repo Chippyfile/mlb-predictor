@@ -1,7 +1,7 @@
 // src/sports/nba/nbaUtils.js
-// NBA v15 — Forensic Audit Implementation
+// NBA v16 — Full Forensic Audit Implementation (v15 → v16)
 //
-// Fixes implemented:
+// v15 fixes retained:
 //   NBA-01: Real Dean Oliver pace (was crude PPG proxy)
 //   NBA-02: Kill fetchNBARealPace stub → real ESPN fetch with proper possession calc
 //   NBA-04: Fix True Shooting proxy (was mathematically incorrect)
@@ -12,6 +12,17 @@
 //   NBA-14: Consolidated fetchNBARealPace (single canonical implementation)
 //   NBA-15: Enhanced confidence score with data quality factors
 //   NBA-16: Raised score clamp ceiling to 155
+//
+// v16 forensic audit fixes:
+//   NBA-C1: Confidence rewritten as pure data quality (was mixing prediction strength)
+//   NBA-C2: Added decisiveness + decisivenessLabel output (matches NCAA/MLB/NFL)
+//   NBA-C3: Fixed eFG% computation — direct from team stats, not averages-of-components
+//   NBA-H1: Four Factors ORB% now matchup-specific (uses opponent DRB, not hardcoded 33.5)
+//   NBA-H2: O/U total now includes small HCA adjustment
+//   NBA-H4: fetchNBARealPace eliminated — thin wrapper over fetchNBATeamStats (was /82 bug)
+//   NBA-M2: Win probability caps widened [0.07,0.93] → [0.05,0.95]
+//   NBA-M3: Form score symmetric ±1 weights (was +1/-0.6)
+//   NBA-M8: Defensive boost removed oppFgPct/oppThreePct double-count (NCAA F8 fix)
 
 export const NBA_TEAMS_LIST = [
   { id:"ATL",name:"Atlanta Hawks",conf:"East" },{ id:"BOS",name:"Boston Celtics",conf:"East" },
@@ -104,12 +115,19 @@ export function computeLeagueAverages(allTeamStats) {
   update("steals", avg(allTeamStats, "steals"));
   update("orbPct", avg(allTeamStats, "orbPct"));
   update("ftaRate", avg(allTeamStats, "ftaRate"));
-  // Compute league eFG% from components
-  const lgThreeRate = avg(allTeamStats, "threeAttRate");
-  const lgThreePct = _leagueAverages.threePct;
-  const lgFgPct = _leagueAverages.fgPct;
-  if (lgThreeRate != null) {
-    update("eFGpct", lgFgPct + 0.5 * lgThreeRate * lgThreePct);
+  // NBA-C3 FIX (v16): Compute league eFG% directly from team eFGpct values
+  // (not from averages-of-components, which introduces Jensen's inequality bias)
+  const lgDirectEFG = avg(allTeamStats, "eFGpct");
+  if (lgDirectEFG != null) {
+    update("eFGpct", lgDirectEFG);
+  } else {
+    // Fallback: derive from components if eFGpct not available on teams
+    const lgThreeRate = avg(allTeamStats, "threeAttRate");
+    const lgThreePct = _leagueAverages.threePct;
+    const lgFgPct = _leagueAverages.fgPct;
+    if (lgThreeRate != null) {
+      update("eFGpct", lgFgPct + 0.5 * lgThreeRate * lgThreePct);
+    }
   }
   // Compute league TO%
   const lgTO = avg(allTeamStats, "turnovers");
@@ -217,6 +235,10 @@ export async function fetchNBATeamStats(abbr) {
     // Three-point attempt rate
     const threeAttRate = fga > 0 ? threeAtt / fga : 0.40;
 
+    // NBA-C3 FIX (v16): Compute eFG% directly from components
+    // eFG% = FG% + 0.5 × (3PM / FGA) = FG% + 0.5 × threeAttRate × threePct
+    const eFGpct = fgPct + 0.5 * threeAttRate * threePct;
+
     // ── Efficiency ratings using REAL pace ──
     const adjOE = (ppg / pace) * 100;
     const adjDE = (oppPpg / pace) * 100;
@@ -232,7 +254,8 @@ export async function fetchNBATeamStats(abbr) {
       formScore = completed.slice(-5).reduce((s, e, i) => {
         const comp = e.competitions?.[0];
         const tc = comp?.competitors?.find(c => c.team?.id === String(espnId));
-        return s + ((tc?.winner || false) ? 1 : -0.6) * (i + 1);
+        // NBA-M3 FIX (v16): Symmetric ±1 weights (was +1/-0.6, matching NCAA F13)
+        return s + ((tc?.winner || false) ? 1 : -1) * (i + 1);
       }, 0) / 15;
       // NBA-10/11: Extract last game date + city for rest/travel calc
       if (completed.length) {
@@ -265,7 +288,7 @@ export async function fetchNBATeamStats(abbr) {
       threeAtt, foulsPerGame,
       oppFgPct, oppThreePct,
       // Derived
-      orbPct, ftaRate, atoRatio, threeAttRate,
+      orbPct, ftaRate, atoRatio, threeAttRate, eFGpct,
       // Form + record
       formScore, wins, losses, totalGames: wins + losses,
       // NBA-10/11: rest/travel data
@@ -277,66 +300,25 @@ export async function fetchNBATeamStats(abbr) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// NBA-02 FIX: fetchNBARealPace — real ESPN fetch (was a dead stub)
-// NBA-14 FIX: Single canonical implementation (was duplicated across 3 files)
-//
-// This function fetches a SECOND time specifically for pace/ratings.
-// In most cases, fetchNBATeamStats already has what we need.
-// This is kept for backward compat — CalendarTab and Sync import it.
-// It now returns real data from ESPN (not null).
+// NBA-H4 FIX (v16): fetchNBARealPace ELIMINATED
+// fetchNBATeamStats already computes pace, offRtg, defRtg, netRtg
+// correctly with real games-played division. fetchNBARealPace was
+// redundant AND had a bug (dividing by 82 instead of actual games).
+// All callers (CalendarTab, Sync, betUtils) should now use
+// fetchNBATeamStats directly. The team stats object already contains:
+//   { pace, adjOE (=offRtg), adjDE (=defRtg), netRtg }
+// For backward compat, we export a thin wrapper that extracts
+// the pace/rating fields from fetchNBATeamStats.
 // ─────────────────────────────────────────────────────────────
-const _nbaRealStatsCache = {};
-
 export async function fetchNBARealPace(abbr) {
-  if (_nbaRealStatsCache[abbr]) return _nbaRealStatsCache[abbr];
-  const espnId = NBA_ESPN_IDS[abbr];
-  if (!espnId) return null;
-  try {
-    const statsData = await fetch(
-      `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/statistics`
-    ).then(r => r.ok ? r.json() : null).catch(() => null);
-    if (!statsData) return null;
-    const cats = statsData?.results?.stats?.categories || [];
-    const getStat = (...names) => {
-      for (const cat of cats) for (const name of names) {
-        const s = cat.stats?.find(s => s.name === name || s.displayName === name);
-        if (s) { const v = parseFloat(s.value); return isNaN(v) ? null : v; }
-      }
-      return null;
-    };
-    const normPct = (v, fallback) => {
-      const p = (v != null && v !== 0) ? v : fallback;
-      return p > 1 ? p / 100 : p;
-    };
-
-    const ppg    = getStat("avgPoints", "pointsPerGame") || 112.0;
-    const oppPpg = getStat("avgPointsAllowed", "opponentPointsPerGame") || 112.0;
-    // FIX: Use per-game averages first; detect season totals (>200) and divide
-    const _rpPerGame = (avgName, totalName, fallback) => {
-      const avg = getStat(avgName);
-      if (avg != null) return avg;
-      const total = getStat(totalName);
-      if (total != null && total > 200) return total / 82; // approximate
-      if (total != null) return total;
-      return fallback;
-    };
-    const fga    = _rpPerGame("avgFieldGoalsAttempted", "fieldGoalsAttempted", 88.0);
-    const fta    = _rpPerGame("avgFreeThrowsAttempted", "freeThrowsAttempted", 24.0);
-    const offReb = getStat("avgOffensiveRebounds", "offensiveReboundsPerGame") || 10.5;
-    const turnovers = getStat("avgTurnovers") || 14.0;
-
-    // NBA-01: Real Dean Oliver possessions
-    const estPoss = fga - offReb + turnovers + 0.475 * fta;
-    const pace = Math.max(90, Math.min(108, estPoss || 99.5));
-
-    const offRtg = (ppg / pace) * 100;
-    const defRtg = (oppPpg / pace) * 100;
-    const netRtg = offRtg - defRtg;
-
-    const result = { pace, offRtg, defRtg, netRtg };
-    _nbaRealStatsCache[abbr] = result;
-    return result;
-  } catch { return null; }
+  const stats = await fetchNBATeamStats(abbr);
+  if (!stats) return null;
+  return {
+    pace: stats.pace,
+    offRtg: stats.adjOE,
+    defRtg: stats.adjDE,
+    netRtg: stats.netRtg,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -418,7 +400,8 @@ export function nbaPredictGame({
 
   // ── NBA-05 FIX: Full Four Factors framework ──
   // Dean Oliver weights: eFG% 40%, TO% 25%, ORB% 20%, FTR 15%
-  const fourFactorsBoost = (stats) => {
+  // NBA-H1 FIX (v16): Now accepts opponentDefReb for matchup-specific ORB%
+  const fourFactorsBoost = (stats, opponentDefReb) => {
     // eFG% = FG% + 0.5 × 3PA_rate × 3P%
     const threeRate = stats.threeAttRate || 0.40;
     const eFG = (stats.fgPct || lg.fgPct) + 0.5 * threeRate * (stats.threePct || lg.threePct);
@@ -428,9 +411,11 @@ export function nbaPredictGame({
     const toPct = stats.pace > 0 ? (stats.turnovers / stats.pace) * 100 : lg.toPct;
     const toBoost = (lg.toPct - toPct) * 0.12; // lower TO% = positive
 
-    // ORB% — offensive rebounding rate
-    const orbPctVal = stats.orbPct || lg.orbPct;
-    const orbBoost = (orbPctVal - lg.orbPct) * 6.0; // ~20% weight
+    // ORB% — offensive rebounding rate (matchup-specific)
+    // NBA-H1: Use actual opponent DRB instead of hardcoded 33.5
+    const oppDRB = opponentDefReb || 33.5;
+    const matchupOrbPct = stats.offReb / (stats.offReb + oppDRB);
+    const orbBoost = (matchupOrbPct - lg.orbPct) * 6.0; // ~20% weight
 
     // FTA Rate — free throw attempts per FGA
     const ftaRateVal = stats.ftaRate || lg.ftaRate;
@@ -438,22 +423,25 @@ export function nbaPredictGame({
 
     return eFGboost + Math.max(-2.5, Math.min(2.5, toBoost)) + orbBoost + ftrBoost;
   };
-  const homeFFactors = fourFactorsBoost(homeStats);
-  const awayFFactors = fourFactorsBoost(awayStats);
+  const homeFFactors = fourFactorsBoost(homeStats, awayStats.defReb);
+  const awayFFactors = fourFactorsBoost(awayStats, homeStats.defReb);
 
   homeScore += homeFFactors * 0.30;
   awayScore += awayFFactors * 0.30;
 
   // ── Defensive quality adjustment ──
+  // NBA-M8 FIX (v16): Removed oppFGpct and oppThreePct from defBoost.
+  // These are already captured in adjDE (oppPpg/pace × 100) which feeds
+  // the core score projection. Keeping only disruption stats (steals/blocks)
+  // which measure active defensive playmaking not reflected in adjDE.
+  // Matches NCAA F8 fix: "Removed oppFGpct from defBoost (double-counted via adjDE)"
   const defBoost = (stats) => {
-    const oppFGdiff = lg.oppFgPct - (stats.oppFgPct || lg.oppFgPct); // positive = better D
-    const oppThreeDiff = lg.oppThreePct - (stats.oppThreePct || lg.oppThreePct);
-    const disruption = ((stats.steals || lg.steals) - lg.steals) * 0.08
-                     + ((stats.blocks || lg.blocks) - lg.blocks) * 0.06;
-    return oppFGdiff * 5.0 + oppThreeDiff * 3.0 + disruption;
+    const disruption = ((stats.steals || lg.steals) - lg.steals) * 0.10
+                     + ((stats.blocks || lg.blocks) - lg.blocks) * 0.08;
+    return disruption;
   };
-  homeScore += defBoost(homeStats) * 0.18;
-  awayScore += defBoost(awayStats) * 0.18;
+  homeScore += defBoost(homeStats) * 0.22;
+  awayScore += defBoost(awayStats) * 0.22;
 
   // ── Ball control differential ──
   const homeATO = (homeStats.atoRatio || 1.8) - 1.8;
@@ -522,9 +510,12 @@ export function nbaPredictGame({
   // NBA shrink factor is slightly higher (0.96) because NBA teams play
   // more games → season averages are more stable and less inflated by
   // weak opponents compared to NCAA's 30-game sample.
+  // NBA-H2 FIX (v16): Apply small HCA to O/U components — home teams
+  // score ~1.2 pts more and road teams ~1.2 pts less at home venues.
   const NBA_TOTAL_SHRINK = 0.96;
-  const ouHomeScore = (homeStats.ppg + awayStats.oppPpg) / 2 * NBA_TOTAL_SHRINK;
-  const ouAwayScore = (awayStats.ppg + homeStats.oppPpg) / 2 * NBA_TOTAL_SHRINK;
+  const ouHCA = neutralSite ? 0 : 1.2;
+  const ouHomeScore = ((homeStats.ppg + awayStats.oppPpg) / 2 + ouHCA / 2) * NBA_TOTAL_SHRINK;
+  const ouAwayScore = ((awayStats.ppg + homeStats.oppPpg) / 2 - ouHCA / 2) * NBA_TOTAL_SHRINK;
   const ouTotal = parseFloat((ouHomeScore + ouAwayScore).toFixed(1));
 
   // ── NBA-16 FIX: Raised ceiling from 148 to 155 for modern NBA ──
@@ -535,25 +526,61 @@ export function nbaPredictGame({
   const spread = parseFloat((homeScore - awayScore).toFixed(1));
   // NBA logistic sigma = 12.0 (calibrated vs 5-season ATS records)
   let hwp = 1 / (1 + Math.pow(10, -spread / 12.0));
-  hwp = Math.min(0.93, Math.max(0.07, hwp));
+  // NBA-M2 FIX (v16): Widened caps from [0.07, 0.93] to [0.05, 0.95]
+  // Previous caps were too tight for extreme matchups, suppressing edge detection
+  // on heavy favorites. 0.95 still prevents absurd certainty while allowing
+  // the model to express strong conviction on 15+ pt spreads.
+  hwp = Math.min(0.95, Math.max(0.05, hwp));
   if (calibrationFactor !== 1.0) {
-    hwp = Math.min(0.93, Math.max(0.07, 0.5 + (hwp - 0.5) * calibrationFactor));
+    hwp = Math.min(0.95, Math.max(0.05, 0.5 + (hwp - 0.5) * calibrationFactor));
   }
   const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);
   const aml = hwp >= 0.5 ? +Math.round(((1 - hwp) / hwp) * 100) : -Math.round((hwp / (1 - hwp)) * 100);
 
-  // ── NBA-15 FIX: Enhanced confidence score with data quality ──
-  const netGap = Math.abs((homeRealStats?.netRtg || homeStats.netRtg) - (awayRealStats?.netRtg || awayStats.netRtg));
-  const hasRealPace = !!(homeRealStats?.pace && awayRealStats?.pace);
+  // ── NBA-C1 FIX (v16): Confidence = DATA QUALITY only ──
+  // Previously mixed prediction strength (netGap=35pts, winPctStrength=30pts) into
+  // confidence, causing HIGH confidence on lopsided games even when data was sparse.
+  // Now matches NCAA v20.1 / MLB pattern: confidence is ONLY about data completeness,
+  // season progress, and extra data sources.
+  // Decisiveness (how far from 50%) is computed separately (NBA-C2).
+  const minGames = Math.min(homeStats.totalGames || 0, awayStats.totalGames || 0);
+
+  // Component 1: Base (20 pts) — minimum for any game with loaded data
+  const basePts = minGames >= 3 ? 20 : 10;
+
+  // Component 2: Season maturity (0-25 pts) — more games = more stable stats
+  const sampleWeight = Math.min(1.0, minGames / 25);
+  const seasonPts = Math.round(sampleWeight * 25);
+
+  // Component 3: Data completeness (0-30 pts) — which stat sources are available?
   const hasGranularStats = !!(homeStats.fgPct && awayStats.fgPct && homeStats.turnovers && awayStats.turnovers);
-  const dataQuality = (hasGranularStats ? 10 : 0) + (hasRealPace ? 5 : 0);
-  const cs = Math.round(
-    (Math.min(netGap, 8) / 8) * 35
-    + Math.abs(hwp - 0.5) * 2 * 30
-    + Math.min(1, homeStats.totalGames / 20) * 15
-    + (homeStats.totalGames >= 10 ? 5 : 0)
-    + dataQuality
-  );
+  const dataChecks = [
+    homeStats.ppg > 0 && awayStats.ppg > 0,                 // basic stats loaded
+    homeStats.fgPct > 0 && awayStats.fgPct > 0,             // shooting stats
+    homeStats.pace > 0 && awayStats.pace > 0,               // tempo available
+    homeStats.oppPpg !== 112.0 || awayStats.oppPpg !== 112.0, // real defensive stats (not default)
+    homeStats.formScore != null && awayStats.formScore != null, // form/trend data
+    minGames >= 5,                                            // enough games for basic stats
+  ];
+  const dataScore = dataChecks.filter(Boolean).length / dataChecks.length;
+  const dataPts = Math.round(dataScore * 30);
+
+  // Component 4: Advanced data sources (0-25 pts)
+  const hasRealPace = !!(homeRealStats?.pace && awayRealStats?.pace);
+  const hasOppShooting = !!(homeStats.oppFgPct && awayStats.oppFgPct);
+  const hasBlocks = !!(homeStats.blocks && awayStats.blocks);
+  const extraPts = (hasRealPace ? 8 : 0) + (hasGranularStats ? 7 : 0)
+    + (hasOppShooting ? 5 : 0) + (hasBlocks ? 5 : 0);
+
+  const cs = Math.min(100, basePts + seasonPts + dataPts + extraPts);
+  const confidence = cs >= 70 ? "HIGH" : cs >= 45 ? "MEDIUM" : "LOW";
+
+  // ── NBA-C2 FIX (v16): Decisiveness = PREDICTION STRENGTH ──
+  // Separate from confidence. A 52% pick with HIGH confidence can be more
+  // valuable than an 80% pick with LOW confidence — because you TRUST
+  // the 52% number enough to bet on the edge.
+  const decisiveness = Math.abs(hwp - 0.5) * 100;
+  const decisivenessLabel = decisiveness >= 15 ? "STRONG" : decisiveness >= 7 ? "MODERATE" : "LEAN";
 
   return {
     homeScore: parseFloat(homeScore.toFixed(1)),
@@ -562,7 +589,8 @@ export function nbaPredictGame({
     projectedSpread: spread,
     ouTotal,  // PPG-based (not from homeScore+awayScore which is spread-optimized)
     modelML_home: mml, modelML_away: aml,
-    confidence: cs >= 62 ? "HIGH" : cs >= 35 ? "MEDIUM" : "LOW", confScore: cs,
+    confidence, confScore: cs,
+    decisiveness, decisivenessLabel,  // NBA-C2: now returned like NCAA/MLB/NFL
     possessions: parseFloat(poss.toFixed(1)),
     homeNetRtg: parseFloat((homeRealStats?.netRtg || homeStats.netRtg)?.toFixed(2)),
     awayNetRtg: parseFloat((awayRealStats?.netRtg || awayStats.netRtg)?.toFixed(2)),

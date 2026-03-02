@@ -1,11 +1,15 @@
 // src/sports/nba/nbaSync.js
-// NBA v15 — Forensic Audit Implementation
+// NBA v16 — Forensic Audit Implementation
 //
-// Fixes implemented:
+// v15 fixes retained:
 //   NBA-07: Persist 30+ raw stat columns to Supabase for ML training
 //   NBA-10: Real B2B rest detection from schedule data
 //   NBA-11: Real travel distance from previous game city
 //   NBA-14: Uses canonical fetchNBARealPace from nbaUtils (not local copy)
+//
+// v16 fixes:
+//   NBA-H3: computeDaysRest now exported for CalendarTab use
+//   NBA-H4: fetchNBARealPace import retained (now thin wrapper in nbaUtils)
 
 import { supabaseQuery } from "../../utils/supabase.js";
 import { fetchOdds } from "../../utils/sharedUtils.js";
@@ -27,8 +31,9 @@ const _sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ─────────────────────────────────────────────────────────────
 // NBA-10 FIX: Compute real days of rest from schedule data
+// NBA-H3 FIX (v16): Now exported so CalendarTab can use it too
 // ─────────────────────────────────────────────────────────────
-function computeDaysRest(teamStats, gameDateStr) {
+export function computeDaysRest(teamStats, gameDateStr) {
   if (!teamStats?.lastGameDate || !gameDateStr) return 2; // safe default
   try {
     const lastDate = new Date(teamStats.lastGameDate);

@@ -4,7 +4,7 @@
 import { computeAccuracy } from "./sharedUtils.js";
 import { mlbPredictGame } from "../sports/mlb/mlb.js";
 import { ncaaPredictGame } from "../sports/ncaa/ncaaUtils.js";
-import { nbaPredictGame, NBA_ESPN_IDS } from "../sports/nba/nbaUtils.js";
+import { nbaPredictGame, NBA_ESPN_IDS, fetchNBARealPace, NBA_CITY_COORDS, haversineDistance } from "../sports/nba/nbaUtils.js";
 import { nflPredictGame } from "../sports/nfl/nflUtils.js";
 import { ncaafPredictGame } from "../sports/ncaaf/ncaafUtils.js";
 
@@ -234,61 +234,12 @@ export const ncaaPredictGameEnhanced = (params) => {
 };
 
 // ═══════════════════════════════════════════════════════════════
-// SECTION 4 — NBA ENHANCEMENTS
+// SECTION 4 — NBA ENHANCEMENTS (v16)
+// NBA-M5 FIX: Eliminated duplicate fetchNBARealPace, NBA_CITY_COORDS,
+// haversineDistance. Now imported from nbaUtils.js.
+// The old betUtils copy had a CRITICAL bug: used crude PPG proxy
+// formula (96 + (ppg - 110) * 0.3) instead of Dean Oliver possessions.
 // ═══════════════════════════════════════════════════════════════
-
-const _nbaRealStatsCache = {};
-
-export async function fetchNBARealPace(abbr) {
-  if (_nbaRealStatsCache[abbr]) return _nbaRealStatsCache[abbr];
-  const espnId = NBA_ESPN_IDS[abbr];
-  if (!espnId) return null;
-  try {
-    const statsData = await fetch(
-      `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/${espnId}/statistics`
-    ).then(r => r.ok ? r.json() : null).catch(() => null);
-    const cats = statsData?.results?.stats?.categories || [];
-    const getStat = (...names) => {
-      for (const cat of cats) for (const name of names) {
-        const s = cat.stats?.find(s => s.name === name || s.displayName === name);
-        if (s) { const v = parseFloat(s.value); return isNaN(v) ? null : v; }
-      }
-      return null;
-    };
-    const ppg    = getStat("avgPoints", "pointsPerGame") || 112.0;
-    const oppPpg = getStat("avgPointsAllowed", "opponentPointsPerGame") || 112.0;
-    const estPace = 96 + (ppg - 110) * 0.3;
-    const pace    = Math.max(92, Math.min(105, estPace));
-    const offRtg  = (ppg    / pace) * 100;
-    const defRtg  = (oppPpg / pace) * 100;
-    const netRtg  = offRtg - defRtg;
-    const result  = { pace, offRtg, defRtg, netRtg };
-    _nbaRealStatsCache[abbr] = result;
-    return result;
-  } catch { return null; }
-}
-
-export const NBA_CITY_COORDS = {
-  ATL:{lat:33.7,lng:-84.4},BOS:{lat:42.4,lng:-71.1},BKN:{lat:40.7,lng:-74.0},
-  CHA:{lat:35.2,lng:-80.8},CHI:{lat:41.9,lng:-87.6},CLE:{lat:41.5,lng:-81.7},
-  DAL:{lat:32.8,lng:-97.0},DEN:{lat:39.8,lng:-105.0},DET:{lat:42.3,lng:-83.0},
-  GSW:{lat:37.8,lng:-122.4},HOU:{lat:29.7,lng:-95.4},IND:{lat:39.8,lng:-86.2},
-  LAC:{lat:34.0,lng:-118.3},LAL:{lat:34.0,lng:-118.3},MEM:{lat:35.1,lng:-90.0},
-  MIA:{lat:25.8,lng:-80.2},MIL:{lat:43.0,lng:-87.9},MIN:{lat:44.9,lng:-93.2},
-  NOP:{lat:29.9,lng:-90.1},NYK:{lat:40.8,lng:-74.0},OKC:{lat:35.5,lng:-97.5},
-  ORL:{lat:28.5,lng:-81.4},PHI:{lat:40.0,lng:-75.2},PHX:{lat:33.4,lng:-112.1},
-  POR:{lat:45.5,lng:-122.7},SAC:{lat:38.6,lng:-121.5},SAS:{lat:29.4,lng:-98.4},
-  TOR:{lat:43.6,lng:-79.4},UTA:{lat:40.8,lng:-111.9},WAS:{lat:38.9,lng:-77.0},
-};
-
-export function haversineDistance(abbr1, abbr2) {
-  const c1 = NBA_CITY_COORDS[abbr1], c2 = NBA_CITY_COORDS[abbr2];
-  if (!c1 || !c2) return 1000;
-  const R = 3959, toRad = d => d * Math.PI / 180;
-  const dLat = toRad(c2.lat - c1.lat), dLng = toRad(c2.lng - c1.lng);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(c1.lat)) * Math.cos(toRad(c2.lat)) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
 
 export function nbaRestTravelAdj(homeAbbr, awayAbbr, homeDaysRest, awayDaysRest, awayPrevCityAbbr = null) {
   let homeAdj = 0, awayAdj = 0;
