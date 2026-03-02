@@ -379,8 +379,17 @@ export function ncaaPredictGame({
     }
     // When using additive KenPom formula, keep values in KenPom scale (109.7 avg).
     // No rescaling needed — the additive formula handles the scale internally.
+    // FIX #5: One-shot KenPom logging — prevent triple-logging per game.
+    // ncaaPredictGame is called multiple times (display, ML payload, MC setup).
     const src = homeOppAdj.homeOE != null && !neutralSite ? 'KENPOM-VENUE' : 'KENPOM';
-    console.log(`📊 ${src}: Home ${homeStats.abbr} OE=${homeAdjOE.toFixed(1)} DE=${homeAdjDE.toFixed(1)} | Away ${awayStats.abbr} OE=${awayAdjOE.toFixed(1)} DE=${awayAdjDE.toFixed(1)}`);
+    const _logKey = `${homeStats.teamId}-${awayStats.teamId}`;
+    if (!ncaaPredictGame._loggedGames) ncaaPredictGame._loggedGames = new Set();
+    if (!ncaaPredictGame._loggedGames.has(_logKey)) {
+      ncaaPredictGame._loggedGames.add(_logKey);
+      console.log(`📊 ${src}: Home ${homeStats.abbr} OE=${homeAdjOE.toFixed(1)} DE=${homeAdjDE.toFixed(1)} | Away ${awayStats.abbr} OE=${awayAdjOE.toFixed(1)} DE=${awayAdjDE.toFixed(1)}`);
+      // Clear after 60s to allow re-logging on page refresh
+      setTimeout(() => ncaaPredictGame._loggedGames?.delete(_logKey), 60000);
+    }
   } else {
     // Tier 3: SOS regression fallback (no KenPom data)
     const sosMultiplier = 3.5;
@@ -514,9 +523,16 @@ export function ncaaPredictGame({
   const decisiveness = Math.abs(homeWinPct - 0.5) * 100;
   const decisivenessLabel = decisiveness >= 15 ? "STRONG" : decisiveness >= 7 ? "MODERATE" : "LEAN";
 
-  const emGap = Math.abs(homeStats.adjEM - awayStats.adjEM);
+  // FIX #4: Use KenPom EM when available (same source as display/prediction).
+  // Previously used homeStats.adjEM (ESPN-derived) while display showed _kenPomEM,
+  // causing elite matchups like #3 vs #8 to show LOW confidence.
+  const effectiveHomeEM = homeStats._kenPomEM ?? homeStats.adjEM;
+  const effectiveAwayEM = awayStats._kenPomEM ?? awayStats.adjEM;
+  const emGap = Math.abs(effectiveHomeEM - effectiveAwayEM);
   const winPctStrength = Math.abs(homeWinPct - 0.5) * 2;
-  const minGames = Math.min(homeStats.totalGames, awayStats.totalGames);
+  const homeGames = homeStats._oppAdj?.totalGames || homeStats.totalGames;
+  const awayGames = awayStats._oppAdj?.totalGames || awayStats.totalGames;
+  const minGames = Math.min(homeGames, awayGames);
   const sampleWeight = Math.min(1.0, minGames / 15);
   const hasData = minGames >= 5 ? 1 : 0;
   const confScore = Math.round(
@@ -524,12 +540,16 @@ export function ncaaPredictGame({
   );
   const confidence = confScore >= 62 ? "HIGH" : confScore >= 35 ? "MEDIUM" : "LOW";
 
+  // FIX #3: Round scores first, then compute ouTotal from rounded values
+  // so displayed individual scores always sum to the displayed O/U.
+  const finalHome = parseFloat(homeScore.toFixed(1));
+  const finalAway = parseFloat(awayScore.toFixed(1));
   return {
-    homeScore: parseFloat(homeScore.toFixed(1)),
-    awayScore: parseFloat(awayScore.toFixed(1)),
+    homeScore: finalHome,
+    awayScore: finalAway,
     homeWinPct, awayWinPct: 1 - homeWinPct,
     projectedSpread: spread,
-    ouTotal: parseFloat((homeScore + awayScore).toFixed(1)),
+    ouTotal: parseFloat((finalHome + finalAway).toFixed(1)),
     modelML_home, modelML_away, confidence, confScore,
     decisiveness: parseFloat(decisiveness.toFixed(1)),
     decisivenessLabel,

@@ -14,7 +14,7 @@ export default function MonteCarloPanel({ mc }) {
 
       <div style={{ display: "flex", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 10, color: "#3fb950" }}>Home Win: {(mc.home_win_pct * 100).toFixed(1)}%</span>
-        <span style={{ fontSize: 10, color: "#f85149" }}>Away Win: {(mc.away_win_pct * 100).toFixed(1)}%</span>
+        <span style={{ fontSize: 10, color: "#f85149" }}>Away Win: {(100 - parseFloat((mc.home_win_pct * 100).toFixed(1))).toFixed(1)}%</span>
         <span style={{ fontSize: 10, color: "#c9d1d9" }}>Avg Margin: {mc.avg_margin > 0 ? "+" : ""}{mc.avg_margin?.toFixed(1)}</span>
         <span style={{ fontSize: 10, color: "#c9d1d9" }}>Avg Total: {mc.avg_total?.toFixed(1)}</span>
         {mc.over_pct != null && (

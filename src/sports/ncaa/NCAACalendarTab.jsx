@@ -233,8 +233,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     <Kv k="Possessions" v={game.pred.possessions.toFixed(1)} />
                     {game.homeStats && <Kv k={`${hName} Adj EM`} v={`${game.pred.homeAdjEM}${game.homeStats._kenPomRank ? ` (#${game.homeStats._kenPomRank})` : ''}`} />}
                     {game.awayStats && <Kv k={`${aName} Adj EM`} v={`${game.pred.awayAdjEM}${game.awayStats._kenPomRank ? ` (#${game.awayStats._kenPomRank})` : ''}`} />}
-                    {game.homeStats && <Kv k={`${hName} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
-                    {game.awayStats && <Kv k={`${aName} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
+                    {game.homeStats && <Kv k={`${hName} Avg PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${aName} Avg PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
                     <Kv k="Ratings" v={`${game.pred.ratingsSource || 'SOS'}${game.pred.venueAware ? ' + H/A' : ''}`} />
                     {game.neutralSite && <Kv k="Site" v="Neutral" />}
