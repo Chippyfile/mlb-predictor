@@ -206,9 +206,18 @@ export async function mlbFillFinalScores(pendingRows, oddsData) {
             ? (spread > 1.5 ? true : spread < -1.5 ? false : null)
             : (spread < -1.5 ? true : spread > 1.5 ? false : null);
           const total = homeScore + awayScore;
-          const ou_correct = matchedRow.ou_total
-            ? (total > matchedRow.ou_total ? "OVER" : total < matchedRow.ou_total ? "UNDER" : "PUSH")
-            : null;
+          // FIX: O/U grading now checks if MODEL's prediction matched actual direction
+          // Previous code just stored the actual result ("OVER"/"UNDER"), not model correctness
+          const ouLine = matchedRow.market_ou_total ?? matchedRow.ou_total ?? null;
+          const predTotal = (matchedRow.pred_home_runs ?? 0) + (matchedRow.pred_away_runs ?? 0);
+          let ou_correct = null;
+          if (ouLine && total !== ouLine && predTotal) {
+            const actualOver = total > ouLine;
+            const modelOver = predTotal > ouLine;
+            ou_correct = actualOver === modelOver ? (actualOver ? "OVER" : "UNDER") : null;
+          } else if (ouLine && total === ouLine) {
+            ou_correct = "PUSH";
+          }
 
           // Step 6: Capture closing lines for today's finished games
           let closingFields = {};
@@ -284,15 +293,22 @@ export async function mlbRegradeAllResults(onProgress) {
       ? (spread > 1.5 ? true : spread < -1.5 ? false : null)
       : (spread < -1.5 ? true : spread > 1.5 ? false : null);
     const total = homeScore + awayScore;
-    let ouTotal = row.ou_total;
-    if (row.pred_home_runs && row.pred_away_runs) {
-      ouTotal = parseFloat((parseFloat(row.pred_home_runs) + parseFloat(row.pred_away_runs)).toFixed(1));
+    const ouLine = row.market_ou_total ?? row.ou_total ?? null;
+    const predTotal = row.pred_home_runs && row.pred_away_runs
+      ? parseFloat(row.pred_home_runs) + parseFloat(row.pred_away_runs)
+      : null;
+    let ou_correct = null;
+    if (ouLine && total !== ouLine && predTotal) {
+      const actualOver = total > ouLine;
+      const modelOver = predTotal > ouLine;
+      ou_correct = actualOver === modelOver ? (actualOver ? "OVER" : "UNDER") : null;
+    } else if (ouLine && total === ouLine) {
+      ou_correct = "PUSH";
     }
-    const ou_correct = ouTotal ? (total > ouTotal ? "OVER" : total < ouTotal ? "UNDER" : "PUSH") : null;
     await supabaseQuery(`/mlb_predictions?id=eq.${row.id}`, "PATCH", {
       ml_correct, rl_correct, ou_correct,
       win_pct_home: parseFloat(winPctHome.toFixed(4)),
-      ou_total: ouTotal,
+      ou_total: predTotal ?? ouLine,
     });
     fixed++;
   }
