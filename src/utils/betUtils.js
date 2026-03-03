@@ -129,7 +129,7 @@ async function _processWeatherQueue() {
 async function _fetchWeatherOnce(teamId, cacheKey, attempt = 0) {
   const coords = PARK_COORDINATES[teamId];
   if (!coords) return null;
-  const url = const url = `/api/weather?latitude=${coords.lat}&longitude=${coords.lng}`;
+  const url = `/api/weather?latitude=${coords.lat}&longitude=${coords.lng}`;
   const res = await fetch(url);
   if (res.status === 429) {
     if (attempt < 1) {
