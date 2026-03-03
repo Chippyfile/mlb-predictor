@@ -102,6 +102,9 @@ export async function ncaafAutoSync(onProgress) {
         key_factors:      pred.factors,
         ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
         ...(odds?.marketTotal      != null && { market_ou_total:    odds.marketTotal }),
+        // CLV: Opening moneylines captured at prediction time
+        ...(odds?.homeML           != null && { opening_home_ml:    odds.homeML }),
+        ...(odds?.awayML           != null && { opening_away_ml:    odds.awayML }),
       };
     }))).filter(Boolean);
 

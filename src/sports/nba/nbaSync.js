@@ -109,15 +109,16 @@ export async function nbaFillFinalScores(pendingRows) {
         if (closingOdds?.length) {
           const match = closingOdds.find(o => matchNBAOddsToGame(o, g));
           if (match) {
-            if (match.homeOdds) updateObj.closing_home_ml = match.homeOdds;
-            if (match.awayOdds) updateObj.closing_away_ml = match.awayOdds;
+            // FIX: odds.js returns homeML/awayML, not homeOdds/awayOdds
+            if (match.homeML) updateObj.closing_home_ml = match.homeML;
+            if (match.awayML) updateObj.closing_away_ml = match.awayML;
             if (match.marketTotal != null) updateObj.closing_ou_total = match.marketTotal;
             // CLV computation
             const betSide = (row.win_pct_home ?? 0.5) >= 0.5 ? "home" : "away";
             const betML = betSide === "home"
               ? (row.opening_home_ml ?? null)
               : (row.opening_away_ml ?? null);
-            const closeML = betSide === "home" ? match.homeOdds : match.awayOdds;
+            const closeML = betSide === "home" ? match.homeML : match.awayML;
             if (betML && closeML) {
               const clvResult = calcCLV(betML, closeML);
               if (clvResult) {
@@ -201,8 +202,9 @@ export async function nbaAutoSync(onProgress) {
         ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
         ...(odds?.marketTotal != null && { market_ou_total: odds.marketTotal }),
         // ── CLV: Opening lines captured at prediction time ──
-        ...(odds?.homeOdds != null && { opening_home_ml: odds.homeOdds }),
-        ...(odds?.awayOdds != null && { opening_away_ml: odds.awayOdds }),
+        // FIX: odds.js returns homeML/awayML, not homeOdds/awayOdds
+        ...(odds?.homeML != null && { opening_home_ml: odds.homeML }),
+        ...(odds?.awayML != null && { opening_away_ml: odds.awayML }),
         // ══════════════════════════════════════════════════════
         // NBA-07 FIX: Raw stats persisted for ML training
         // (mirrors NCAAB ncaaSync.js pattern — 30+ columns)

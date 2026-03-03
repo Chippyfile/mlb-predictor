@@ -152,8 +152,9 @@ export async function nflFillFinalScores(pendingRows) {
           if (closingMatch) {
             if (closingMatch.marketSpreadHome != null) updateObj.closing_spread_home = closingMatch.marketSpreadHome;
             if (closingMatch.marketTotal != null) updateObj.closing_ou_total = closingMatch.marketTotal;
-            if (closingMatch.homeOdds) updateObj.closing_home_ml = closingMatch.homeOdds;
-            if (closingMatch.awayOdds) updateObj.closing_away_ml = closingMatch.awayOdds;
+            // FIX: odds.js returns homeML/awayML, not homeOdds/awayOdds
+            if (closingMatch.homeML) updateObj.closing_home_ml = closingMatch.homeML;
+            if (closingMatch.awayML) updateObj.closing_away_ml = closingMatch.awayML;
           }
         }
 
@@ -258,11 +259,11 @@ export async function nflAutoSync(onProgress) {
         key_factors: pred.factors,
         // N-03: Raw stats for ML
         ...rawStats,
-        // Odds
+        // Odds — FIX: odds.js returns homeML/awayML, not homeOdds/awayOdds
         ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
         ...(odds?.marketTotal      != null && { market_ou_total:    odds.marketTotal }),
-        ...(odds?.homeOdds         != null && { opening_home_ml:    odds.homeOdds }),
-        ...(odds?.awayOdds         != null && { opening_away_ml:    odds.awayOdds }),
+        ...(odds?.homeML           != null && { opening_home_ml:    odds.homeML }),
+        ...(odds?.awayML           != null && { opening_away_ml:    odds.awayML }),
       };
     }))).filter(Boolean);
 
