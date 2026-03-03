@@ -129,7 +129,7 @@ async function _processWeatherQueue() {
 async function _fetchWeatherOnce(teamId, cacheKey, attempt = 0) {
   const coords = PARK_COORDINATES[teamId];
   if (!coords) return null;
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${coords.lat}&longitude=${coords.lng}&current_weather=true&hourly=temperature_2m,windspeed_10m&forecast_days=1`;
+  const url = const url = `/api/weather?latitude=${coords.lat}&longitude=${coords.lng}`;
   const res = await fetch(url);
   if (res.status === 429) {
     if (attempt < 1) {
