@@ -6,7 +6,7 @@ import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
-import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
+import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, normalizeNCAAOdds, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
 
 // Season start (Nov 1 of prior year) — keep in sync with ncaaSync.js
@@ -49,7 +49,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 16.0;
       const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
       const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null;
-      const gameOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
+      const rawOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
+      const gameOdds = normalizeNCAAOdds(rawOdds, g);
       let mlResult = null, mcResult = null;
       if (pred) {
         // Run ML prediction first

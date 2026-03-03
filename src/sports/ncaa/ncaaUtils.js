@@ -600,19 +600,57 @@ export function ncaaPredictGame({
   };
 }
 
-// ── F26: Improved odds matching ──
+// ── F26: Improved odds matching (with home/away swap detection) ──
 export function matchNCAAOddsToGame(oddsGame, espnGame) {
-  const normalize = s => s?.toLowerCase().replace(/[^a-z0-9]/g, "") || "";
-  const h1 = normalize(oddsGame.homeTeam), h2 = normalize(espnGame.homeTeamName || espnGame.homeAbbr);
-  const a1 = normalize(oddsGame.awayTeam), a2 = normalize(espnGame.awayTeamName || espnGame.awayAbbr);
+  const normalize = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const oddsH = normalize(oddsGame.homeTeam);
+  const oddsA = normalize(oddsGame.awayTeam);
+  const espnH = normalize(espnGame.homeTeamName || espnGame.homeAbbr);
+  const espnA = normalize(espnGame.awayTeamName || espnGame.awayAbbr);
   const minLen = 5;
-  const match = (s1, s2) => {
+  const fuzzy = (s1, s2) => {
     if (!s1 || !s2) return false;
     const sub = Math.min(minLen, s1.length, s2.length);
     return s1.includes(s2.slice(0, sub)) || s2.includes(s1.slice(0, sub));
   };
-  if (match(h1, h2) && match(a1, a2)) return true;
+  // Normal match: odds home = ESPN home, odds away = ESPN away
+  if (fuzzy(oddsH, espnH) && fuzzy(oddsA, espnA)) return true;
+  // Swapped match: odds home = ESPN away, odds away = ESPN home
+  if (fuzzy(oddsH, espnA) && fuzzy(oddsA, espnH)) return true;
   return false;
+}
+
+// ── Normalize odds to match ESPN home/away designation ──
+// Detects when The Odds API and ESPN disagree on home/away
+// and flips ML, spread accordingly. Mirrors NBA swap logic.
+export function normalizeNCAAOdds(rawOdds, espnGame) {
+  if (!rawOdds) return null;
+  const normalize = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const oddsHome = normalize(rawOdds.homeTeam);
+  const espnHome = normalize(espnGame.homeTeamName || espnGame.homeAbbr);
+  const espnAway = normalize(espnGame.awayTeamName || espnGame.awayAbbr);
+  const minLen = 5;
+  const fuzzy = (s1, s2) => {
+    if (!s1 || !s2) return false;
+    const sub = Math.min(minLen, s1.length, s2.length);
+    return s1.includes(s2.slice(0, sub)) || s2.includes(s1.slice(0, sub));
+  };
+  const homeMatchesHome = fuzzy(oddsHome, espnHome);
+  const homeMatchesAway = fuzzy(oddsHome, espnAway);
+  const isSwapped = !homeMatchesHome && homeMatchesAway;
+  if (isSwapped) {
+    console.warn(`⚠️ NCAA ODDS SWAP: Odds="${rawOdds.homeTeam}" vs ESPN="${espnGame.homeTeamName}"`);
+  }
+  return {
+    ...rawOdds,
+    homeML: isSwapped ? rawOdds.awayML : rawOdds.homeML,
+    awayML: isSwapped ? rawOdds.homeML : rawOdds.awayML,
+    homeSpread: isSwapped ? -(rawOdds.marketSpreadHome ?? null) : (rawOdds.marketSpreadHome ?? null),
+    marketSpreadHome: isSwapped ? -(rawOdds.marketSpreadHome ?? null) : (rawOdds.marketSpreadHome ?? null),
+    ouLine: rawOdds.marketTotal ?? null,
+    marketTotal: rawOdds.marketTotal ?? null,
+    _swapped: isSwapped,
+  };
 }
 
 
