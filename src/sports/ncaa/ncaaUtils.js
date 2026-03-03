@@ -456,10 +456,24 @@ export function ncaaPredictGame({
   const additiveLgAvg = usingKenPom ? 109.7 : lgAvgOE;
   const homeOffVsAwayDef = homeAdjOE + awayAdjDE - additiveLgAvg;
   const awayOffVsHomeDef = awayAdjOE + homeAdjDE - additiveLgAvg;
+
+  // FIX 3: Amplify supplementary boosts for blowout matchups (EM gap >= 15).
+  // In competitive games, conservative multipliers (0.35, 0.20) prevent noise
+  // from dominating. But in blowouts, these same caps mean the model can't
+  // accumulate enough signal to match Vegas spreads of 20-30+ pts.
+  // Gate on EM gap (available pre-projection) rather than win probability
+  // to avoid chicken-and-egg dependency.
+  const homeEM = homeStats._kenPomEM ?? homeStats.adjEM ?? 0;
+  const awayEM = awayStats._kenPomEM ?? awayStats.adjEM ?? 0;
+  const emGap = Math.abs(homeEM - awayEM);
+  // Scale factor: 1.0 for EM gap < 15, ramps to 1.5 at EM gap 30+
+  // Smooth ramp avoids a hard discontinuity at the threshold
+  const blowoutScale = emGap >= 15 ? Math.min(1.5, 1.0 + (emGap - 15) / 30) : 1.0;
+
   let homeScore = (homeOffVsAwayDef / 100) * possessions
-    + homeFFactors * 0.35 + homeDefBoost * 0.20 + atoBoost * 0.5 + toMarginBoost * 0.5;
+    + homeFFactors * 0.35 * blowoutScale + homeDefBoost * 0.20 * blowoutScale + atoBoost * 0.5 + toMarginBoost * 0.5;
   let awayScore = (awayOffVsHomeDef / 100) * possessions
-    + awayFFactors * 0.35 + awayDefBoost * 0.20 - atoBoost * 0.5 - toMarginBoost * 0.5;
+    + awayFFactors * 0.35 * blowoutScale + awayDefBoost * 0.20 * blowoutScale - atoBoost * 0.5 - toMarginBoost * 0.5;
 
   // ── Home court advantage ──
   // When using venue-aware KenPom splits, the home OE/DE already captures
@@ -487,17 +501,21 @@ export function ncaaPredictGame({
   awayScore += awayStats.formScore * formWeight * 4.0;
 
   // ── Safety cap: prevent unrealistic game totals ──
-  // NCAA D1 game totals rarely exceed 190 (even Florida's elite offense at
-  // 124 adjOE with ~72 possessions produces ~87 pts per team ≈ 174 total).
-  // Totals above 190 strongly indicate a data quality issue upstream.
-  // Scale both scores down proportionally to preserve the spread.
+  // NCAA D1 game totals rarely exceed 190 in actual results.
+  // Totals above 190 indicate upstream data inflation (adjOE matchup formula
+  // is spread-optimized and systematically inflates totals by ~35 pts).
+  // FIX: Preserve the spread while capping the total. The old proportional
+  // scaling (homeScore *= factor, awayScore *= factor) compressed spreads
+  // in blowout matchups — e.g., a 30-pt spread could lose 1-2 pts.
+  // New approach: keep spread intact, recenter around capped midpoint.
   const rawTotal = homeScore + awayScore;
   const maxRealisticTotal = 190;
   if (rawTotal > maxRealisticTotal) {
-    const scaleFactor = maxRealisticTotal / rawTotal;
-    homeScore *= scaleFactor;
-    awayScore *= scaleFactor;
-    console.warn(`⚠️ NCAA total ${rawTotal.toFixed(0)} capped to ${maxRealisticTotal} (scale=${scaleFactor.toFixed(3)})`);
+    const currentSpread = homeScore - awayScore;
+    const cappedMidpoint = maxRealisticTotal / 2;
+    homeScore = cappedMidpoint + currentSpread / 2;
+    awayScore = cappedMidpoint - currentSpread / 2;
+    console.warn(`⚠️ NCAA total ${rawTotal.toFixed(0)} capped to ${maxRealisticTotal} (spread preserved: ${currentSpread.toFixed(1)})`);
   }
 
   // F16: Widened clamp [35, 130]
