@@ -233,7 +233,7 @@ export async function fetchNBATeamStats(abbr) {
     // ── NBA-01 FIX: Real Dean Oliver possession estimate ──
     // Poss ≈ FGA − ORB + TO + 0.475 × FTA (per game)
     // This replaces the old `96 + (ppg - 110) * 0.3` linear proxy
-    const estPoss = fga - offReb + turnovers + 0.475 * fta;
+    const estPoss = fga - offReb + turnovers + 0.485 * fta; // AUDIT FIX 6
     const pace = Math.max(90, Math.min(108, estPoss || 99.5));
 
     // ── Derived metrics (mirroring NCAAB v15 pattern) ──
@@ -415,21 +415,21 @@ export function nbaPredictGame({
     // eFG% = FG% + 0.5 × 3PA_rate × 3P%
     const threeRate = stats.threeAttRate || 0.40;
     const eFG = (stats.fgPct || lg.fgPct) + 0.5 * threeRate * (stats.threePct || lg.threePct);
-    const eFGboost = (eFG - lg.eFGpct) * 8.0; // ~40% weight
+    const eFGboost = (eFG - lg.eFGpct) * 7.2; // AUDIT FIX 2: recalibrated // ~40% weight
 
     // TO% — turnovers per 100 possessions
     const toPct = stats.pace > 0 ? (stats.turnovers / stats.pace) * 100 : lg.toPct;
-    const toBoost = (lg.toPct - toPct) * 0.12; // lower TO% = positive
+    const toBoost = (lg.toPct - toPct) * 0.09; // AUDIT FIX 2: recalibrated // lower TO% = positive
 
     // ORB% — offensive rebounding rate (matchup-specific)
     // NBA-H1: Use actual opponent DRB instead of hardcoded 33.5
     const oppDRB = opponentDefReb || 33.5;
     const matchupOrbPct = stats.offReb / (stats.offReb + oppDRB);
-    const orbBoost = (matchupOrbPct - lg.orbPct) * 6.0; // ~20% weight
+    const orbBoost = (matchupOrbPct - lg.orbPct) * 5.5; // AUDIT FIX 2: recalibrated // ~20% weight
 
     // FTA Rate — free throw attempts per FGA
     const ftaRateVal = stats.ftaRate || lg.ftaRate;
-    const ftrBoost = (ftaRateVal - lg.ftaRate) * 3.5; // ~15% weight
+    const ftrBoost = (ftaRateVal - lg.ftaRate) * 3.0; // AUDIT FIX 2: recalibrated // ~15% weight
 
     return eFGboost + Math.max(-2.5, Math.min(2.5, toBoost)) + orbBoost + ftrBoost;
   };
@@ -446,8 +446,9 @@ export function nbaPredictGame({
   // which measure active defensive playmaking not reflected in adjDE.
   // Matches NCAA F8 fix: "Removed oppFGpct from defBoost (double-counted via adjDE)"
   const defBoost = (stats) => {
-    const disruption = ((stats.steals || lg.steals) - lg.steals) * 0.10
-                     + ((stats.blocks || lg.blocks) - lg.blocks) * 0.08;
+    // AUDIT FIX 12: Recalibrated steals 0.10->0.085, blocks 0.08->0.065
+    const disruption = ((stats.steals || lg.steals) - lg.steals) * 0.085
+                     + ((stats.blocks || lg.blocks) - lg.blocks) * 0.065;
     return disruption;
   };
   homeScore += defBoost(homeStats) * 0.22;
@@ -471,25 +472,28 @@ export function nbaPredictGame({
     const lgTS = lg.ts || 0.578;
     return Math.max(-2.5, Math.min(2.5, (ts - lgTS) * 15));
   };
-  homeScore += tsBoost(homeStats) * 0.15;
-  awayScore += tsBoost(awayStats) * 0.15;
+  // AUDIT FIX 5: TS% overlaps with eFG in Four Factors, reduced 0.15->0.05
+  homeScore += tsBoost(homeStats) * 0.05;
+  awayScore += tsBoost(awayStats) * 0.05;
 
   // ── Home court advantage: 2.4 pts (post-2020 research) ──
   homeScore += (neutralSite ? 0 : 2.4) / 2;
   awayScore -= (neutralSite ? 0 : 2.4) / 2;
 
   // ── B2B rest penalties ──
-  if (homeDaysRest === 0) { homeScore -= 1.8; awayScore += 0.8; }
-  else if (awayDaysRest === 0) { awayScore -= 2.2; homeScore += 1.0; }
-  else if (homeDaysRest - awayDaysRest >= 3) homeScore += 1.4;
-  else if (awayDaysRest - homeDaysRest >= 3) awayScore += 1.4;
+  // AUDIT FIX 3: Updated B2B/rest penalties to 2022-2024 research values
+  if (homeDaysRest === 0) { homeScore -= 2.1; awayScore += 0.9; }
+  else if (awayDaysRest === 0) { awayScore -= 2.5; homeScore += 1.1; }
+  else if (homeDaysRest - awayDaysRest >= 3) homeScore += 1.2;
+  else if (awayDaysRest - homeDaysRest >= 3) awayScore += 1.2;
 
   // ── Travel distance penalty (Haversine) ──
   if (awayPrevCityAbbr && homeAbbr) {
     try {
       const dist = haversineDistance(awayPrevCityAbbr, homeAbbr);
-      if (dist > 2000) awayScore -= 1.4;
-      else if (dist > 1000) awayScore -= 0.7;
+      // AUDIT FIX 3: Updated travel penalties (was -1.4/-0.7)
+      if (dist > 2000) awayScore -= 1.6;
+      else if (dist > 1000) awayScore -= 0.9;
     } catch {}
   }
 

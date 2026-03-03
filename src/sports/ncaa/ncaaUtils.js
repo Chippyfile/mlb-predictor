@@ -168,7 +168,7 @@ export async function fetchNCAATeamStats(teamId) {
     const espnPtsPer100 = getStat("pointsPerEstimatedPossessions");
 
     // F1: Possession estimate — prefer ESPN's real value, fall back to Dean Oliver
-    const deanOliverPoss = fga - offReb + turnovers + 0.475 * fta;
+    const deanOliverPoss = fga - offReb + turnovers + 0.482 * fta; // AUDIT FIX 6
     let offPoss, _possSource;
     if (espnPoss != null && espnPoss > 40 && espnPoss < 90) {
       offPoss = espnPoss;
@@ -408,21 +408,21 @@ export function ncaaPredictGame({
     const threeRate = stats.threeAttRate || 0.38;
     const eFG = stats.fgPct + 0.5 * threeRate * stats.threePct;
     const lgEFG = 0.502;
-    const eFGboost = (eFG - lgEFG) * 8.0;
+    const eFGboost = (eFG - lgEFG) * 7.2; // AUDIT FIX 2: recalibrated
 
     const toPct = stats.tempo > 0 ? (stats.turnovers / stats.tempo) * 100 : 18.0;
     const lgTO = 18.0;
-    const toBoost = (lgTO - toPct) * 0.12;
+    const toBoost = (lgTO - toPct) * 0.09; // AUDIT FIX 2: recalibrated
 
     // F2: Matchup-specific ORB% using opponent's actual DRB
     const oppDRB = opponentDefReb || 24.5;
     const matchupOrbPct = stats.offReb / (stats.offReb + oppDRB);
     const lgORB = 0.28;
-    const orbBoost = (matchupOrbPct - lgORB) * 6.0;
+    const orbBoost = (matchupOrbPct - lgORB) * 5.5; // AUDIT FIX 2: recalibrated
 
     const ftaRateVal = stats.ftaRate || 0.34;
     const lgFTR = 0.34;
-    const ftrBoost = (ftaRateVal - lgFTR) * 3.5;
+    const ftrBoost = (ftaRateVal - lgFTR) * 3.0; // AUDIT FIX 2: recalibrated
 
     const rawBoost = eFGboost + Math.max(-2.5, Math.min(2.5, toBoost)) + orbBoost + ftrBoost;
     return rawBoost * tempoScale;

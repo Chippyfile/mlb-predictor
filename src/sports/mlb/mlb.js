@@ -236,7 +236,10 @@ export function pythagenpat(homeRuns, awayRuns, parkHFA = 0) {
 // ─────────────────────────────────────────────────────────────
 // PLATOON
 // ─────────────────────────────────────────────────────────────
-const PLATOON = { RHBvsRHP: -0.005, RHBvsLHP: +0.018, LHBvsRHP: +0.022, LHBvsLHP: -0.008 };
+// AUDIT FIX 4: Updated platoon splits to 2022-2024 Statcast data
+// RHBvsLHP increased (+0.018->+0.024): RHB dominance vs LHP growing
+// LHBvsRHP decreased (+0.022->+0.019): LHB platoon edge shrinking
+const PLATOON = { RHBvsRHP: -0.008, RHBvsLHP: +0.024, LHBvsRHP: +0.019, LHBvsLHP: -0.012 };
 function platoonDelta(lineupHand, starterHand) {
   if (!starterHand || !lineupHand) return 0;
   const rPct = lineupHand.rPct ?? 0.65, lPct = lineupHand.lPct ?? 0.30, sPct = 1 - rPct - lPct;
@@ -736,15 +739,15 @@ export function mlbPredictGame({
 
   const calcPitcherSkill = (stats, fallbackERA) => {
     if (!stats) return fallbackERA || 4.25;
-    if (stats.xfip) return Math.max(2.0, Math.min(7.5, stats.xfip));
-    if (stats.fip)  return Math.max(2.0, Math.min(7.5, stats.fip));
+    if (stats.xfip) return Math.max(2.5, Math.min(6.5, stats.xfip)); // AUDIT FIX 11
+    if (stats.fip)  return Math.max(2.5, Math.min(6.5, stats.fip)); // AUDIT FIX 11
     const { era = 4.25, k9 = 8.5, bb9 = 3.0, gbPct } = stats;
     const gbAdj  = gbPct != null ? (gbPct - 0.45) * -2.2 : 0;
     const kBonus = (k9 - 8.5) * 0.185;
     const bbPen  = (bb9 - 3.0) * 0.310;
     const siera  = 3.15 + bbPen - kBonus + gbAdj;
     // ERA at 25% weight (was 40%) — FIP-style metrics should dominate
-    return Math.max(2.0, Math.min(7.5, siera * 0.75 + era * 0.25));
+    return Math.max(2.5, Math.min(6.5, siera * 0.75 + era * 0.25)); // AUDIT FIX 11
   };
 
   const catcherFramingAdj = (name) => {
@@ -774,13 +777,13 @@ export function mlbPredictGame({
     let pf = park.runFactor;
     if (parkWeather) {
       const { tempF = 70, windMph = 5, windDir = 180 } = parkWeather;
-      pf += ((tempF - 70) / 10) * 0.0028;
+      pf += ((tempF - 70) / 10) * 0.0035; // AUDIT FIX 8: temp coeff updated
       const windOut = windDir >= 145 && windDir <= 255;
       const windIn  = windDir <= 50  || windDir >= 325;
-      if (windOut && windMph > 8) pf += (windMph - 8) * 0.0028;
-      if (windIn  && windMph > 8) pf -= (windMph - 8) * 0.0028;
+      if (windOut && windMph > 5) pf += (windMph - 5) * 0.0035; // AUDIT FIX 8
+      if (windIn  && windMph > 5) pf -= (windMph - 5) * 0.0035; // AUDIT FIX 8
     }
-    return Math.max(0.86, Math.min(1.28, pf));
+    return Math.max(0.92, Math.min(1.18, pf)); // AUDIT FIX 7: tightened
   })();
 
   const homeWOBA = calcWOBA(homeHit, homeLineup, homeStatcast);
@@ -794,8 +797,9 @@ export function mlbPredictGame({
   const homePlatoonDelta = platoonDelta(homeLineup?.lineupHand, awayStarterStats?.pitchHand);
   const awayPlatoonDelta = platoonDelta(awayLineup?.lineupHand, homeStarterStats?.pitchHand);
   // Platoon delta is in wOBA units — convert to runs the same way
-  hr += (homePlatoonDelta / WOBA_SCALE) * PA_PER_GAME;
-  ar += (awayPlatoonDelta / WOBA_SCALE) * PA_PER_GAME;
+  // AUDIT FIX 9: 70% of PA face platoon-advantaged pitcher
+  hr += (homePlatoonDelta / WOBA_SCALE) * PA_PER_GAME * 0.70;
+  ar += (awayPlatoonDelta / WOBA_SCALE) * PA_PER_GAME * 0.70;
 
   const hFIP = calcPitcherSkill(homeStarterStats, homePitch?.era);
   const aFIP = calcPitcherSkill(awayStarterStats, awayPitch?.era);
@@ -807,8 +811,11 @@ export function mlbPredictGame({
   // because wOBA→runs already accounts for the league-avg offensive environment.
   const homeTeamFIP = homePitch?.era || LG_FIP;
   const awayTeamFIP = awayPitch?.era || LG_FIP;
-  ar += (hFIP - homeTeamFIP) * FIP_COEFF * 0.65 - acePremium(hFIP);
-  hr += (aFIP - awayTeamFIP) * FIP_COEFF * 0.65 - acePremium(aFIP);
+  // AUDIT FIX 1: Removed 0.65 multiplier — FIP_COEFF (0.55) is already the correct
+  // research-backed coefficient (1 pt FIP ≈ 0.55 R/G). The 0.65 was double-discounting
+  // starter impact, making effective coefficient 0.3575 instead of 0.55.
+  ar += (hFIP - homeTeamFIP) * FIP_COEFF - acePremium(hFIP);
+  hr += (aFIP - awayTeamFIP) * FIP_COEFF - acePremium(aFIP);
 
   const hFraming = catcherFramingAdj(homeCatcherName);
   const aFraming = catcherFramingAdj(awayCatcherName);
