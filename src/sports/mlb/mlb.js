@@ -904,5 +904,8 @@ export function mlbPredictGame({
     parkFactor: parseFloat(effectiveParkFactor.toFixed(4)),
     homeSpAvgIP: parseFloat(homeSpAvgIP.toFixed(1)),
     awaySpAvgIP: parseFloat(awaySpAvgIP.toFixed(1)),
+    // Enhancement: lineup confirmation flags for ML confidence weighting
+    homeLineupConfirmed: !!(homeLineup?.wOBA),
+    awayLineupConfirmed: !!(awayLineup?.wOBA),
   };
 }

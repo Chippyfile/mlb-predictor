@@ -48,6 +48,14 @@ function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game 
     // F-05: SP average innings pitched (for bullpen exposure ML feature)
     home_sp_ip: pred.homeSpAvgIP ?? null,
     away_sp_ip: pred.awaySpAvgIP ?? null,
+    // Enhancement 1: Platoon splits (wOBA delta from L/R matchup advantage)
+    home_platoon_delta: pred.homePlatoonDelta != null
+      ? parseFloat(pred.homePlatoonDelta.toFixed(4)) : null,
+    away_platoon_delta: pred.awayPlatoonDelta != null
+      ? parseFloat(pred.awayPlatoonDelta.toFixed(4)) : null,
+    // Enhancement 2: Lineup confirmation flags (real lineup vs defaults)
+    home_lineup_confirmed: pred.homeLineupConfirmed ? 1 : 0,
+    away_lineup_confirmed: pred.awayLineupConfirmed ? 1 : 0,
   };
 }
 
