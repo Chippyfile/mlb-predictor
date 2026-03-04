@@ -114,7 +114,32 @@ export function runLineOdds(homeWinPct, homeRuns, awayRuns) {
 }
 
 // ─── Prediction engine ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// ⚠️ DEPRECATED PREDICTION FUNCTIONS
+// ══════════════════════════════════════════════════════════════════════
+// The functions below (estimateWOBA, estimateWRCPlus, estimateFIP,
+// predictGame) use DIFFERENT formulas from the canonical mlb.js engine
+// and will produce INCORRECT results if used for game predictions.
+//
+// AUDIT FINDINGS:
+//   F12: estimateWOBA (0.69*(obp-avg) + 0.89*avg + ...) differs from
+//        mlb.js calcWOBA (0.72*OBP + 0.48*SLG - 0.08) by 0.02-0.04
+//   F13: estimateFIP (era*0.82 + whip*0.4 + ...) is completely different
+//        from mlb.js calcPitcherSkill (SIERA-style 75/25 ERA blend)
+//   F14: predictGame starts from hardcoded 4.5 baseline (not league avg),
+//        uses coefficient 14 (correct is ~30.24 = pa_pg/woba_scale),
+//        and adds wRC+ on top of wOBA (double-counting offense)
+//
+// Canonical implementations are in src/sports/mlb/mlb.js:
+//   wOBA:  calcWOBA    — 0.72*OBP + 0.48*SLG - 0.08 + BABIP adjustment
+//   FIP:   calcPitcherSkill — SIERA-style with 75% SIERA + 25% ERA
+//   Runs:  mlbPredictGame   — FanGraphs wOBA→runs with marginal FIP
+//
+// These functions are kept for backward compatibility ONLY.
+// DO NOT use for any prediction logic.
+// ══════════════════════════════════════════════════════════════════════
 export function estimateWOBA(h) {
+  console.warn('[DEPRECATED] estimateWOBA in constants.js — use mlb.js calcWOBA instead');
   if (!h) return 0.320;
   const { obp = 0.320, slg = 0.420, avg = 0.250 } = h;
   return Math.max(0.25, Math.min(0.42, 0.69*(obp-avg) + 0.89*avg + 1.27*(slg-avg)*0.9 + 0.05));
@@ -132,6 +157,7 @@ export function estimateFIP(p) {
 export function predictGame({ homeTeam, awayTeam, homeHit, awayHit, homePitch, awayPitch,
   homeStarterStats, awayStarterStats, homeVsAway, awayVsHome,
   homeForm, awayForm, homeBullpen, awayBullpen, umpireName }) {
+  console.warn('[DEPRECATED] predictGame in constants.js — use mlb.js mlbPredictGame instead');
 
   const park = PARK_FACTORS[homeTeam?.id] || { runFactor: 1.0 };
   const ump  = UMPIRE_PROFILES[umpireName] || UMPIRE_PROFILES['Default'];

@@ -878,17 +878,20 @@ export function mlbPredictGame({
     hwp = Math.min(0.90, Math.max(0.10, 0.5 + (hwp - 0.5) * calibrationFactor));
 
   // ── Confidence = DATA QUALITY (how much info the model has) ──
-  // Separated from decisiveness per audit F-10. Confidence tells you how RELIABLE
-  // the prediction is. Decisiveness tells you how FAR from 50% the pick is.
-  // Best value bets often have HIGH confidence + LOW decisiveness (small edge, well-informed).
+  // FIX F11: Re-weighted so core data (hit, pitch, starter, form) carries 45/100
+  // instead of 30/100. Prevents games with complete core data but missing extras
+  // from showing misleadingly low confidence. A mid-season game with all 8 core
+  // sources now scores 65 base (MEDIUM); previously only 55 (barely MEDIUM).
   const blendWeight = Math.min(1.0, avgGP / FULL_SEASON_THRESHOLD);
-  const dataScore   = [homeHit, awayHit, homeStarterStats, awayStarterStats, homeForm, awayForm].filter(Boolean).length / 6;
-  const extraBonus  = [homeLineup, awayLineup, homeStatcast, awayStatcast, umpire, parkWeather, homeCatcherName].filter(Boolean).length * 1.8;
+  const coreData    = [homeHit, awayHit, homePitch, awayPitch, homeStarterStats, awayStarterStats, homeForm, awayForm];
+  const coreScore   = coreData.filter(Boolean).length / coreData.length;
+  const extraData   = [homeLineup, awayLineup, homeStatcast, awayStatcast, umpire, parkWeather, homeCatcherName];
+  const extraScore  = extraData.filter(Boolean).length / extraData.length;
   const confScore   = Math.round(
-    25 +                             // base
-    (dataScore * 30) +               // data completeness (0-30) — primary driver
-    (blendWeight * 20) +             // season progress (0-20)
-    Math.min(25, extraBonus)         // extra data sources (0-25)
+    20 +                             // base
+    (coreScore * 45) +               // core data completeness (0-45)
+    (blendWeight * 15) +             // season progress (0-15)
+    (extraScore * 20)                // extra data sources (0-20)
   );
   const confidence  = confScore >= 78 ? "HIGH" : confScore >= 55 ? "MEDIUM" : "LOW";
 
