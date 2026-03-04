@@ -531,12 +531,15 @@ export function ncaaPredictGame({
   }
 
   const spread = parseFloat(projectedSpread.toFixed(1));
+  // FIX: Cap moneyline values at ±800 to prevent absurd display values
+  // (matches NCAA CalendarTab ML_CAP and aligns with NBA pattern)
+  const ML_CAP = 800;
   const modelML_home = homeWinPct >= 0.5
-    ? -Math.round((homeWinPct / (1 - homeWinPct)) * 100)
-    : +Math.round(((1 - homeWinPct) / homeWinPct) * 100);
+    ? -Math.min(ML_CAP, Math.round((homeWinPct / (1 - homeWinPct)) * 100))
+    : +Math.min(ML_CAP, Math.round(((1 - homeWinPct) / homeWinPct) * 100));
   const modelML_away = homeWinPct >= 0.5
-    ? +Math.round(((1 - homeWinPct) / homeWinPct) * 100)
-    : -Math.round((homeWinPct / (1 - homeWinPct)) * 100);
+    ? +Math.min(ML_CAP, Math.round(((1 - homeWinPct) / homeWinPct) * 100))
+    : -Math.min(ML_CAP, Math.round((homeWinPct / (1 - homeWinPct)) * 100));
 
   const decisiveness = Math.abs(homeWinPct - 0.5) * 100;
   const decisivenessLabel = decisiveness >= 15 ? "STRONG" : decisiveness >= 7 ? "MODERATE" : "LEAN";

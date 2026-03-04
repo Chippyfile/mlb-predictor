@@ -16,6 +16,10 @@ const _ncaaSeasonStart = (() => {
   return `${seasonYear}-11-01`;
 })();
 
+// FIX: ML moneyline cap — prevents absurd -1194 type values
+// Matches NBA pattern (NBACalendarTab uses ML_CAP = 500)
+const ML_CAP = 800;
+
 export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
   const todayStr = new Date().toISOString().split("T")[0];
   const [dateStr, setDateStr] = useState(todayStr);
@@ -118,25 +122,48 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       // FIX: Reconcile projected scores with ML margin so all displayed
       // values are internally consistent. Without this, scores can say
       // "Team A wins" while spread/winPct say "Team B wins".
+      //
+      // CONSISTENCY FIX (v21): Derive win probability FROM margin (like NBA does)
+      // so that spread, win%, and ML moneyline always agree. Previously, NCAA
+      // used raw ml_win_prob_home from the classifier, which can diverge wildly
+      // from the margin regressor (e.g., margin says +7.5 → ~63% but classifier
+      // outputs 92.3%). The NBA pattern of blending margin-based + classifier
+      // probabilities prevents this kind of internal contradiction.
       const finalPred = pred && mlResult ? (() => {
         const mlMargin = mlResult.ml_margin;
         const heuristicMargin = pred.projectedSpread;
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-        const mlWinHome = mlResult.ml_win_prob_home;
-        const newModelML_home = mlWinHome >= 0.5
-          ? -Math.round((mlWinHome / (1 - mlWinHome)) * 100)
-          : +Math.round(((1 - mlWinHome) / mlWinHome) * 100);
-        const newModelML_away = mlWinHome >= 0.5
-          ? +Math.round(((1 - mlWinHome) / mlWinHome) * 100)
-          : -Math.round((mlWinHome / (1 - mlWinHome)) * 100);
+
+        // CONSISTENCY FIX: Derive win prob FROM margin so spread/win%/ML always agree.
+        // This matches the NBA CalendarTab pattern exactly.
+        const SIGMA = dynamicSigma || 16.0;
+        const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
+
+        // Blend: 70% margin-derived + 30% classifier (margin is more reliable for
+        // internal consistency; classifier is better calibrated overall)
+        const MARGIN_WEIGHT = 0.70;
+        const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
+
+        // FIX: Apply proper win probability caps matching the backend (ncaa.py: [0.05, 0.95])
+        const blendedWinHome = Math.max(0.05, Math.min(0.95, rawBlended));
+        const blendedWinAway = 1 - blendedWinHome;
+
+        // FIX: Cap moneyline values to prevent absurd -1194 displays
+        const newModelML_home = blendedWinHome >= 0.5
+          ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100));
+        const newModelML_away = blendedWinHome >= 0.5
+          ? +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100))
+          : -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100));
+
         return {
           ...pred,
           homeScore: adjHomeScore,
           awayScore: adjAwayScore,
-          homeWinPct: mlResult.ml_win_prob_home,
-          awayWinPct: mlResult.ml_win_prob_away,
+          homeWinPct: blendedWinHome,
+          awayWinPct: blendedWinAway,
           projectedSpread: parseFloat(mlMargin.toFixed(1)),
           ouTotal: pred.ouTotal,
           modelML_home: newModelML_home,
@@ -147,6 +174,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _heuristicAwayScore: pred.awayScore,
           _heuristicSpread: pred.projectedSpread,
           _heuristicWinPct: pred.homeWinPct,
+          _rawMlWinProb: mlResult.ml_win_prob_home,
         };
       })() : pred;
       // R9: MC uses ouTotal-based means to avoid inflated totals from spread-optimized scores
