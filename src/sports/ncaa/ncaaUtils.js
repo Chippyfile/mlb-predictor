@@ -1,5 +1,13 @@
 // src/sports/ncaa/ncaaUtils.js
-// NCAAB v20.1 — Real ESPN possessions, 3-tier oppPpg, variadic getStat, parallel fetches
+// NCAAB v21 — Cross-Sport Alignment (v20.1 → v21)
+//
+// v21 alignment fixes:
+//   ALIGN-6: Removed oppThreePct from defBoost (same double-count as oppFGpct F8 fix)
+//            NBA-M8 already removed all opponent shooting — NCAA now aligns
+//   ALIGN-7: True Shooting % signal ported from NBA-04 (0.05 weight, NCAA lgTS=0.540)
+//   ALIGN-8: O/U shrink factor 0.975 added (NCAA 30-game sample needs more regression
+//            than NBA's 82-game 0.984)
+//
 // Changelog v18→v20.1:
 //   V20-1: getStat() upgraded to variadic (...names) — matches NBA/NFL pattern
 //   V20-2: oppPpg 3-tier resolution: ESPN stat → schedule computation → 72.0 fallback
@@ -430,11 +438,16 @@ export function ncaaPredictGame({
   const homeFFactors = fourFactorsBoost(homeStats, awayStats.defReb);
   const awayFFactors = fourFactorsBoost(awayStats, homeStats.defReb);
 
-  // ── F8: Defensive quality — oppFGpct removed (already in adjDE) ──
+  // ── F8 EXTENDED: Defensive quality — oppThreePct ALSO removed ──
+  // ALIGN-6: oppThreePct is the same type of double-count as oppFGpct
+  // (both captured in adjDE which feeds the core projection). NBA-M8
+  // correctly removed ALL opponent shooting from defBoost. NCAA now aligns.
+  // Keeping only disruption stats (steals/blocks) which measure active
+  // defensive playmaking not reflected in efficiency ratings.
   const defBoost = (stats) => {
-    const oppThreeDiff = 0.330 - (stats.oppThreePct || 0.330);
-    const disruption = ((stats.steals || 7.0) - 7.0) * 0.08 + ((stats.blocks || 3.5) - 3.5) * 0.06;
-    return oppThreeDiff * 3.0 + disruption;
+    const disruption = ((stats.steals || 7.0) - 7.0) * 0.08
+                     + ((stats.blocks || 3.5) - 3.5) * 0.06;
+    return disruption;
   };
   const homeDefBoost = defBoost(homeStats);
   const awayDefBoost = defBoost(awayStats);
@@ -446,6 +459,21 @@ export function ncaaPredictGame({
   const toMarginHome = (homeStats.steals || 7.0) - (homeStats.turnovers || 12.0);
   const toMarginAway = (awayStats.steals || 7.0) - (awayStats.turnovers || 12.0);
   const toMarginBoost = (toMarginHome - toMarginAway) * 0.08;
+
+  // ── ALIGN-7: True Shooting % (ported from NBA-04) ──
+  // TS% captures free throw conversion beyond what FTR measures (attempts only).
+  // Weight at 0.05 to avoid overlap with eFG% in Four Factors.
+  // Gracefully returns 0 if fga/fta not available from ESPN.
+  const tsBoostCalc = (stats) => {
+    if (!stats.fga || !stats.fta) return 0;
+    const tsa = stats.fga + 0.44 * stats.fta;
+    if (tsa <= 0) return 0;
+    const ts = stats.ppg / (2 * tsa);
+    const lgTS = 0.540;  // NCAA D1 average TS% (~54.0% vs NBA's ~57.8%)
+    return Math.max(-2.5, Math.min(2.5, (ts - lgTS) * 15));
+  };
+  const homeTSBoost = tsBoostCalc(homeStats) * 0.05;
+  const awayTSBoost = tsBoostCalc(awayStats) * 0.05;
 
   // ── Core score projection ──
   // Additive formula: predicted efficiency = teamOE + oppDE - lgAvg
@@ -471,9 +499,11 @@ export function ncaaPredictGame({
   const blowoutScale = emGap >= 15 ? Math.min(1.5, 1.0 + (emGap - 15) / 30) : 1.0;
 
   let homeScore = (homeOffVsAwayDef / 100) * possessions
-    + homeFFactors * 0.35 * blowoutScale + homeDefBoost * 0.20 * blowoutScale + atoBoost * 0.5 + toMarginBoost * 0.5;
+    + homeFFactors * 0.35 * blowoutScale + homeDefBoost * 0.20 * blowoutScale + atoBoost * 0.5 + toMarginBoost * 0.5
+    + homeTSBoost;  // ALIGN-7
   let awayScore = (awayOffVsHomeDef / 100) * possessions
-    + awayFFactors * 0.35 * blowoutScale + awayDefBoost * 0.20 * blowoutScale - atoBoost * 0.5 - toMarginBoost * 0.5;
+    + awayFFactors * 0.35 * blowoutScale + awayDefBoost * 0.20 * blowoutScale - atoBoost * 0.5 - toMarginBoost * 0.5
+    + awayTSBoost;  // ALIGN-7
 
   // ── Home court advantage ──
   // When using venue-aware KenPom splits, the home OE/DE already captures
@@ -588,11 +618,13 @@ export function ncaaPredictGame({
   // homeScore/awayScore are adjOE-matchup based, optimized for spread accuracy.
   // They systematically inflate totals by ~35 pts (model avg 186 vs actual 151.5).
   // Compute O/U from PPG matchup: (teamPPG + oppOppPPG) / 2 per side.
-  // The averaging already provides natural regression toward the mean, so
-  // no additional shrink factor is needed. HCA adds ~1.5 pts to home side.
+  // ALIGN-8: Shrink factor added (matches NBA pattern). NCAA's ~30-game sample
+  // sizes are noisier than NBA's 82-game season, so PPG averages regress more
+  // toward the mean. 0.975 is slightly more aggressive than NBA's 0.984.
+  const NCAA_TOTAL_SHRINK = 0.975;
   const ouHCA = neutralSite ? 0 : 1.5;
-  const ouHomeScore = (homeStats.ppg + awayStats.oppPpg) / 2 + ouHCA / 2;
-  const ouAwayScore = (awayStats.ppg + homeStats.oppPpg) / 2 - ouHCA / 2;
+  const ouHomeScore = ((homeStats.ppg + awayStats.oppPpg) / 2 + ouHCA / 2) * NCAA_TOTAL_SHRINK;
+  const ouAwayScore = ((awayStats.ppg + homeStats.oppPpg) / 2 - ouHCA / 2) * NCAA_TOTAL_SHRINK;
   const ouTotal = parseFloat((ouHomeScore + ouAwayScore).toFixed(1));
 
   // Round spread-optimized scores for display (these still drive spread/ML)
@@ -961,12 +993,19 @@ export async function fetchNCAAKenPomRatings() {
     const res = await fetch(`${ML_API}/ratings/ncaa`, { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const data = await res.json();
-    if (!data?.ratings?.length) return null;
+    // API returns raw array from Supabase, or {ratings: [...]} — handle both
+    const ratings = Array.isArray(data) ? data : data?.ratings;
+    if (!ratings?.length) return null;
     const map = new Map();
-    for (const r of data.ratings) map.set(String(r.team_id), r);
+    for (const r of ratings) {
+      // Ensure rank exists: if rank_adj_em not in DB, compute from position in sorted array
+      if (r.rank_adj_em == null) r.rank_adj_em = ratings.indexOf(r) + 1;
+      map.set(String(r.team_id), r);
+    }
     _kenPomCache = map;
     _kenPomFetchTime = Date.now();
-    console.log(`🏀 KenPom ratings loaded: ${map.size} teams (updated ${data.updated_at})`);
+    const updatedAt = Array.isArray(data) ? (ratings[0]?.updated_at ?? "unknown") : (data.updated_at ?? "unknown");
+    console.log(`🏀 KenPom ratings loaded: ${map.size} teams (updated ${updatedAt})`);
     return map;
   } catch (e) {
     console.warn("KenPom ratings unavailable:", e.message);

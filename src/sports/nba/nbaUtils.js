@@ -1,28 +1,22 @@
 // src/sports/nba/nbaUtils.js
-// NBA v16 — Full Forensic Audit Implementation (v15 → v16)
+// NBA v18 — Cross-Sport Alignment (v17 → v18)
 //
-// v15 fixes retained:
-//   NBA-01: Real Dean Oliver pace (was crude PPG proxy)
-//   NBA-02: Kill fetchNBARealPace stub → real ESPN fetch with proper possession calc
-//   NBA-04: Fix True Shooting proxy (was mathematically incorrect)
-//   NBA-05: Full Four Factors framework (ported from NCAAB v15)
-//   NBA-06: Expand fetchNBATeamStats to collect 20+ granular stats
-//   NBA-12: Rim protection now uses real collected blocks/fouls
-//   NBA-13: Dynamic league averages from team data
-//   NBA-14: Consolidated fetchNBARealPace (single canonical implementation)
-//   NBA-15: Enhanced confidence score with data quality factors
-//   NBA-16: Raised score clamp ceiling to 155
+// v17 deep formula audit fixes retained:
+//   AUDIT-C1: KenPom additive core formula (replaces multiplicative)
+//   AUDIT-H1: B2B rest phantom points removed
+//   AUDIT-H2: Rim protection reduces opponent score
+//   AUDIT-H3: O/U unified with spread scores
+//   AUDIT-M1: Confidence oppPpg check || → &&
+//   AUDIT-M2: Four Factors weights recalibrated to Dean Oliver targets
+//   AUDIT-L1: Per-team form weight
 //
-// v16 forensic audit fixes:
-//   NBA-C1: Confidence rewritten as pure data quality (was mixing prediction strength)
-//   NBA-C2: Added decisiveness + decisivenessLabel output (matches NCAA/MLB/NFL)
-//   NBA-C3: Fixed eFG% computation — direct from team stats, not averages-of-components
-//   NBA-H1: Four Factors ORB% now matchup-specific (uses opponent DRB, not hardcoded 33.5)
-//   NBA-H2: O/U total now includes small HCA adjustment
-//   NBA-H4: fetchNBARealPace eliminated — thin wrapper over fetchNBATeamStats (was /82 bug)
-//   NBA-M2: Win probability caps widened [0.07,0.93] → [0.05,0.95]
-//   NBA-M3: Form score symmetric ±1 weights (was +1/-0.6)
-//   NBA-M8: Defensive boost removed oppFgPct/oppThreePct double-count (NCAA F8 fix)
+// v18 cross-sport alignment fixes (ported from NCAA):
+//   ALIGN-2: Blowout scaling — net rating gap >= 12 amplifies Four Factors/defBoost
+//            up to 1.4× (NCAA uses EM gap >= 15, cap 1.5×)
+//   ALIGN-3: Tempo-scale Four Factors — scale by poss/lgAvgPace (NCAA F7 fix)
+//   ALIGN-4: Turnover margin signal — steals minus turnovers differential (NCAA F11)
+//   ALIGN-5: Spread-preserving total cap at 260 (NCAA caps at 190)
+//   ALIGN-9: Dynamic sigma — 10.5–14.5 range by season phase + matchup quality
 
 export const NBA_TEAMS_LIST = [
   { id:"ATL",name:"Atlanta Hawks",conf:"East" },{ id:"BOS",name:"Boston Celtics",conf:"East" },
@@ -404,9 +398,13 @@ export function nbaPredictGame({
   const poss = (homePace + awayPace) / 2;
   const lgAvg = lg.offRtg || lg.ppg;  // Use per-100-poss rating, not raw ppg
 
-  // ── Core score projection (offense vs defense matchup) ──
-  let homeScore = ((homeOffRtg / lgAvg) * (lgAvg / awayDefRtg) * lgAvg / 100) * poss;
-  let awayScore = ((awayOffRtg / lgAvg) * (lgAvg / homeDefRtg) * lgAvg / 100) * poss;
+  // ── Core score projection (KenPom additive matchup) ──
+  // AUDIT C1 FIX: Replaced multiplicative formula which inflated scores by 8-26 pts
+  // when both teams above/below average (ratio compounding). Additive formula matches
+  // KenPom methodology used in NCAAB: expected = (teamOE + oppDE - lgAvg) / 100 * poss
+  // BOS(119.2 OE) vs OKC(106.5 DE): mult=128.3, additive=113.6 — 14.7pt difference per team.
+  let homeScore = ((homeOffRtg + awayDefRtg - lgAvg) / 100) * poss;
+  let awayScore = ((awayOffRtg + homeDefRtg - lgAvg) / 100) * poss;
 
   // ── NBA-05 FIX: Full Four Factors framework ──
   // Dean Oliver weights: eFG% 40%, TO% 25%, ORB% 20%, FTR 15%
@@ -415,29 +413,32 @@ export function nbaPredictGame({
     // eFG% = FG% + 0.5 × 3PA_rate × 3P%
     const threeRate = stats.threeAttRate || 0.40;
     const eFG = (stats.fgPct || lg.fgPct) + 0.5 * threeRate * (stats.threePct || lg.threePct);
-    const eFGboost = (eFG - lg.eFGpct) * 7.2; // AUDIT FIX 2: recalibrated // ~40% weight
+    const eFGboost = (eFG - lg.eFGpct) * 12.0; // AUDIT M2 FIX: was 7.2, actual weight was 24% vs target 40%
 
     // TO% — turnovers per 100 possessions
     const toPct = stats.pace > 0 ? (stats.turnovers / stats.pace) * 100 : lg.toPct;
-    const toBoost = (lg.toPct - toPct) * 0.09; // AUDIT FIX 2: recalibrated // lower TO% = positive
+    const toBoost = (lg.toPct - toPct) * 0.07; // AUDIT M2 FIX: was 0.09 (30% actual vs 25% target)
 
     // ORB% — offensive rebounding rate (matchup-specific)
     // NBA-H1: Use actual opponent DRB instead of hardcoded 33.5
     const oppDRB = opponentDefReb || 33.5;
     const matchupOrbPct = stats.offReb / (stats.offReb + oppDRB);
-    const orbBoost = (matchupOrbPct - lg.orbPct) * 5.5; // AUDIT FIX 2: recalibrated // ~20% weight
+    const orbBoost = (matchupOrbPct - lg.orbPct) * 4.0; // AUDIT M2 FIX: was 5.5 (27% actual vs 20% target)
 
     // FTA Rate — free throw attempts per FGA
     const ftaRateVal = stats.ftaRate || lg.ftaRate;
-    const ftrBoost = (ftaRateVal - lg.ftaRate) * 3.0; // AUDIT FIX 2: recalibrated // ~15% weight
+    const ftrBoost = (ftaRateVal - lg.ftaRate) * 2.2; // AUDIT M2 FIX: was 3.0 (20% actual vs 15% target)
 
     return eFGboost + Math.max(-2.5, Math.min(2.5, toBoost)) + orbBoost + ftrBoost;
   };
+  // ── ALIGN-3: Tempo-scale Four Factors (ported from NCAA F7) ──
+  // Efficiency advantages compound over more possessions per game.
+  // NBA average pace ~100; tempoScale ranges ~0.95–1.05.
+  const nbaAvgPace = lg.pace || 100.0;
+  const tempoScale = poss / nbaAvgPace;
+
   const homeFFactors = fourFactorsBoost(homeStats, awayStats.defReb);
   const awayFFactors = fourFactorsBoost(awayStats, homeStats.defReb);
-
-  homeScore += homeFFactors * 0.30;
-  awayScore += awayFFactors * 0.30;
 
   // ── Defensive quality adjustment ──
   // NBA-M8 FIX (v16): Removed oppFGpct and oppThreePct from defBoost.
@@ -451,8 +452,24 @@ export function nbaPredictGame({
                      + ((stats.blocks || lg.blocks) - lg.blocks) * 0.065;
     return disruption;
   };
-  homeScore += defBoost(homeStats) * 0.22;
-  awayScore += defBoost(awayStats) * 0.22;
+
+  // ── ALIGN-2: Blowout scaling (ported from NCAA) ──
+  // In competitive games, conservative multipliers prevent noise from dominating.
+  // In blowouts, the model can't accumulate enough signal to match Vegas spreads of 15+ pts.
+  // Gate on net rating gap (NBA equivalent of NCAA's EM gap).
+  // NBA threshold 12 (vs NCAA 15) because NBA rating scale is tighter.
+  const homeNetRtgVal = homeRealStats?.netRtg || homeStats.netRtg || 0;
+  const awayNetRtgVal = awayRealStats?.netRtg || awayStats.netRtg || 0;
+  const netRtgGap = Math.abs(homeNetRtgVal - awayNetRtgVal);
+  // Scale factor: 1.0 for gap < 12, ramps to 1.4 at gap 30+
+  // Slightly lower cap than NCAA (1.4 vs 1.5) — NBA has fewer extreme mismatches
+  const blowoutScale = netRtgGap >= 12 ? Math.min(1.4, 1.0 + (netRtgGap - 12) / 45) : 1.0;
+
+  // ALIGN-3: Apply tempo-scaled Four Factors with blowout amplification
+  homeScore += homeFFactors * tempoScale * 0.30 * blowoutScale;
+  awayScore += awayFFactors * tempoScale * 0.30 * blowoutScale;
+  homeScore += defBoost(homeStats) * 0.22 * blowoutScale;
+  awayScore += defBoost(awayStats) * 0.22 * blowoutScale;
 
   // ── Ball control differential ──
   const homeATO = (homeStats.atoRatio || 1.8) - 1.8;
@@ -460,6 +477,15 @@ export function nbaPredictGame({
   const atoBoost = (homeATO - awayATO) * 0.4;
   homeScore += atoBoost * 0.5;
   awayScore -= atoBoost * 0.5;
+
+  // ── ALIGN-4: Turnover margin signal (ported from NCAA F11) ──
+  // Captures live-ball turnovers (steals) that lead to fast break points.
+  // NBA league averages: ~7.5 steals, ~14 turnovers per game.
+  const toMarginHome = (homeStats.steals || lg.steals || 7.5) - (homeStats.turnovers || 14.0);
+  const toMarginAway = (awayStats.steals || lg.steals || 7.5) - (awayStats.turnovers || 14.0);
+  const toMarginBoost = (toMarginHome - toMarginAway) * 0.08;
+  homeScore += toMarginBoost * 0.5;
+  awayScore -= toMarginBoost * 0.5;
 
   // ── NBA-04 FIX: True Shooting % (corrected formula) ──
   // Real TS% = Points / (2 × TSA) where TSA = FGA + 0.44 × FTA
@@ -481,9 +507,10 @@ export function nbaPredictGame({
   awayScore -= (neutralSite ? 0 : 2.4) / 2;
 
   // ── B2B rest penalties ──
-  // AUDIT FIX 3: Updated B2B/rest penalties to 2022-2024 research values
-  if (homeDaysRest === 0) { homeScore -= 2.1; awayScore += 0.9; }
-  else if (awayDaysRest === 0) { awayScore -= 2.5; homeScore += 1.1; }
+  // AUDIT H1 FIX: Removed phantom opponent bonus (+0.9/+1.1). Playing a tired team
+  // doesn't make you score more. Road B2B slightly harsher (3.6 vs 3.0) per research.
+  if (homeDaysRest === 0) { homeScore -= 3.0; }
+  else if (awayDaysRest === 0) { awayScore -= 3.6; }
   else if (homeDaysRest - awayDaysRest >= 3) homeScore += 1.2;
   else if (awayDaysRest - homeDaysRest >= 3) awayScore += 1.2;
 
@@ -503,8 +530,10 @@ export function nbaPredictGame({
     const foulPenalty = oppFouls != null ? (oppFouls - 20) * -0.06 : 0;
     return blkBonus + foulPenalty;
   };
-  homeScore += rimProtection(homeStats.blocks, awayStats.foulsPerGame) * 0.15;
-  awayScore += rimProtection(awayStats.blocks, homeStats.foulsPerGame) * 0.15;
+  // AUDIT H2 FIX: Rim protection now reduces OPPONENT score (blocks are defensive).
+  // Was incorrectly added to blocking team's own score.
+  awayScore -= rimProtection(homeStats.blocks, awayStats.foulsPerGame) * 0.15;
+  homeScore -= rimProtection(awayStats.blocks, homeStats.foulsPerGame) * 0.15;
 
   // ── Lineup injury impact ──
   const roleWeight = { starter: 3.2, rotation: 1.5, reserve: 0.5 };
@@ -514,23 +543,34 @@ export function nbaPredictGame({
   awayScore -= awayInjPenalty;
 
   // ── Recent form ──
-  const fw = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames, 30) / 30));
-  homeScore += homeStats.formScore * fw * 3;
-  awayScore += awayStats.formScore * fw * 3;
+  // AUDIT L1 FIX: Per-team form weight (was using homeStats.totalGames for both)
+  const homeFw = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames || 0, 30) / 30));
+  const awayFw = Math.min(0.10, 0.10 * Math.sqrt(Math.min(awayStats.totalGames || 0, 30) / 30));
+  homeScore += homeStats.formScore * homeFw * 3;
+  awayScore += awayStats.formScore * awayFw * 3;
 
-  // ── O/U Total: PPG-based estimation (separate from spread) ──
-  // Same approach as NCAA: the adjOE matchup formula is spread-optimized
-  // but inflates totals. Compute ouTotal from PPG with additive matchup.
-  // NBA shrink factor is slightly higher (0.96) because NBA teams play
-  // more games → season averages are more stable and less inflated by
-  // weak opponents compared to NCAA's 30-game sample.
-  // NBA-H2 FIX (v16): Apply small HCA to O/U components — home teams
-  // score ~1.2 pts more and road teams ~1.2 pts less at home venues.
-  const NBA_TOTAL_SHRINK = 0.984;  // Calibrated: 972-game avg model 225.1 was LOW vs actual 230.7. Old 0.96 undershot.
-  const ouHCA = neutralSite ? 0 : 1.2;
-  const ouHomeScore = ((homeStats.ppg + awayStats.oppPpg) / 2 + ouHCA / 2) * NBA_TOTAL_SHRINK;
-  const ouAwayScore = ((awayStats.ppg + homeStats.oppPpg) / 2 - ouHCA / 2) * NBA_TOTAL_SHRINK;
-  const ouTotal = parseFloat((ouHomeScore + ouAwayScore).toFixed(1));
+  // ── O/U Total: Derived from spread-optimized scores ──
+  // AUDIT H3 FIX: Previously used separate PPG formula that diverged 15-29 pts
+  // from spread-optimized scores. Now that C1 (additive formula) produces realistic
+  // scores (110-115 range instead of inflated 120-130), O/U can be derived directly.
+  // Small shrink factor accounts for scoring regression to mean in actual games.
+  // NBA-H2 retained: HCA already in homeScore/awayScore, no separate ouHCA needed.
+  const NBA_TOTAL_SHRINK = 0.992;  // Tighter shrink since additive formula no longer inflates
+  const ouTotal = parseFloat(((homeScore + awayScore) * NBA_TOTAL_SHRINK).toFixed(1));
+
+  // ── ALIGN-5: Spread-preserving total cap (ported from NCAA) ──
+  // The spread-optimized score projection can inflate totals in extreme matchups.
+  // Cap at 260 (realistic NBA max) while preserving the spread for ATS accuracy.
+  // O/U total is computed separately and is unaffected by this cap.
+  const rawTotal = homeScore + awayScore;
+  const maxRealisticTotal = 260;
+  if (rawTotal > maxRealisticTotal) {
+    const currentSpread = homeScore - awayScore;
+    const cappedMidpoint = maxRealisticTotal / 2;
+    homeScore = cappedMidpoint + currentSpread / 2;
+    awayScore = cappedMidpoint - currentSpread / 2;
+    console.warn(`⚠️ NBA total ${rawTotal.toFixed(0)} capped to ${maxRealisticTotal} (spread preserved: ${currentSpread.toFixed(1)})`);
+  }
 
   // ── NBA-16 FIX: Raised ceiling from 148 to 155 for modern NBA ──
   homeScore = Math.max(85, Math.min(155, homeScore));
@@ -538,8 +578,22 @@ export function nbaPredictGame({
 
   // ── Win probability (logistic) ──
   const spread = parseFloat((homeScore - awayScore).toFixed(1));
-  // NBA logistic sigma = 12.0 (calibrated vs 5-season ATS records)
-  let hwp = 1 / (1 + Math.pow(10, -spread / 12.0));
+  // ── ALIGN-9: Dynamic sigma (ported from NCAA P1-SIG) ──
+  // NBA sigma varies by season progress and data quality. Base 12.0 calibrated
+  // from 5-season ATS. Early season is noisier → wider sigma.
+  const _minGamesForSigma = Math.min(homeStats.totalGames || 0, awayStats.totalGames || 0);
+  let nbaSigma = 12.0;
+  if (_minGamesForSigma < 10) nbaSigma += 1.5;
+  else if (_minGamesForSigma < 20) nbaSigma += 0.8;
+  else if (_minGamesForSigma < 35) nbaSigma += 0.3;
+  else if (_minGamesForSigma >= 65) nbaSigma -= 0.3;
+  // Games between bad teams are less predictable
+  const _hwpSeason = homeStats.totalGames > 0 ? (homeStats.wins || 0) / homeStats.totalGames : 0.5;
+  const _awpSeason = awayStats.totalGames > 0 ? (awayStats.wins || 0) / awayStats.totalGames : 0.5;
+  if (_hwpSeason < 0.40 && _awpSeason < 0.40) nbaSigma += 0.5;
+  nbaSigma = Math.max(10.5, Math.min(14.5, nbaSigma));
+
+  let hwp = 1 / (1 + Math.pow(10, -spread / nbaSigma));
   // NBA-M2 FIX (v16): Widened caps from [0.07, 0.93] to [0.05, 0.95]
   // Previous caps were too tight for extreme matchups, suppressing edge detection
   // on heavy favorites. 0.95 still prevents absurd certainty while allowing
@@ -572,7 +626,7 @@ export function nbaPredictGame({
     homeStats.ppg > 0 && awayStats.ppg > 0,                 // basic stats loaded
     homeStats.fgPct > 0 && awayStats.fgPct > 0,             // shooting stats
     homeStats.pace > 0 && awayStats.pace > 0,               // tempo available
-    homeStats.oppPpg !== 112.0 || awayStats.oppPpg !== 112.0, // real defensive stats (not default)
+    homeStats.oppPpg !== 112.0 && awayStats.oppPpg !== 112.0, // AUDIT M1 FIX: was || (passed if only 1 team had real data)
     homeStats.formScore != null && awayStats.formScore != null, // form/trend data
     minGames >= 5,                                            // enough games for basic stats
   ];

@@ -1,5 +1,5 @@
 // src/sports/nba/NBACalendarTab.jsx
-// v16 fixes: NBA-H3 (rest/travel in CalendarTab), NBA-M2 (wider ML caps), NBA-M6 (parlay prop)
+// v17 audit fixes: removed redundant fetchNBARealPace calls (data already in team stats)
 import { useState, useEffect, useCallback } from "react";
 import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, BetSignalsPanel } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
@@ -10,7 +10,6 @@ import { nbaAutoSync, computeDaysRest } from "./nbaSync.js";
 import {
   fetchNBAGamesForDate,
   fetchNBATeamStats,
-  fetchNBARealPace,
   nbaPredictGame,
   matchNBAOddsToGame,
   NBA_TEAM_COLORS,
@@ -36,8 +35,11 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     // Pre-load all team stats and compute dynamic league averages
     const allStatsPairs = await Promise.all(raw.map(async g => {
       const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
-      let nbaRealH = null, nbaRealA = null;
-      try { [nbaRealH, nbaRealA] = await Promise.all([fetchNBARealPace(g.homeAbbr), fetchNBARealPace(g.awayAbbr)]); } catch {}
+      // AUDIT: fetchNBARealPace was redundant wrapper over fetchNBATeamStats.
+      // Team stats already contain pace, adjOE, adjDE, netRtg.
+      // Pass them directly as realStats to preserve backward compat with nbaPredictGame.
+      const nbaRealH = hs ? { pace: hs.pace, offRtg: hs.adjOE, defRtg: hs.adjDE, netRtg: hs.netRtg } : null;
+      const nbaRealA = as_ ? { pace: as_.pace, offRtg: as_.adjOE, defRtg: as_.adjDE, netRtg: as_.netRtg } : null;
       return { game: g, hs, as_, nbaRealH, nbaRealA };
     }));
     // Compute league averages from all unique teams loaded today

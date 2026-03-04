@@ -251,13 +251,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 200 }}>
                   <div style={{ textAlign: "center" }}>
                     <div style={{ fontSize: 16, fontWeight: 800 }}>{aName}</div>
-                    {(game.awayStats?._kenPomRank || game.awayRank) && <div style={{ fontSize: 9, color: C.orange }}>#{game.awayStats?._kenPomRank || game.awayRank}</div>}
+                    {(() => { const r = game.awayStats?._kenPomRank || (game.awayRank && game.awayRank < 99 ? game.awayRank : null); return r ? <div style={{ fontSize: 9, color: C.orange }}>#{r}</div> : null; })()}
                     <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
                   </div>
                   <div style={{ fontSize: 13, color: C.dim }}>@</div>
                   <div style={{ textAlign: "center" }}>
                     <div style={{ fontSize: 16, fontWeight: 800 }}>{hName}</div>
-                    {(game.homeStats?._kenPomRank || game.homeRank) && <div style={{ fontSize: 9, color: C.orange }}>#{game.homeStats?._kenPomRank || game.homeRank}</div>}
+                    {(() => { const r = game.homeStats?._kenPomRank || (game.homeRank && game.homeRank < 99 ? game.homeRank : null); return r ? <div style={{ fontSize: 9, color: C.orange }}>#{r}</div> : null; })()}
                     <div style={{ fontSize: 9, color: C.dim }}>HOME{game.neutralSite ? " (N)" : ""}</div>
                   </div>
                 </div>

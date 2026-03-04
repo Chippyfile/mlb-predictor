@@ -1,15 +1,13 @@
 // src/sports/nba/nbaSync.js
-// NBA v16 — Forensic Audit Implementation
+// NBA v17 — Deep Formula Audit Implementation
 //
-// v15 fixes retained:
+// v16 fixes retained:
 //   NBA-07: Persist 30+ raw stat columns to Supabase for ML training
 //   NBA-10: Real B2B rest detection from schedule data
 //   NBA-11: Real travel distance from previous game city
-//   NBA-14: Uses canonical fetchNBARealPace from nbaUtils (not local copy)
 //
-// v16 fixes:
-//   NBA-H3: computeDaysRest now exported for CalendarTab use
-//   NBA-H4: fetchNBARealPace import retained (now thin wrapper in nbaUtils)
+// v17 fixes:
+//   Removed redundant fetchNBARealPace calls (team stats already contain pace/ratings)
 
 import { supabaseQuery } from "../../utils/supabase.js";
 import { fetchOdds } from "../../utils/sharedUtils.js";
@@ -17,7 +15,6 @@ import { calcCLV } from "../../utils/betUtils.js";
 import {
   fetchNBATeamStats,
   fetchNBAGamesForDate,
-  fetchNBARealPace,   // NBA-14: now imported from canonical source (was local stub)
   nbaPredictGame,
   matchNBAOddsToGame,
   haversineDistance,
@@ -169,8 +166,9 @@ export async function nbaAutoSync(onProgress) {
     const rows = (await Promise.all(unsaved.map(async g => {
       const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
       if (!hs || !as_) return null;
-      let nbaRealH = null, nbaRealA = null;
-      try { [nbaRealH, nbaRealA] = await Promise.all([fetchNBARealPace(g.homeAbbr), fetchNBARealPace(g.awayAbbr)]); } catch {}
+      // AUDIT: Use team stats directly for pace/ratings (fetchNBARealPace was redundant wrapper)
+      const nbaRealH = { pace: hs.pace, offRtg: hs.adjOE, defRtg: hs.adjDE, netRtg: hs.netRtg };
+      const nbaRealA = { pace: as_.pace, offRtg: as_.adjOE, defRtg: as_.adjDE, netRtg: as_.netRtg };
 
       // NBA-10: Compute real days of rest
       const homeDaysRest = computeDaysRest(hs, dateStr);
