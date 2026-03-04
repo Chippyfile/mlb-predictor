@@ -17,7 +17,7 @@ const _ncaaSeasonStart = (() => {
 })();
 
 // FIX: ML moneyline cap — prevents absurd -1194 type values
-// Matches NBA pattern (NBACalendarTab uses ML_CAP = 500)
+// NCAA uses 800 (vs NBA's 500) because genuine blowouts are more common
 const ML_CAP = 800;
 
 export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
@@ -110,25 +110,28 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             away_rest_days: awayRestDays,
           });
         // R9: MC uses ouTotal-based means (NOT spread-optimized scores which inflate totals by ~13pts)
-        // Split ouTotal proportionally using the heuristic score ratio
+        // Split ouTotal proportionally using the heuristic score ratio, then shift by ML margin delta
+        // FIX (v22): mlMarginAdj already divides by 2 (to split between home+/away-).
+        // Lines below were ALSO dividing by 2, making MC margin = (ml_margin - heuristic) / 4.
+        // This caused MC home win% to be ~62% when display showed ~77% for a 7.5-pt favorite.
         const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
         const heuristicTotal = pred.homeScore + pred.awayScore;
         const ouBase = pred.ouTotal ?? heuristicTotal;
         const homeRatio = heuristicTotal > 0 ? pred.homeScore / heuristicTotal : 0.5;
-        const mcHome = ouBase * homeRatio + mlMarginAdj / 2;
-        const mcAway = ouBase * (1 - homeRatio) - mlMarginAdj / 2;
+        const mcHome = ouBase * homeRatio + mlMarginAdj;
+        const mcAway = ouBase * (1 - homeRatio) - mlMarginAdj;
         mcResult = await mlMonteCarlo("NCAAB", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
       // FIX: Reconcile projected scores with ML margin so all displayed
       // values are internally consistent. Without this, scores can say
       // "Team A wins" while spread/winPct say "Team B wins".
       //
-      // CONSISTENCY FIX (v21): Derive win probability FROM margin (like NBA does)
-      // so that spread, win%, and ML moneyline always agree. Previously, NCAA
-      // used raw ml_win_prob_home from the classifier, which can diverge wildly
-      // from the margin regressor (e.g., margin says +7.5 → ~63% but classifier
-      // outputs 92.3%). The NBA pattern of blending margin-based + classifier
-      // probabilities prevents this kind of internal contradiction.
+      // CONSISTENCY FIX (v22): Adaptive blend of margin-based + classifier
+      // win probabilities. When the classifier diverges wildly from the margin
+      // regressor (e.g., margin says +7.5 → ~65% but classifier outputs 92.3%),
+      // the classifier weight is automatically reduced. This prevents the
+      // internal contradiction while still giving the classifier influence
+      // on games where it and the margin agree.
       const finalPred = pred && mlResult ? (() => {
         const mlMargin = mlResult.ml_margin;
         const heuristicMargin = pred.projectedSpread;
@@ -137,20 +140,23 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
 
         // CONSISTENCY FIX: Derive win prob FROM margin so spread/win%/ML always agree.
-        // This matches the NBA CalendarTab pattern exactly.
         const SIGMA = dynamicSigma || 16.0;
         const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
 
-        // Blend: 70% margin-derived + 30% classifier (margin is more reliable for
-        // internal consistency; classifier is better calibrated overall)
-        const MARGIN_WEIGHT = 0.70;
-        const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
+        // ADAPTIVE BLEND (v22): Base is 70% margin / 30% classifier, but when
+        // the classifier diverges > 15% from margin-based, progressively reduce
+        // classifier influence (up to 95% margin). This prevents a runaway
+        // classifier from pulling win% far from what the spread implies.
+        const MARGIN_WEIGHT_BASE = 0.70;
+        const divergence = Math.abs(marginBasedWinProb - mlResult.ml_win_prob_home);
+        const adaptiveMarginWeight = Math.min(0.95, MARGIN_WEIGHT_BASE + divergence);
+        const rawBlended = adaptiveMarginWeight * marginBasedWinProb + (1 - adaptiveMarginWeight) * mlResult.ml_win_prob_home;
 
-        // FIX: Apply proper win probability caps matching the backend (ncaa.py: [0.05, 0.95])
+        // Apply proper win probability caps matching the backend (ncaa.py: [0.05, 0.95])
         const blendedWinHome = Math.max(0.05, Math.min(0.95, rawBlended));
         const blendedWinAway = 1 - blendedWinHome;
 
-        // FIX: Cap moneyline values to prevent absurd -1194 displays
+        // Cap moneyline values to prevent absurd -1194 displays
         const newModelML_home = blendedWinHome >= 0.5
           ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
           : +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100));
@@ -175,15 +181,19 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _heuristicSpread: pred.projectedSpread,
           _heuristicWinPct: pred.homeWinPct,
           _rawMlWinProb: mlResult.ml_win_prob_home,
+          _marginBasedWinProb: marginBasedWinProb,
+          _adaptiveMarginWeight: adaptiveMarginWeight,
+          _divergence: divergence,
         };
       })() : pred;
       // R9: MC uses ouTotal-based means to avoid inflated totals from spread-optimized scores
+      // FIX (v22): Same double-division fix as primary MC block above
       const _ouBase2 = pred?.ouTotal ?? (pred?.homeScore + pred?.awayScore);
       const _hTotal2 = (pred?.homeScore + pred?.awayScore) || 1;
       const _homeRatio2 = pred?.homeScore / _hTotal2;
       const _mlAdj2 = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
-      const mcHomeMean = _ouBase2 * _homeRatio2 + _mlAdj2 / 2;
-      const mcAwayMean = _ouBase2 * (1 - _homeRatio2) - _mlAdj2 / 2;
+      const mcHomeMean = _ouBase2 * _homeRatio2 + _mlAdj2;
+      const mcAwayMean = _ouBase2 * (1 - _homeRatio2) - _mlAdj2;
       if (pred && !mcResult) {
         mcResult = await mlMonteCarlo("NCAAB", mcHomeMean, mcAwayMean, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
