@@ -105,10 +105,14 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             home_rest_days: homeRestDays,
             away_rest_days: awayRestDays,
           });
-        // R9: MC uses ML-adjusted means when ML is available
+        // R9: MC uses ouTotal-based means (NOT spread-optimized scores which inflate totals by ~13pts)
+        // Split ouTotal proportionally using the heuristic score ratio
         const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
-        const mcHome = pred.homeScore + mlMarginAdj;
-        const mcAway = pred.awayScore - mlMarginAdj;
+        const heuristicTotal = pred.homeScore + pred.awayScore;
+        const ouBase = pred.ouTotal ?? heuristicTotal;
+        const homeRatio = heuristicTotal > 0 ? pred.homeScore / heuristicTotal : 0.5;
+        const mcHome = ouBase * homeRatio + mlMarginAdj / 2;
+        const mcAway = ouBase * (1 - homeRatio) - mlMarginAdj / 2;
         mcResult = await mlMonteCarlo("NCAAB", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
       // FIX: Reconcile projected scores with ML margin so all displayed
@@ -145,9 +149,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _heuristicWinPct: pred.homeWinPct,
         };
       })() : pred;
-      // R9: MC uses ML-adjusted means when ML prediction is available
-      const mcHomeMean = mlResult ? pred.homeScore + (mlResult.ml_margin - pred.projectedSpread) / 2 : pred?.homeScore;
-      const mcAwayMean = mlResult ? pred.awayScore - (mlResult.ml_margin - pred.projectedSpread) / 2 : pred?.awayScore;
+      // R9: MC uses ouTotal-based means to avoid inflated totals from spread-optimized scores
+      const _ouBase2 = pred?.ouTotal ?? (pred?.homeScore + pred?.awayScore);
+      const _hTotal2 = (pred?.homeScore + pred?.awayScore) || 1;
+      const _homeRatio2 = pred?.homeScore / _hTotal2;
+      const _mlAdj2 = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
+      const mcHomeMean = _ouBase2 * _homeRatio2 + _mlAdj2 / 2;
+      const mcAwayMean = _ouBase2 * (1 - _homeRatio2) - _mlAdj2 / 2;
       if (pred && !mcResult) {
         mcResult = await mlMonteCarlo("NCAAB", mcHomeMean, mcAwayMean, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }

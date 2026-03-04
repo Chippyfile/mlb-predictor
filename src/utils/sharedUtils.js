@@ -113,9 +113,11 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
 
   // ── O/U SIGNAL ─────────────────────────────────────────────
   let ouSignal = null;
+  // BUGFIX: Use pred.ouTotal (PPG-based, ~164 for NCAAB) NOT homeScore+awayScore
+  // (spread-optimized scores inflate totals by ~13 pts, causing false OVER signals)
   const projTotal = sport === "mlb"
     ? (pred.homeRuns + pred.awayRuns)
-    : (pred.homeScore + pred.awayScore);
+    : (pred.ouTotal ?? (pred.homeScore + pred.awayScore));
   const mktTotal = odds?.ouLine ?? odds?.marketTotal ?? null;
   if (mktTotal) {
     const diff    = projTotal - mktTotal;
