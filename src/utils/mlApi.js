@@ -1,31 +1,58 @@
 // src/utils/mlApi.js
-// Lines 70–105 of App.jsx (extracted)
 
 const ML_API = "https://sports-predictor-api-production.up.railway.app";
-let _mlApiAvailable = true;
+
+// Per-sport circuit breakers — a 500 on MLB must NOT block NCAA/NBA calls
+const _available = {};
+const _resetTimers = {};
+
+function isAvailable(sport) {
+  return _available[sport] !== false;
+}
+
+function markFailed(sport) {
+  _available[sport] = false;
+  clearTimeout(_resetTimers[sport]);
+  _resetTimers[sport] = setTimeout(() => {
+    _available[sport] = true;
+    console.log(`[mlApi] Circuit breaker reset for ${sport}`);
+  }, 60000);
+}
 
 export async function mlPredict(sport, gameData) {
-  if (!_mlApiAvailable) return null;
+  const key = sport.toLowerCase();
+  if (!isAvailable(key)) {
+    console.warn(`[mlApi] ${sport} circuit breaker open — skipping ML call`);
+    return null;
+  }
   try {
-    const res = await fetch(`${ML_API}/predict/${sport.toLowerCase()}`, {
+    const res = await fetch(`${ML_API}/predict/${key}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(gameData),
       signal: AbortSignal.timeout(6000),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(`[mlApi] /predict/${key} returned ${res.status} — circuit breaker tripped for ${sport}`);
+      markFailed(key);
+      return null;
+    }
     const data = await res.json();
-    if (data?.error) return null;
+    if (data?.error) {
+      console.error(`[mlApi] /predict/${key} error:`, data.error);
+      return null;
+    }
+    console.log(`[mlApi] /predict/${key} OK — win_prob_home: ${data.ml_win_prob_home?.toFixed(3)}, margin: ${data.ml_margin?.toFixed(1)}`);
     return data;
-  } catch {
-    _mlApiAvailable = false;
-    setTimeout(() => { _mlApiAvailable = true; }, 60000);
+  } catch (e) {
+    console.error(`[mlApi] /predict/${key} exception:`, e.message);
+    markFailed(key);
     return null;
   }
 }
 
 export async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000, ouLine = null, gameId = null) {
-  if (!_mlApiAvailable) return null;
+  if (!isAvailable("monte-carlo")) return null;
   try {
     const res = await fetch(`${ML_API}/monte-carlo`, {
       method: "POST",
