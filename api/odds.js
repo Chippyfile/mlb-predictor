@@ -10,7 +10,14 @@ export default async function handler(req, res) {
   try {
     const upstream = await fetch(url);
     const raw = await upstream.json();
-    const games = (raw || []).map(g => {
+    // The Odds API returns an array on success, but an object on error
+    // e.g. {"message":"Out of quota"} or {"message":"Unknown sport key"}
+    if (!Array.isArray(raw)) {
+      const msg = raw?.message || raw?.error || JSON.stringify(raw);
+      console.error(`[odds] Upstream error for ${sport}: ${msg}`);
+      return res.json({ error: msg, games: [], noKey: false });
+    }
+    const games = raw.map(g => {
       const books = g.bookmakers || [];
       // Search ALL bookmakers for each market (some books only offer h2h, not totals)
       const findMarket = (key) => {
