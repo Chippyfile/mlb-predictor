@@ -91,16 +91,24 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       // ── ML API: calibrated win prob + SHAP + Monte Carlo ──
       let mlResult = null, mcResult = null;
       if (pred) {
-        [mlResult, mcResult] = await Promise.all([
-          mlPredict("nba", {
+        // Run ML prediction first, then MC with ML-adjusted means
+        mlResult = await mlPredict("nba", {
             pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
             home_net_rtg: pred.homeNetRtg, away_net_rtg: pred.awayNetRtg,
             win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
             model_ml_home: pred.modelML_home,
             market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
-          }),
-          mlMonteCarlo("NBA", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal),
-        ]);
+          });
+        // FIX (v22): MC was using raw heuristic scores, ignoring the ML margin
+        // entirely. Now split ouTotal by heuristic ratio + ML margin shift,
+        // matching the NCAA fix for the double-division bug.
+        const heuristicTotal = pred.homeScore + pred.awayScore;
+        const ouBase = pred.ouTotal ?? heuristicTotal;
+        const homeRatio = heuristicTotal > 0 ? pred.homeScore / heuristicTotal : 0.5;
+        const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
+        const mcHome = ouBase * homeRatio + mlMarginAdj;
+        const mcAway = ouBase * (1 - homeRatio) - mlMarginAdj;
+        mcResult = await mlMonteCarlo("NBA", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal);
       }
       // FIX: Reconcile projected scores with ML margin so all displayed
       // values are internally consistent.
