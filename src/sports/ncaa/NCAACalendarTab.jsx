@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
 import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, normalizeNCAAOdds, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
@@ -16,7 +16,7 @@ const _ncaaSeasonStart = (() => {
 })();
 
 // ML moneyline cap — prevents absurd -1194 type values
-const ML_CAP = 800;
+const ML_CAP = 4500;
 
 // Format moneyline for display
 const formatML = (ml) => {
@@ -664,4 +664,5 @@ export function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalib
             disabled={backfilling} 
             style={{ 
               background: "#161b22", 
-              color: C.m
+              color: C.muted, 
+              border: `1px solid ${C.border}`, 
