@@ -1,5 +1,5 @@
 // src/sports/nba/nbaUtils.js
-// NBA v18 — Cross-Sport Alignment (v17 → v18)
+// NBA v19 — Deep Formula Audit + NCAAB Carry-Over Fixes
 //
 // v17 deep formula audit fixes retained:
 //   AUDIT-C1: KenPom additive core formula (replaces multiplicative)
@@ -17,6 +17,11 @@
 //   ALIGN-4: Turnover margin signal — steals minus turnovers differential (NCAA F11)
 //   ALIGN-5: Spread-preserving total cap at 260 (NCAA caps at 190)
 //   ALIGN-9: Dynamic sigma — 10.5–14.5 range by season phase + matchup quality
+//
+// v19 audit fixes:
+//   H1: rimProtection clamped to >= 0 (14/15 matchups had negative values)
+//   H3: lgAvg fallback fixed from lg.ppg → 113.5 (wrong unit for per-100-poss formula)
+//   NEW-H3: Decisiveness STRONG threshold raised 15 → 20 (NBA sigma tighter than NCAA)
 
 export const NBA_TEAMS_LIST = [
   { id:"ATL",name:"Atlanta Hawks",conf:"East" },{ id:"BOS",name:"Boston Celtics",conf:"East" },
@@ -498,7 +503,7 @@ export function nbaPredictGame({
   const homeDefRtg = homeRealStats?.defRtg || homeStats.adjDE;
   const awayDefRtg = awayRealStats?.defRtg || awayStats.adjDE;
   const poss = (homePace + awayPace) / 2;
-  const lgAvg = lg.offRtg || lg.ppg;  // Use per-100-poss rating, not raw ppg
+  const lgAvg = lg.offRtg || 113.5;  // NEVER fall back to lg.ppg (wrong unit for per-100-poss formula)
 
   // ── Core score projection (KenPom additive matchup) ──
   // AUDIT C1 FIX: Replaced multiplicative formula which inflated scores by 8-26 pts
@@ -627,10 +632,13 @@ export function nbaPredictGame({
   }
 
   // ── NBA-12 FIX: Rim protection now uses real collected blocks/fouls ──
+  // v19-H1 FIX: Clamp to >= 0. When blocks < average AND opponent fouls > 20,
+  // the combined score goes negative, which would INCREASE opponent scoring.
+  // 14 of 15 round-robin matchups fire this bug in 2024-25 (foulsPerGame > 20).
   const rimProtection = (blk, oppFouls) => {
     const blkBonus = blk != null ? (blk - (lg.blocks || 5.0)) * 0.18 : 0;
     const foulPenalty = oppFouls != null ? (oppFouls - 20) * -0.06 : 0;
-    return blkBonus + foulPenalty;
+    return Math.max(0, blkBonus + foulPenalty);
   };
   // AUDIT H2 FIX: Rim protection now reduces OPPONENT score (blocks are defensive).
   // Was incorrectly added to blocking team's own score.
@@ -750,7 +758,8 @@ export function nbaPredictGame({
   // valuable than an 80% pick with LOW confidence — because you TRUST
   // the 52% number enough to bet on the edge.
   const decisiveness = Math.abs(hwp - 0.5) * 100;
-  const decisivenessLabel = decisiveness >= 15 ? "STRONG" : decisiveness >= 7 ? "MODERATE" : "LEAN";
+  // v19 NEW-H3: Raised STRONG threshold 15 → 20 for NBA's tighter sigma scale
+  const decisivenessLabel = decisiveness >= 20 ? "STRONG" : decisiveness >= 7 ? "MODERATE" : "LEAN";
 
   return {
     homeScore: parseFloat(homeScore.toFixed(1)),

@@ -30,8 +30,9 @@ import {
 // ─────────────────────────────────────────────────────────────
 function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game }) {
   return {
-    home_woba: parseFloat((pred.homeWOBA || 0.314).toFixed(3)),
-    away_woba: parseFloat((pred.awayWOBA || 0.314).toFixed(3)),
+    // M-6 FIX: Fallback was 0.314 but engine uses LG_WOBA (currently 0.315 for 2025+).
+    home_woba: parseFloat((pred.homeWOBA || 0.315).toFixed(3)),
+    away_woba: parseFloat((pred.awayWOBA || 0.315).toFixed(3)),
     home_sp_fip: parseFloat((pred.hFIP || 4.25).toFixed(2)),
     away_sp_fip: parseFloat((pred.aFIP || 4.25).toFixed(2)),
     home_bullpen_era: parseFloat((homeBullpen?.era || 4.10).toFixed(2)),

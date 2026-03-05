@@ -416,21 +416,21 @@ export function ncaaPredictGame({
     const threeRate = stats.threeAttRate || 0.38;
     const eFG = stats.fgPct + 0.5 * threeRate * stats.threePct;
     const lgEFG = 0.502;
-    const eFGboost = (eFG - lgEFG) * 7.2; // AUDIT FIX 2: recalibrated
+    const eFGboost = (eFG - lgEFG) * 10.0; // AUDIT F9: recalibrated to Dean Oliver 40% target weight
 
     const toPct = stats.tempo > 0 ? (stats.turnovers / stats.tempo) * 100 : 18.0;
     const lgTO = 18.0;
-    const toBoost = (lgTO - toPct) * 0.09; // AUDIT FIX 2: recalibrated
+    const toBoost = (lgTO - toPct) * 0.08; // AUDIT F9: from 0.09 to 0.08 (Dean Oliver 25% target)
 
     // F2: Matchup-specific ORB% using opponent's actual DRB
     const oppDRB = opponentDefReb || 24.5;
     const matchupOrbPct = stats.offReb / (stats.offReb + oppDRB);
     const lgORB = 0.28;
-    const orbBoost = (matchupOrbPct - lgORB) * 5.5; // AUDIT FIX 2: recalibrated
+    const orbBoost = (matchupOrbPct - lgORB) * 4.0; // AUDIT F9: from 5.5 to 4.0 (Dean Oliver 20% target)
 
     const ftaRateVal = stats.ftaRate || 0.34;
     const lgFTR = 0.34;
-    const ftrBoost = (ftaRateVal - lgFTR) * 3.0; // AUDIT FIX 2: recalibrated
+    const ftrBoost = (ftaRateVal - lgFTR) * 2.5; // AUDIT F9: from 3.0 to 2.5 (Dean Oliver 15% target)
 
     const rawBoost = eFGboost + Math.max(-2.5, Math.min(2.5, toBoost)) + orbBoost + ftrBoost;
     return rawBoost * tempoScale;
@@ -525,10 +525,11 @@ export function ncaaPredictGame({
   homeScore += rankBoost(homeRank) * 0.3;
   awayScore += rankBoost(awayRank) * 0.3;
 
-  // ── Recent form ──
-  const formWeight = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames, 30) / 30));
-  homeScore += homeStats.formScore * formWeight * 4.0;
-  awayScore += awayStats.formScore * formWeight * 4.0;
+  // ── Recent form (F12 FIX: per-team weights, matches NBA AUDIT L1 pattern) ──
+  const homeFw = Math.min(0.10, 0.10 * Math.sqrt(Math.min(homeStats.totalGames || 0, 30) / 30));
+  const awayFw = Math.min(0.10, 0.10 * Math.sqrt(Math.min(awayStats.totalGames || 0, 30) / 30));
+  homeScore += homeStats.formScore * homeFw * 4.0;
+  awayScore += awayStats.formScore * awayFw * 4.0;
 
   // ── Safety cap: prevent unrealistic game totals ──
   // NCAA D1 game totals rarely exceed 190 in actual results.
@@ -572,7 +573,8 @@ export function ncaaPredictGame({
     : -Math.min(ML_CAP, Math.round((homeWinPct / (1 - homeWinPct)) * 100));
 
   const decisiveness = Math.abs(homeWinPct - 0.5) * 100;
-  const decisivenessLabel = decisiveness >= 15 ? "STRONG" : decisiveness >= 7 ? "MODERATE" : "LEAN";
+  // F14: Raised STRONG threshold from 15→20 for NCAAB (higher variance than pro leagues)
+  const decisivenessLabel = decisiveness >= 20 ? "STRONG" : decisiveness >= 8 ? "MODERATE" : "LEAN";
 
   // ── CONFIDENCE = DATA QUALITY (how much info the model has) ──
   // AUDIT FIX: Previously mixed prediction strength (emGap, winPctStrength) into
@@ -617,15 +619,17 @@ export function ncaaPredictGame({
   // ── O/U Total: PPG-based estimation (separate from spread) ──
   // homeScore/awayScore are adjOE-matchup based, optimized for spread accuracy.
   // They systematically inflate totals by ~35 pts (model avg 186 vs actual 151.5).
-  // Compute O/U from PPG matchup: (teamPPG + oppOppPPG) / 2 per side.
-  // ALIGN-8: Shrink factor added (matches NBA pattern). NCAA's ~30-game sample
-  // sizes are noisier than NBA's 82-game season, so PPG averages regress more
-  // toward the mean. 0.975 is slightly more aggressive than NBA's 0.984.
+  // F11 FIX: O/U uses KenPom additive formula (was averaging, same bug as Python Finding 1)
+  // Averaging: (PPG + oppOppPPG) / 2 compresses spread and inflates weak team scores
+  // Additive:  PPG + oppOppPPG - lgAvgPPG produces correct matchup-adjusted scores
   const NCAA_TOTAL_SHRINK = 0.975;
   const ouHCA = neutralSite ? 0 : 1.5;
-  const ouHomeScore = ((homeStats.ppg + awayStats.oppPpg) / 2 + ouHCA / 2) * NCAA_TOTAL_SHRINK;
-  const ouAwayScore = ((awayStats.ppg + homeStats.oppPpg) / 2 - ouHCA / 2) * NCAA_TOTAL_SHRINK;
-  const ouTotal = parseFloat((ouHomeScore + ouAwayScore).toFixed(1));
+  // Dynamic league PPG average — use team data if available, fallback 72.5
+  const _allPpg = [homeStats.ppg, awayStats.ppg, homeStats.oppPpg, awayStats.oppPpg].filter(v => v > 0);
+  const lgAvgPPG = _allPpg.length >= 4 ? (_allPpg.reduce((a, b) => a + b, 0) / _allPpg.length) : 72.5;
+  const ouHomeScore = (homeStats.ppg + awayStats.oppPpg - lgAvgPPG + ouHCA / 2) * NCAA_TOTAL_SHRINK;
+  const ouAwayScore = (awayStats.ppg + homeStats.oppPpg - lgAvgPPG - ouHCA / 2) * NCAA_TOTAL_SHRINK;
+  const ouTotal = parseFloat(Math.max(100, ouHomeScore + ouAwayScore).toFixed(1));
 
   // Round spread-optimized scores for display (these still drive spread/ML)
   const finalHome = parseFloat(homeScore.toFixed(1));

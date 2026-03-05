@@ -241,26 +241,12 @@ export const ncaaPredictGameEnhanced = (params) => {
 // formula (96 + (ppg - 110) * 0.3) instead of Dean Oliver possessions.
 // ═══════════════════════════════════════════════════════════════
 
-export function nbaRestTravelAdj(homeAbbr, awayAbbr, homeDaysRest, awayDaysRest, awayPrevCityAbbr = null) {
-  let homeAdj = 0, awayAdj = 0;
-  if (homeDaysRest === 0)                       { homeAdj -= 2.2; awayAdj += 2.2; }
-  else if (awayDaysRest === 0)                  { awayAdj -= 2.2; homeAdj += 2.2; }
-  else if (homeDaysRest - awayDaysRest >= 3)    homeAdj += 1.8;
-  else if (awayDaysRest - homeDaysRest >= 3)    awayAdj += 1.8;
-  if (awayPrevCityAbbr) {
-    const dist = haversineDistance(awayPrevCityAbbr, homeAbbr);
-    if (dist > 2000)      awayAdj -= 1.5;
-    else if (dist > 1000) awayAdj -= 0.8;
-  }
-  return { homeAdj, awayAdj };
-}
-
-export function nbaLineupImpact(homeInjuries = [], awayInjuries = []) {
-  const roleWeight = { starter:3.5, rotation:1.5, reserve:0.5 };
-  const homePenalty = homeInjuries.reduce((s, p) => s + (roleWeight[p.role] || 1.5), 0);
-  const awayPenalty = awayInjuries.reduce((s, p) => s + (roleWeight[p.role] || 1.5), 0);
-  return { homePenalty, awayPenalty };
-}
+// NBA-v20 AUDIT: nbaRestTravelAdj and nbaLineupImpact REMOVED.
+// Both had wrong constants vs the main engine (nbaUtils.js nbaPredictGame):
+//   - nbaRestTravelAdj: B2B penalty 2.2 (should be 3.0/3.6), gave opponent bonus
+//     (+2.2) which AUDIT-H1 explicitly removed, rest advantage 1.8 (should be 1.2)
+//   - nbaLineupImpact: starter weight 3.5 (should be 3.2)
+// The main prediction engine already handles rest, travel, and injuries.
 
 export const nbaPredictGameEnhanced = (params) => nbaPredictGame(params);
 

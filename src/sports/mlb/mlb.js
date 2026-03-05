@@ -1,7 +1,7 @@
 // src/sports/mlb/mlb.js
 // Lines 387–807 of App.jsx (extracted)
 
-import { STAT_SEASON, FULL_SEASON_THRESHOLD, SEASON } from "../../utils/sharedUtils.js";
+import { STAT_SEASON, FULL_SEASON_THRESHOLD, SEASON, MLB_CONSTANTS } from "../../utils/sharedUtils.js";
 
 // ─────────────────────────────────────────────────────────────
 // TEAMS
@@ -63,37 +63,40 @@ export function resolveStatTeamId(teamId, abbr) {
 // ─────────────────────────────────────────────────────────────
 export const PARK_FACTORS = {
   // hfa: park-specific home field advantage (research: dome teams, altitude, travel burden)
+  // dome: true for fixed/retractable roof parks where outdoor weather is irrelevant (H-5 fix)
+  // windBaseDir: compass heading toward straightaway CF from home plate (M-1 fix)
+  //   — default 180 (south-facing) if omitted; only set for parks with significant deviation
   // Base HFA ~0.035; domes get +0.008; Coors altitude +0.012; West Coast late starts +0.005
-  108: { runFactor: 1.02, hfa: 0.033, name: "Angel Stadium" },
-  109: { runFactor: 1.03, hfa: 0.038, name: "Chase Field" },       // dome (retractable)
-  110: { runFactor: 0.95, hfa: 0.034, name: "Camden Yards" },
-  111: { runFactor: 1.04, hfa: 0.037, name: "Fenway Park" },       // quirky dimensions help home team
-  112: { runFactor: 1.04, hfa: 0.036, name: "Wrigley Field" },     // wind knowledge
-  113: { runFactor: 1.00, hfa: 0.034, name: "Great American" },
-  114: { runFactor: 0.97, hfa: 0.035, name: "Progressive" },
-  115: { runFactor: 1.16, hfa: 0.048, name: "Coors Field" },       // altitude + humidor = huge HFA
-  116: { runFactor: 0.98, hfa: 0.034, name: "Comerica" },
-  117: { runFactor: 0.99, hfa: 0.042, name: "Minute Maid" },       // dome (retractable) + Crawford boxes
-  118: { runFactor: 1.01, hfa: 0.035, name: "Kauffman" },
-  119: { runFactor: 1.00, hfa: 0.038, name: "Dodger Stadium" },    // West Coast travel burden on visitors
-  120: { runFactor: 1.01, hfa: 0.034, name: "Nationals Park" },
-  121: { runFactor: 1.03, hfa: 0.035, name: "Citi Field" },
-  133: { runFactor: 0.99, hfa: 0.032, name: "Oakland Coliseum" },  // low attendance dampens HFA
-  134: { runFactor: 0.96, hfa: 0.034, name: "PNC Park" },
-  135: { runFactor: 0.95, hfa: 0.037, name: "Petco Park" },        // West Coast
-  136: { runFactor: 0.94, hfa: 0.039, name: "T-Mobile Park" },     // dome (retractable) + West Coast
-  137: { runFactor: 0.91, hfa: 0.038, name: "Oracle Park" },       // West Coast + quirky RF
-  138: { runFactor: 0.97, hfa: 0.035, name: "Busch Stadium" },
-  139: { runFactor: 0.96, hfa: 0.041, name: "Tropicana" },         // dome (fixed)
-  140: { runFactor: 1.05, hfa: 0.041, name: "Globe Life" },        // dome (retractable)
-  141: { runFactor: 1.03, hfa: 0.036, name: "Rogers Centre" },     // dome (retractable) + border travel
-  142: { runFactor: 1.00, hfa: 0.035, name: "Target Field" },
-  143: { runFactor: 1.06, hfa: 0.036, name: "Citizens Bank" },
-  144: { runFactor: 1.02, hfa: 0.035, name: "Truist Park" },
-  145: { runFactor: 1.00, hfa: 0.033, name: "Guaranteed Rate" },   // low attendance
-  146: { runFactor: 0.97, hfa: 0.040, name: "loanDepot" },         // dome (retractable)
-  147: { runFactor: 1.05, hfa: 0.036, name: "Yankee Stadium" },
-  158: { runFactor: 0.97, hfa: 0.035, name: "American Family Field" }, // dome (retractable)
+  108: { runFactor: 1.02, hfa: 0.033, name: "Angel Stadium", dome: false },
+  109: { runFactor: 1.03, hfa: 0.038, name: "Chase Field", dome: true },           // retractable roof
+  110: { runFactor: 0.95, hfa: 0.034, name: "Camden Yards", dome: false },
+  111: { runFactor: 1.04, hfa: 0.037, name: "Fenway Park", dome: false, windBaseDir: 65 },    // CF faces ENE
+  112: { runFactor: 1.04, hfa: 0.036, name: "Wrigley Field", dome: false, windBaseDir: 85 },   // CF faces ENE
+  113: { runFactor: 1.00, hfa: 0.034, name: "Great American", dome: false },
+  114: { runFactor: 0.97, hfa: 0.035, name: "Progressive", dome: false },
+  115: { runFactor: 1.16, hfa: 0.048, name: "Coors Field", dome: false },          // altitude + humidor = huge HFA
+  116: { runFactor: 0.98, hfa: 0.034, name: "Comerica", dome: false },
+  117: { runFactor: 0.99, hfa: 0.042, name: "Minute Maid", dome: true },           // retractable roof + Crawford boxes
+  118: { runFactor: 1.01, hfa: 0.035, name: "Kauffman", dome: false },
+  119: { runFactor: 1.00, hfa: 0.038, name: "Dodger Stadium", dome: false },       // West Coast travel burden
+  120: { runFactor: 1.01, hfa: 0.034, name: "Nationals Park", dome: false },
+  121: { runFactor: 1.03, hfa: 0.035, name: "Citi Field", dome: false, windBaseDir: 72 },     // CF faces ENE
+  133: { runFactor: 0.99, hfa: 0.032, name: "Oakland Coliseum", dome: false },     // low attendance dampens HFA
+  134: { runFactor: 0.96, hfa: 0.034, name: "PNC Park", dome: false, windBaseDir: 50 },       // CF faces NE
+  135: { runFactor: 0.95, hfa: 0.037, name: "Petco Park", dome: false },           // West Coast
+  136: { runFactor: 0.94, hfa: 0.039, name: "T-Mobile Park", dome: true },         // retractable roof + West Coast
+  137: { runFactor: 0.91, hfa: 0.038, name: "Oracle Park", dome: false, windBaseDir: 30 },    // CF faces NNE
+  138: { runFactor: 0.97, hfa: 0.035, name: "Busch Stadium", dome: false },
+  139: { runFactor: 0.96, hfa: 0.041, name: "Tropicana", dome: true },             // fixed dome
+  140: { runFactor: 1.05, hfa: 0.041, name: "Globe Life", dome: true },            // retractable roof
+  141: { runFactor: 1.03, hfa: 0.036, name: "Rogers Centre", dome: true },         // retractable roof + border travel
+  142: { runFactor: 1.00, hfa: 0.035, name: "Target Field", dome: false },
+  143: { runFactor: 1.06, hfa: 0.036, name: "Citizens Bank", dome: false, windBaseDir: 65 },  // CF faces ENE
+  144: { runFactor: 1.02, hfa: 0.035, name: "Truist Park", dome: false },
+  145: { runFactor: 1.00, hfa: 0.033, name: "Guaranteed Rate", dome: false },      // low attendance
+  146: { runFactor: 0.97, hfa: 0.040, name: "loanDepot", dome: true },             // retractable roof
+  147: { runFactor: 1.05, hfa: 0.036, name: "Yankee Stadium", dome: false },
+  158: { runFactor: 0.97, hfa: 0.035, name: "American Family Field", dome: true }, // retractable roof
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -213,11 +216,13 @@ const PARK_COORDINATES = {
 // FANGRAPHS GUTS! CONSTANTS (update annually from fangraphs.com/guts)
 // 2024 season values; 2025 in-season will be similar
 // ─────────────────────────────────────────────────────────────
-const LG_WOBA       = 0.317;   // 2024 FanGraphs league wOBA
-const WOBA_SCALE    = 1.25;    // 2024 FanGraphs wOBA scale
-const LG_RUNS_PER_G = 4.38;   // 2024 MLB league avg runs/game
-const PA_PER_GAME   = 37.8;   // 2024 MLB avg PA per team per game
-const LG_FIP        = 4.17;   // 2024 league average FIP
+// C-2 FIX: Season-aware constants from sharedUtils (matches Python SEASON_CONSTANTS)
+// Previously hardcoded to 2024 values, causing JS↔Python divergence for 2025+ seasons.
+const LG_WOBA       = MLB_CONSTANTS.lg_woba;
+const WOBA_SCALE    = MLB_CONSTANTS.woba_scale;
+const LG_RUNS_PER_G = MLB_CONSTANTS.lg_rpg;
+const PA_PER_GAME   = MLB_CONSTANTS.pa_pg;
+const LG_FIP        = MLB_CONSTANTS.lg_fip;
 const FIP_COEFF     = 0.55;   // Research-backed: 1 pt FIP ≈ 0.55 R/G impact
 const HFA_BASE      = 0.035;  // Post-COVID MLB home field advantage (~53.5%)
 
@@ -260,6 +265,11 @@ export function mlbFetch(path, params = {}) {
 // ─────────────────────────────────────────────────────────────
 // STAT BLENDING (current season + 2 prior years)
 // ─────────────────────────────────────────────────────────────
+// M-5 FIX: Skip blending for cumulative fields (gamesPlayed, ip, gamesStarted).
+// These aren't rate stats — averaging 80 GP current + 162 GP prior = 121 is meaningless.
+// Keep current season values for cumulative fields, blend only rate stats.
+const CUMULATIVE_FIELDS = new Set(["gamesPlayed", "ip", "gamesStarted"]);
+
 function blendStats(current, prior1, prior2, gamesPlayed) {
   const w = Math.min(1.0, gamesPlayed / FULL_SEASON_THRESHOLD);
   const priors = [prior1, prior2].filter(Boolean);
@@ -274,8 +284,13 @@ function blendStats(current, prior1, prior2, gamesPlayed) {
   }, {});
   const result = {};
   Object.keys(current).forEach(k => {
-    const c = current[k] ?? priorAvg[k], p = priorAvg[k] ?? current[k];
-    result[k] = (typeof c === "number" && typeof p === "number") ? c * w + p * (1 - w) : current[k];
+    if (CUMULATIVE_FIELDS.has(k)) {
+      // Keep current-season cumulative value (don't blend with prior seasons)
+      result[k] = current[k];
+    } else {
+      const c = current[k] ?? priorAvg[k], p = priorAvg[k] ?? current[k];
+      result[k] = (typeof c === "number" && typeof p === "number") ? c * w + p * (1 - w) : current[k];
+    }
   });
   return result;
 }
@@ -338,8 +353,14 @@ async function fetchOneSeasonStarterStats(pitcherId, season) {
   const gamesStarted = parseInt(s.gamesStarted) || parseInt(s.gamesPlayed) || 0;
   return {
     era, whip: parseFloat(s.whip) || 1.35, k9, bb9, ip, hr9, gamesStarted,
-    // No computed FIP here — let calcPitcherSkill() derive it from k9/bb9/gbPct
-    // Old formula included ERA (38% weight), defeating the purpose of FIP.
+    // M-2 FIX: Compute actual FIP from component stats. Previously calcPitcherSkill
+    // always fell through to SIERA-ERA blend because fip/xfip were never set here.
+    // FIP = ((13×HR9 + 3×BB9 - 2×K9) / 9) + cFIP
+    // cFIP varies by season (~3.10-3.20); we approximate with a stable constant.
+    fip: Math.max(2.0, Math.min(7.0, ((13 * hr9 + 3 * bb9 - 2 * k9) / 9) + 3.15)),
+    gbPct: parseFloat(s.groundOutsToAirouts) > 0
+      ? parseFloat(s.groundOutsToAirouts) / (parseFloat(s.groundOutsToAirouts) + 1)
+      : null,
   };
 }
 
@@ -367,7 +388,7 @@ export async function fetchRecentForm(teamId, numGames = 15) {
         const isHome = g.teams?.home?.team?.id === teamId;
         const my = isHome ? g.teams?.home : g.teams?.away;
         const op = isHome ? g.teams?.away : g.teams?.home;
-        games.push({ win: my?.isWinner || false, rs: my?.score || 0, ra: op?.score || 0 });
+        games.push({ win: my?.isWinner || false, rs: my?.score || 0, ra: op?.score || 0, date: g.gameDate || d.date });
       }
     }
   const recent = games.slice(-numGames);
@@ -379,32 +400,49 @@ export async function fetchRecentForm(teamId, numGames = 15) {
   const rfPg = rf / recent.length;
   const raPg = ra / recent.length;
   const pythW = pythagenpat(rfPg, raPg, 0);
+  // H-2 FIX: Include lastGameDate so CalendarTab can compute real rest days
+  // instead of binary 1/4 proxy. We already have the schedule data.
+  const lastGameDate = games.length > 0 ? games[games.length - 1].date : null;
   return {
     gamesPlayed: games.length,
     winPct:      wins / recent.length,
     pythWinPct:  pythW,
     luckFactor:  wins / recent.length - pythW,
     formScore:   recent.slice(-5).reduce((s, g, i) => s + (g.win ? 1 : -0.6) * (i + 1), 0) / 15,
+    lastGameDate,
   };
 }
 
 export async function fetchBullpenFatigue(teamId) {
-  const today = new Date(), y = new Date(today), t2 = new Date(today);
-  y.setDate(today.getDate() - 1); t2.setDate(today.getDate() - 2);
-  const fmt  = d => d.toISOString().split("T")[0];
+  // M-3 FIX: Extended lookback from 2 days to 3 days. Research shows bullpen
+  // fatigue effects last 3-4 days. Added fallback estimation when pitchers array
+  // isn't populated in schedule endpoint.
+  const today = new Date();
+  const d3 = new Date(today);
+  d3.setDate(today.getDate() - 3);
+  const fmt = d => d.toISOString().split("T")[0];
   const data = await mlbFetch("schedule", {
-    teamId, season: SEASON, startDate: fmt(t2), endDate: fmt(y), sportId: 1,
+    teamId, season: SEASON, startDate: fmt(d3), endDate: fmt(today), sportId: 1,
   });
-  let py = 0, pt = 0;
+  let py = 0, pt = 0, p3 = 0;
   for (const date of (data?.dates || []))
     for (const g of (date.games || [])) {
+      if (g.status?.abstractGameState !== "Final" && g.status?.detailedState !== "Game Over") continue;
       const isHome = g.teams?.home?.team?.id === teamId;
-      const bp     = isHome ? g.teams?.home?.pitchers?.length || 0 : g.teams?.away?.pitchers?.length || 0;
-      const days   = Math.round((today - new Date(date.date)) / 86400000);
+      let bp = isHome ? g.teams?.home?.pitchers?.length || 0 : g.teams?.away?.pitchers?.length || 0;
+      if (bp === 0) {
+        // Fallback: if game was completed, assume ~4 relievers
+        const teamData = isHome ? g.teams?.home : g.teams?.away;
+        bp = teamData?.score != null ? 4 : 0;
+      }
+      const days = Math.round((today - new Date(date.date)) / 86400000);
       if (days === 1) py = bp;
       if (days === 2) pt = bp;
+      if (days === 3) p3 = bp;
     }
-  return { fatigue: Math.min(1, py * 0.15 + pt * 0.07), pitchersUsedYesterday: py, closerAvailable: py < 3 };
+  // Decay weights: yesterday 15%, 2 days 7%, 3 days 3% (diminishing effect)
+  const fatigue = Math.min(1, py * 0.15 + pt * 0.07 + p3 * 0.03);
+  return { fatigue, pitchersUsedYesterday: py, closerAvailable: py < 3 };
 }
 
 export async function fetchLineup(gamePk, teamId, isHome) {
@@ -421,8 +459,12 @@ export async function fetchLineup(gamePk, teamId, isHome) {
       const player = players[`ID${playerId}`]; if (!player) continue;
       const s = player.seasonStats?.batting;    if (!s) continue;
       const avg = parseFloat(s.avg) || 0.250, obp = parseFloat(s.obp) || 0.320, slg = parseFloat(s.slg) || 0.420;
-      const iso = Math.max(0, slg - avg);
-      const woba = Math.max(0.250, Math.min(0.420, 1.12 * obp + 0.31 * iso - 0.05));
+      // C-1 FIX: Use canonical wOBA formula (matches calcWOBA F-04 fix).
+      // OLD formula (1.12×OBP + 0.31×ISO - 0.05) was deprecated in audit F-04 but
+      // never updated here. Lineup wOBA is the HIGHEST priority input to calcWOBA
+      // (after xwOBA), so this wrong formula propagated to all lineup-confirmed games.
+      // Diff: ~0.005 wOBA → ~0.15 runs/game systematic error on confirmed-lineup games.
+      const woba = Math.max(0.250, Math.min(0.420, 0.72 * obp + 0.48 * slg - 0.08));
       const w    = battingOrder.indexOf(playerId) < 4 ? 1.35 : 1.0;
       totalWOBA += woba * w; count += w;
       const hand = player.person?.batSide?.code;
@@ -775,11 +817,21 @@ export function mlbPredictGame({
 
   const effectiveParkFactor = (() => {
     let pf = park.runFactor;
-    if (parkWeather) {
+    // H-5 FIX: Skip weather adjustments for dome/retractable-roof parks.
+    // Outdoor weather data is irrelevant inside a dome — was adding up to +4.4%
+    // false run inflation on hot/windy days at parks like Tropicana, Minute Maid.
+    if (parkWeather && !park.dome) {
       const { tempF = 70, windMph = 5, windDir = 180 } = parkWeather;
       pf += ((tempF - 70) / 10) * 0.0035; // AUDIT FIX 8: temp coeff updated
-      const windOut = windDir >= 145 && windDir <= 255;
-      const windIn  = windDir <= 50  || windDir >= 325;
+      // M-1 FIX: Rotate wind direction by park's outfield compass heading.
+      // Standard assumption (dir 180 = blowing to CF) only works for south-facing parks.
+      // parkWindBaseDir = compass heading toward straightaway center field from home plate.
+      // e.g. Wrigley CF faces ~east (85°), so a west wind (270°) is actually blowing OUT.
+      const parkWindBase = park.windBaseDir || 180; // default: south-facing
+      const adjustedDir = ((windDir - parkWindBase + 360) % 360);
+      // After rotation: 135-225° = blowing out, 315-360 or 0-45° = blowing in
+      const windOut = adjustedDir >= 135 && adjustedDir <= 225;
+      const windIn  = adjustedDir <= 45  || adjustedDir >= 315;
       if (windOut && windMph > 5) pf += (windMph - 5) * 0.0035; // AUDIT FIX 8
       if (windIn  && windMph > 5) pf -= (windMph - 5) * 0.0035; // AUDIT FIX 8
     }
@@ -846,8 +898,10 @@ export function mlbPredictGame({
   ar *= effectiveParkFactor;
 
   const ump = umpire || UMPIRE_DEFAULT;
-  hr += ump.runImpact * 0.48;
-  ar += ump.runImpact * 0.48;
+  // L-4 FIX: Coefficient was 0.48 (96% of full-game impact applied).
+  // runImpact is per-game, split evenly between two half-games → 0.50 per team.
+  hr += ump.runImpact * 0.50;
+  ar += ump.runImpact * 0.50;
 
   const avgGP = (homeGamesPlayed + awayGamesPlayed) / 2;
   const isSpringTraining = avgGP < 5;

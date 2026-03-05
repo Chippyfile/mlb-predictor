@@ -70,11 +70,11 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         calibrationFactor,
       });
       const gameOdds = odds?.games?.find(o => matchMLBOddsToGame(o, g)) || null;
-      // Phase 3: Compute SP avg IP per start for ML model
-      const homeSPipPerStart = homeStarter?.ip && homeStarter?.gamesStarted > 0
-        ? homeStarter.ip / homeStarter.gamesStarted : (homeStarter?.ip ? homeStarter.ip / 10 : 5.5);
-      const awaySPipPerStart = awayStarter?.ip && awayStarter?.gamesStarted > 0
-        ? awayStarter.ip / awayStarter.gamesStarted : (awayStarter?.ip ? awayStarter.ip / 10 : 5.5);
+      // H-4 FIX: Use prediction output directly instead of recalculating with different logic.
+      // Previously this had no 7.5 IP cap and an extra ip/10 fallback that diverged from
+      // mlb.js's calculation, causing frontend display ≠ ML model input.
+      const homeSPipPerStart = pred.homeSpAvgIP ?? 5.5;
+      const awaySPipPerStart = pred.awaySpAvgIP ?? 5.5;
       const [mlResult, mcResult] = await Promise.all([
         mlPredict("mlb", {
           // Heuristic outputs
@@ -99,9 +99,19 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           // SP workload (avg IP per start)
           home_sp_ip: homeSPipPerStart,
           away_sp_ip: awaySPipPerStart,
-          // Rest days (from form data — days since last game)
-          home_rest_days: homeForm?.gamesPlayed > 0 ? 1 : 4,
-          away_rest_days: awayForm?.gamesPlayed > 0 ? 1 : 4,
+          // H-2 FIX: Compute real rest days from last game date instead of binary 1/4 proxy.
+          // ML model is trained on continuous rest data (0-7+); binary proxy hid meaningful signal
+          // like 0-day rest (day game after night game → -0.15 run penalty).
+          home_rest_days: (() => {
+            if (!homeForm?.lastGameDate) return 4;
+            const daysSince = Math.floor((Date.now() - new Date(homeForm.lastGameDate).getTime()) / 86400000);
+            return Math.max(0, Math.min(7, daysSince));
+          })(),
+          away_rest_days: (() => {
+            if (!awayForm?.lastGameDate) return 4;
+            const daysSince = Math.floor((Date.now() - new Date(awayForm.lastGameDate).getTime()) / 86400000);
+            return Math.max(0, Math.min(7, daysSince));
+          })(),
         }),
         mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
       ]);
