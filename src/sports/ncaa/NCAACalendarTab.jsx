@@ -447,131 +447,153 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 )}
               </div>
 
-              {/* Main game row */}
-              <div style={{ padding: "16px 18px" }}>
-                {/* Column headers */}
-                <div style={{ 
-                  display: "grid", 
-                  gridTemplateColumns: "140px 70px 70px 70px 70px 70px 70px", 
-                  gap: 4, 
-                  marginBottom: 8,
-                  color: C.dim,
-                  fontSize: 9,
-                  fontWeight: 600,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.5px"
-                }}>
-                  <div></div>
-                  <div>Spread</div>
-                  <div>Mkt</div>
-                  <div>ML</div>
-                  <div>Mkt</div>
-                  <div>Total</div>
-                  <div>Mkt</div>
-                </div>
+// In NCAACalendarTab.jsx - Replace the main game row section (around line 400-500)
 
-                {/* Away team */}
-                <div style={{ 
-                  display: "grid", 
-                  gridTemplateColumns: "140px 70px 70px 70px 70px 70px 70px", 
-                  gap: 4, 
-                  alignItems: "center",
-                  marginBottom: 8
-                }}>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 16, fontWeight: 700 }}>{awayName}</span>
-                    {awayRank && (
-                      <span style={{ 
-                        fontSize: 9, 
-                        color: C.orange, 
-                        background: "#2d1a0f", 
-                        padding: "1px 4px", 
-                        borderRadius: 8 
-                      }}>
-                        #{awayRank}
-                      </span>
-                    )}
-                    <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>AWAY</span>
-                  </div>
-                  
-                  <div style={{ fontSize: 12, fontWeight: 500, color: game.pred.projectedSpread > 0 ? C.green : "#f85149" }}>
-                    {formatSpread(game.pred.projectedSpread)}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? (game.odds.homeSpread > 0 ? C.green : "#f85149") : C.dim }}>
-                    {game.odds?.homeSpread ? formatSpread(game.odds.homeSpread) : "-"}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500 }}>
-                    {formatML(game.pred.modelML_away)}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.awayML ? C.yellow : C.dim }}>
-                    {formatML(game.odds?.awayML)}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500 }}>
-                    {game.pred.ouTotal}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.ouLine ? C.yellow : C.dim }}>
-                    {game.odds?.ouLine || "-"}
-                  </div>
-                </div>
+{/* Main game row */}
+<div style={{ padding: "16px 18px" }}>
+  {/* Column headers */}
+  <div style={{
+    display: "grid",
+    gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+    gap: 4,
+    marginBottom: 8,
+    color: C.dim,
+    fontSize: 9,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px"
+  }}>
+    <div></div>
+    <div>Spread</div>
+    <div>Mkt</div>
+    <div>ML</div>
+    <div>Mkt</div>
+    <div style={{ textAlign: "center" }}>Total (O/U)</div>
+  </div>
 
-                {/* Separator */}
-                <div style={{ 
-                  display: "flex", 
-                  alignItems: "center", 
-                  gap: 8, 
-                  marginLeft: 70,
-                  marginBottom: 8,
-                  color: C.dim,
-                  fontSize: 10
-                }}>
-                  @
-                </div>
+  {/* Away team */}
+  <div style={{
+    display: "grid",
+    gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+    gap: 4,
+    alignItems: "center",
+    marginBottom: 8
+  }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 16, fontWeight: 700 }}>{awayName}</span>
+        {awayRank && (
+          <span style={{
+            fontSize: 9,
+            color: C.orange,
+            background: "#2d1a0f",
+            padding: "1px 4px",
+            borderRadius: 8
+          }}>
+            #{awayRank}
+          </span>
+        )}
+        <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>AWAY</span>
+      </div>
+      {/* Team record */}
+      {game.awayStats && (
+        <span style={{ fontSize: 10, color: C.dim }}>
+          {game.awayStats.wins || 0}-{game.awayStats.losses || 0}
+        </span>
+      )}
+    </div>
+    
+    <div style={{ fontSize: 12, fontWeight: 500, color: game.pred.projectedSpread > 0 ? C.green : "#f85149" }}>
+      {formatSpread(game.pred.projectedSpread)}
+    </div>
+    <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? (game.odds.homeSpread > 0 ? C.green : "#f85149") : C.dim }}>
+      {game.odds?.homeSpread ? formatSpread(game.odds.homeSpread) : "-"}
+    </div>
+    <div style={{ fontSize: 12, fontWeight: 500 }}>
+      {formatML(game.pred.modelML_away)}
+    </div>
+    <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.awayML ? C.yellow : C.dim }}>
+      {formatML(game.odds?.awayML)}
+    </div>
+    {/* Empty cell for Total - will be filled in home team row */}
+    <div></div>
+  </div>
 
-                {/* Home team */}
-                <div style={{ 
-                  display: "grid", 
-                  gridTemplateColumns: "140px 70px 70px 70px 70px 70px 70px", 
-                  gap: 4, 
-                  alignItems: "center" 
-                }}>
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 16, fontWeight: 700 }}>{homeName}</span>
-                    {homeRank && (
-                      <span style={{ 
-                        fontSize: 9, 
-                        color: C.orange, 
-                        background: "#2d1a0f", 
-                        padding: "1px 4px", 
-                        borderRadius: 8 
-                      }}>
-                        #{homeRank}
-                      </span>
-                    )}
-                    <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>
-                      HOME{game.neutralSite ? " (N)" : ""}
-                    </span>
-                  </div>
-                  
-                  <div style={{ fontSize: 12, fontWeight: 500, color: game.pred.projectedSpread < 0 ? C.green : "#f85149" }}>
-                    {formatSpread(-game.pred.projectedSpread)}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? (game.odds.homeSpread < 0 ? C.green : "#f85149") : C.dim }}>
-                    {game.odds?.homeSpread ? formatSpread(-game.odds.homeSpread) : "-"}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500 }}>
-                    {formatML(game.pred.modelML_home)}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeML ? C.yellow : C.dim }}>
-                    {formatML(game.odds?.homeML)}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500 }}>
-                    {game.pred.ouTotal}
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.ouLine ? C.yellow : C.dim }}>
-                    {game.odds?.ouLine || "-"}
-                  </div>
-                </div>
-              </div>
+  {/* Separator */}
+  <div style={{
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    marginLeft: 70,
+    marginBottom: 8,
+    color: C.dim,
+    fontSize: 10
+  }}>
+    @
+  </div>
+
+  {/* Home team */}
+  <div style={{
+    display: "grid",
+    gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+    gap: 4,
+    alignItems: "center"
+  }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 16, fontWeight: 700 }}>{homeName}</span>
+        {homeRank && (
+          <span style={{
+            fontSize: 9,
+            color: C.orange,
+            background: "#2d1a0f",
+            padding: "1px 4px",
+            borderRadius: 8
+          }}>
+            #{homeRank}
+          </span>
+        )}
+        <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>
+          HOME{game.neutralSite ? " (N)" : ""}
+        </span>
+      </div>
+      {/* Team record */}
+      {game.homeStats && (
+        <span style={{ fontSize: 10, color: C.dim }}>
+          {game.homeStats.wins || 0}-{game.homeStats.losses || 0}
+        </span>
+      )}
+    </div>
+    
+    <div style={{ fontSize: 12, fontWeight: 500, color: game.pred.projectedSpread < 0 ? C.green : "#f85149" }}>
+      {formatSpread(-game.pred.projectedSpread)}
+    </div>
+    <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? (game.odds.homeSpread < 0 ? C.green : "#f85149") : C.dim }}>
+      {game.odds?.homeSpread ? formatSpread(-game.odds.homeSpread) : "-"}
+    </div>
+    <div style={{ fontSize: 12, fontWeight: 500 }}>
+      {formatML(game.pred.modelML_home)}
+    </div>
+    <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeML ? C.yellow : C.dim }}>
+      {formatML(game.odds?.homeML)}
+    </div>
+    
+    {/* Total column - shown once for both teams */}
+    <div style={{
+      fontSize: 12,
+      fontWeight: 600,
+      textAlign: "center",
+      display: "flex",
+      flexDirection: "column",
+      gap: 2
+    }}>
+      <div>{game.pred.ouTotal}</div>
+      {game.odds?.ouLine && (
+        <div style={{ fontSize: 10, color: C.yellow }}>({game.odds.ouLine})</div>
+      )}
+    </div>
+  </div>
+</div>
 
               {/* Expanded view */}
               {expanded === game.gameId && (
