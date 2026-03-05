@@ -145,7 +145,15 @@ export async function fetchNCAATeamStats(teamId) {
     // Pre-compute games played for converting season totals to per-game if needed
     const totalGamesForAvg = (recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0)
       + (recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0);
+    const wins = recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
+    const losses = recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
+    const totalGames = wins + losses;
+    // Add this log to see what's being returned
+    console.log(`Team ${team.abbreviation || teamId} record:`, { wins, losses, totalGames });
 
+    // Also check the record data structure
+    console.log(`Record data for ${team.abbreviation || teamId}:`, recordData?.items);
+      
     // ── Additional stats for Four Factors, defensive metrics, tempo ──
     const fga = getStat("avgFieldGoalsAttempted") || (() => {
       const total = getStat("fieldGoalsAttempted");
