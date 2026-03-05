@@ -268,7 +268,7 @@ export async function fetchNCAATeamStats(teamId) {
 export async function fetchNCAAGamesForDate(dateStr) {
   try {
     const compact = dateStr.replace(/-/g, "");
-    const data = await espnFetch(`scoreboard?dates=${compact}&limit=100`);
+    const data = await espnFetch(`scoreboard?dates=${compact}&groups=50&limit=500`);
     if (!data?.events) return [];
     return data.events.map(event => {
       const comp = event.competitions?.[0];
