@@ -620,9 +620,7 @@ export function ncaaPredictGame({
   const modelML_home = homeWinPct >= 0.5
     ? -Math.min(ML_CAP, Math.round((homeWinPct / (1 - homeWinPct)) * 100))
     : +Math.min(ML_CAP, Math.round(((1 - homeWinPct) / homeWinPct) * 100));
-  const modelML_away = homeWinPct >= 0.5
-    ? +Math.min(ML_CAP, Math.round(((1 - homeWinPct) / homeWinPct) * 100))
-    : -Math.min(ML_CAP, Math.round((homeWinPct / (1 - homeWinPct)) * 100));
+  const modelML_away = -modelML_home;
 
   const decisiveness = Math.abs(homeWinPct - 0.5) * 100;
   // F14: Raised STRONG threshold from 15→20 for NCAAB (higher variance than pro leagues)

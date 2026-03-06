@@ -160,9 +160,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const newModelML_home = blendedWinHome >= 0.5
           ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
           : +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100));
-        const newModelML_away = blendedWinHome >= 0.5
-          ? +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100))
-          : -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100));
+        const newModelML_away = -newModelML_home;
         return {
           ...pred,
           homeScore: adjHomeScore,

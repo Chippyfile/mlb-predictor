@@ -713,7 +713,7 @@ export function nbaPredictGame({
     hwp = Math.min(0.95, Math.max(0.05, 0.5 + (hwp - 0.5) * calibrationFactor));
   }
   const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);
-  const aml = hwp >= 0.5 ? +Math.round(((1 - hwp) / hwp) * 100) : -Math.round((hwp / (1 - hwp)) * 100);
+  const aml = -mml;
 
   // ── NBA-C1 FIX (v16): Confidence = DATA QUALITY only ──
   // Previously mixed prediction strength (netGap=35pts, winPctStrength=30pts) into
