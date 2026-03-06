@@ -266,13 +266,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     if (odds?.homeML && odds?.awayML) {
       const market = trueImplied(odds.homeML, odds.awayML);
       const homeEdge = pred.homeWinPct - market.home;
-      if (dec >= 25 && Math.abs(homeEdge) >= EDGE_THRESHOLD)
+      if (dec >= DECISIVENESS_GATE.ncaa && Math.abs(homeEdge) >= EDGE_THRESHOLD)
         return { color: "green", edge: homeEdge, label: `+${(Math.abs(homeEdge) * 100).toFixed(1)}% ${homeEdge >= 0 ? "HOME" : "AWAY"} edge` };
       if (Math.abs(homeEdge) >= EDGE_THRESHOLD)
         return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge (lean)` };
       return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge` };
     }
-    if (dec >= 25) return { color: "green", label: `${favSide} ${(favPct * 100).toFixed(0)}%` };
+    if (dec >= DECISIVENESS_GATE.ncaa) return { color: "green", label: `${favSide} ${(favPct * 100).toFixed(0)}%` };
     return { color: "neutral", label: "Close matchup" };
   };
 
@@ -333,7 +333,6 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             ⏳ Loading {games.length > 0 ? `${games.length} games` : "schedule"}…
           </span>
         )}
-        <span style={{ fontSize: 10, color: C.dim }}>NCAA Men's Basketball · ESPN API</span>
       </div>
       
       {!loading && games.length === 0 && (
@@ -509,7 +508,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     {formatSpread(game.pred.projectedSpread)}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
-                    {game.odds?.homeSpread ? formatSpread(game.odds.homeSpread) : "-"}
+                    {game.odds?.homeSpread ? formatSpread(-game.odds.homeSpread) : "-"}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                     {formatML(game.pred.modelML_away)}
@@ -575,7 +574,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     {formatSpread(-game.pred.projectedSpread)}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
-                    {game.odds?.homeSpread ? formatSpread(-game.odds.homeSpread) : "-"}
+                    {game.odds?.homeSpread ? formatSpread(game.odds.homeSpread) : "-"}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                     {formatML(game.pred.modelML_home)}

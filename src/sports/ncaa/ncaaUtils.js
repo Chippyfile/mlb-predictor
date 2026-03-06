@@ -148,12 +148,7 @@ export async function fetchNCAATeamStats(teamId) {
     const wins = recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
     const losses = recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
     const totalGames = wins + losses;
-    // Add this log to see what's being returned
-    console.log(`Team ${team.abbreviation || teamId} record:`, { wins, losses, totalGames });
 
-    // Also check the record data structure
-    console.log(`Record data for ${team.abbreviation || teamId}:`, recordData?.items);
-      
     // ── Additional stats for Four Factors, defensive metrics, tempo ──
     const fga = getStat("avgFieldGoalsAttempted") || (() => {
       const total = getStat("fieldGoalsAttempted");
@@ -216,9 +211,7 @@ export async function fetchNCAATeamStats(teamId) {
     const threeAttRate = fga > 0 ? threeAtt / fga : 0.38;
     const stealToRatio = turnovers > 0 ? steals / turnovers : 0.58;
 
-    const wins = recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
-    const losses = recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
-    const totalGames = wins + losses;
+    // wins, losses, totalGames already declared above (lines ~148-150)
 
     // ── F13: Symmetric form score with exponential decay ──
     // V20-3: Uses schedData from Promise.all (was a separate sequential fetch)
