@@ -696,3 +696,110 @@ export function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalib
   };
 
   return (
+    <div>
+      <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {TABS.map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            style={{
+              padding: "6px 16px",
+              borderRadius: 7,
+              border: `1px solid ${tab === t ? "#30363d" : "transparent"}`,
+              background: tab === t ? "#161b22" : "transparent",
+              color: tab === t ? C.orange : C.dim,
+              cursor: "pointer",
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 1,
+              textTransform: "uppercase"
+            }}
+          >
+            {t === "calendar" ? "📅" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎯"} {t}
+          </button>
+        ))}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={handleAutoSync}
+            disabled={backfilling}
+            style={{
+              background: "#161b22",
+              color: C.muted,
+              border: `1px solid ${C.border}`,
+              borderRadius: 7,
+              padding: "6px 12px",
+              cursor: backfilling ? "not-allowed" : "pointer",
+              fontSize: 10
+            }}
+          >
+            ⟳ Sync
+          </button>
+          <button
+            onClick={handleFullBackfill}
+            style={{
+              background: backfilling ? "#2a0a0a" : "#1a0a00",
+              color: backfilling ? C.red : C.orange,
+              border: `1px solid ${backfilling ? "#5a1a1a" : "#3a1a00"}`,
+              borderRadius: 7,
+              padding: "6px 12px",
+              cursor: "pointer",
+              fontSize: 10,
+              fontWeight: 700
+            }}
+          >
+            {backfilling ? "⏹ Cancel" : "⏮ Full Season Backfill"}
+          </button>
+          <button
+            onClick={async () => {
+              if (!window.confirm("Regrade all NCAA records with updated confidence + ATS logic?")) return;
+              setSyncMsg("⏳ Regrading…");
+              await ncaaRegradeAllResults(msg => setSyncMsg(msg));
+              setRefreshKey(k => k + 1);
+              setTimeout(() => setSyncMsg(""), 4000);
+            }}
+            disabled={backfilling}
+            style={{
+              background: "#1a0a2e",
+              color: "#d2a8ff",
+              border: "1px solid #3d1f6e",
+              borderRadius: 7,
+              padding: "6px 12px",
+              cursor: "pointer",
+              fontSize: 10,
+              fontWeight: 700
+            }}
+          >
+            🔧 Regrade
+          </button>
+        </div>
+      </div>
+      {syncMsg && (
+        <div style={{
+          background: "#0d1a10",
+          border: `1px solid #1a3a1a`,
+          borderRadius: 7,
+          padding: "8px 14px",
+          marginBottom: 12,
+          fontSize: 11,
+          color: backfilling ? C.orange : C.green,
+          fontFamily: "monospace",
+          display: "flex",
+          alignItems: "center",
+          gap: 8
+        }}>
+          {backfilling && <span style={{ fontSize: 14 }}>⏳</span>}
+          {syncMsg}
+        </div>
+      )}
+      {!syncMsg && (
+        <div style={{ fontSize: 10, color: C.dim, marginBottom: 12, letterSpacing: 1 }}>
+          NCAA Men's Basketball · Season starts {_ncaaSeasonStart} · ESPN API (free, no key)
+        </div>
+      )}
+      {tab === "calendar" && <NCAACalendarTab calibrationFactor={calibrationNCAA} onGamesLoaded={setNcaaGames} />}
+      {tab === "accuracy" && <AccuracyDashboard table="ncaa_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNCAA} spreadLabel="Spread" isNCAA={true} />}
+      {tab === "history" && <HistoryTab table="ncaa_predictions" refreshKey={refreshKey} />}
+      {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={ncaaGames} />}
+    </div>
+  );
+}
