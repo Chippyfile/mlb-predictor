@@ -19,23 +19,24 @@ const _ncaaSeasonStart = (() => {
 const ML_CAP = 4000;
 
 // Unit badge for spread/ML/OU cells — replaces "BET"/"LEAN" text with ✓ 1u/2u/3u
-const UnitBadge = ({ units, isGo }) => {
-  if (!units) return null;
+const UnitBadge = ({ units, isGo, children }) => {
+  if (!units) return <>{children}</>;
   const badgeColor = isGo ? "#2ea043" : "#d29922";
   return (
     <div style={{
-      position: "absolute", top: -8, right: -6, 
-      display: "flex", alignItems: "center", gap: 2,
-      background: badgeColor, borderRadius: 4,
-      padding: "0 4px", lineHeight: "15px",
-      zIndex: 1,
+      display: "inline-flex", alignItems: "center", gap: 4,
+      background: `${badgeColor}18`,
+      border: `1px solid ${badgeColor}55`,
+      borderRadius: 5,
+      padding: "2px 6px",
     }}>
-      {[1, 2, 3].map(i => (
-        <span key={i} style={{
-          fontSize: 7, fontWeight: 900, color: i <= units ? "#fff" : "rgba(255,255,255,0.3)",
-        }}>✓</span>
-      ))}
-      <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", marginLeft: 1 }}>{units}u</span>
+      <span>{children}</span>
+      <span style={{
+        fontSize: 7, fontWeight: 800, color: badgeColor,
+        background: `${badgeColor}30`, borderRadius: 3,
+        padding: "0 3px", lineHeight: "13px",
+        whiteSpace: "nowrap",
+      }}>{units}u</span>
     </div>
   );
 };
@@ -62,6 +63,7 @@ const BetBanner = ({ signals, homeName, awayName }) => {
   const badgeColor = sz.units >= 2 ? "#2ea043" : "#d29922";
   const pickName = side === "HOME" ? homeName : awayName;
   const checks = "✓".repeat(sz.units);
+  const mlLine = sz.marketML > 0 ? `+${sz.marketML}` : sz.marketML;
   
   return (
     <div style={{
@@ -76,7 +78,7 @@ const BetBanner = ({ signals, homeName, awayName }) => {
       flexWrap: "wrap",
       gap: 8,
     }}>
-      {/* Left: unit blocks + pick */}
+      {/* Left: unit blocks + pick + market ML */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ display: "flex", gap: 3 }}>
           {[1, 2, 3].map(i => (
@@ -91,11 +93,14 @@ const BetBanner = ({ signals, homeName, awayName }) => {
           ))}
         </div>
         <div>
-          <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
-            {pickName}
-          </span>
-          <span style={{ fontSize: 10, color: C.muted, marginLeft: 6 }}>
-            +{edgePct}% edge
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>VALUE:</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
+              {pickName} ML {mlLine}
+            </span>
+          </div>
+          <span style={{ fontSize: 10, color: C.muted }}>
+            +{edgePct}% edge · {sz.winPct}% model vs {(100 - parseFloat(edgePct) - parseFloat(sz.winPct)).toFixed(0)}% market
           </span>
         </div>
       </div>
@@ -613,24 +618,24 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     )}
                   </div>
                   
-                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0", position: "relative" }}>
-                    {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "AWAY" && (
-                      <UnitBadge units={signals.betSizing.units} isGo={signals.spread?.verdict === "GO"} />
-                    )}
-                    {formatSpread(game.pred.projectedSpread)}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
+                    {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "AWAY"
+                      ? <UnitBadge units={signals.betSizing.units} isGo={signals.spread?.verdict === "GO"}>{formatSpread(game.pred.projectedSpread)}</UnitBadge>
+                      : formatSpread(game.pred.projectedSpread)
+                    }
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
                     {game.odds?.homeSpread ? formatSpread(-game.odds.homeSpread) : "-"}
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, position: "relative", color: (() => {
+                  <div style={{ fontSize: 12, fontWeight: 500, color: (() => {
                     const dec = game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100);
                     const awayFavored = game.pred.homeWinPct < 0.5;
                     return (awayFavored && dec >= DECISIVENESS_GATE.ncaa) ? C.green : "#e2e8f0";
                   })() }}>
-                    {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "AWAY" && signals.betSizing && (
-                      <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"} />
-                    )}
-                    {formatML(game.pred.modelML_away)}
+                    {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "AWAY" && signals.betSizing
+                      ? <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"}>{formatML(game.pred.modelML_away)}</UnitBadge>
+                      : formatML(game.pred.modelML_away)
+                    }
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.awayML ? "#e2e8f0" : C.dim }}>
                     {formatML(game.odds?.awayML)}
@@ -689,24 +694,24 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     )}
                   </div>
                   
-                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0", position: "relative" }}>
-                    {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "HOME" && (
-                      <UnitBadge units={signals.betSizing.units} isGo={signals.spread?.verdict === "GO"} />
-                    )}
-                    {formatSpread(-game.pred.projectedSpread)}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
+                    {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "HOME"
+                      ? <UnitBadge units={signals.betSizing.units} isGo={signals.spread?.verdict === "GO"}>{formatSpread(-game.pred.projectedSpread)}</UnitBadge>
+                      : formatSpread(-game.pred.projectedSpread)
+                    }
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
                     {game.odds?.homeSpread ? formatSpread(game.odds.homeSpread) : "-"}
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, position: "relative", color: (() => {
+                  <div style={{ fontSize: 12, fontWeight: 500, color: (() => {
                     const dec = game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100);
                     const homeFavored = game.pred.homeWinPct >= 0.5;
                     return (homeFavored && dec >= DECISIVENESS_GATE.ncaa) ? C.green : "#e2e8f0";
                   })() }}>
-                    {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "HOME" && signals.betSizing && (
-                      <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"} />
-                    )}
-                    {formatML(game.pred.modelML_home)}
+                    {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "HOME" && signals.betSizing
+                      ? <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"}>{formatML(game.pred.modelML_home)}</UnitBadge>
+                      : formatML(game.pred.modelML_home)
+                    }
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeML ? "#e2e8f0" : C.dim }}>
                     {formatML(game.odds?.homeML)}
@@ -720,16 +725,14 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     display: "flex",
                     flexDirection: "column",
                     gap: 2,
-                    position: "relative",
                   }}>
-                    {(signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && signals.betSizing && (
-                      <UnitBadge units={signals.ou?.verdict === "GO" ? Math.min(3, (signals.betSizing?.units || 0) + 1) : 1} isGo={signals.ou?.verdict === "GO"} />
-                    )}
                     <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
-                      {game.pred.ouTotal}
-                      {signals.ou?.side && (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && (
-                        <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>
-                      )}
+                      {(signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && signals.betSizing
+                        ? <UnitBadge units={signals.ou?.verdict === "GO" ? Math.min(3, (signals.betSizing?.units || 0) + 1) : 1} isGo={signals.ou?.verdict === "GO"}>
+                            {game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
+                          </UnitBadge>
+                        : game.pred.ouTotal
+                      }
                     </div>
                     {game.odds?.ouLine && (
                       <div style={{ fontSize: 10, color: C.yellow }}>mkt: {game.odds.ouLine}</div>
