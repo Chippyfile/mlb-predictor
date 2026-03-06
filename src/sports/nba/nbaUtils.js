@@ -715,7 +715,6 @@ export function nbaPredictGame({
   }
   // VIG FIX: away ML ≠ -homeML. Real lines are asymmetric due to vig.
   // Same VIG = 0.0225 (~4.5% total juice) pattern as ncaaUtils.js.
-  const VIG = 0.0225;
   const hProb = hwp + VIG;
   const aProb = (1 - hwp) + VIG;
   const mml = hwp >= 0.5
