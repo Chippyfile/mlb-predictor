@@ -378,6 +378,9 @@ export function HistoryTab({ table, refreshKey }) {
                   // Always prefer abbreviation (r.home_team / r.away_team) over full names
                   const homeAbbr = r.home_team || (r.home_team_name || "HOME").split(" ").pop();
                   const awayAbbr = r.away_team || (r.away_team_name || "AWAY").split(" ").pop();
+                  // Only show ATS/O/U results when real market data existed
+                  const hasMarketSpread = r.market_spread_home != null;
+                  const hasMarketOU = r.market_ou_total != null;
                   return (
                     <tr key={r.id} style={{ borderBottom: `1px solid #0d1117`, background: bg }}>
                       <td style={{ padding: "7px 8px", fontWeight: 700, whiteSpace: "nowrap" }}>{awayAbbr} @ {homeAbbr} {r.game_type === "S" && <span style={{ fontSize: 8, color: C.yellow, marginLeft: 4 }}>ST</span>}</td>
@@ -387,8 +390,8 @@ export function HistoryTab({ table, refreshKey }) {
                       <td style={{ padding: "7px 8px" }}><span style={{ color: confColor(r.confidence), fontWeight: 700, fontSize: 10 }}>{r.confidence}</span></td>
                       <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayAbbr} {awayScore} – {homeAbbr} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.rl_correct === null ? "🔲" : r.rl_correct ? "✅" : "❌") : "—"}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ou_correct === "PUSH" ? <span style={{ color: C.yellow, fontSize: 10 }}>🔲</span> : r.ou_correct === "OVER" || r.ou_correct === true ? "✅" : r.ou_correct === "UNDER" || r.ou_correct === false ? "❌" : <span style={{ color: C.dim, fontSize: 10 }}>—</span>) : "—"}</td>
+                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketSpread ? <span style={{ color: C.dim }}>—</span> : r.result_entered ? (r.rl_correct === null ? "🔲" : r.rl_correct ? "✅" : "❌") : "—"}</td>
+                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketOU ? <span style={{ color: C.dim }}>—</span> : r.result_entered ? (r.ou_correct === "PUSH" ? <span style={{ color: C.yellow, fontSize: 10 }}>🔲</span> : r.ou_correct === "OVER" || r.ou_correct === true ? "✅" : r.ou_correct === "UNDER" || r.ou_correct === false ? "❌" : <span style={{ color: C.dim, fontSize: 10 }}>—</span>) : "—"}</td>
                       <td style={{ padding: "7px 8px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: C.dim, cursor: "pointer", fontSize: 12 }}>🗑</button></td>
                     </tr>
                   );
