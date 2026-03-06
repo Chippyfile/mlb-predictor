@@ -691,6 +691,7 @@ export function nbaPredictGame({
   // ── ALIGN-9: Dynamic sigma (ported from NCAA P1-SIG) ──
   // NBA sigma varies by season progress and data quality. Base 12.0 calibrated
   // from 5-season ATS. Early season is noisier → wider sigma.
+  const VIG = 0.0225
   const _minGamesForSigma = Math.min(homeStats.totalGames || 0, awayStats.totalGames || 0);
   let nbaSigma = 12.0;
   if (_minGamesForSigma < 10) nbaSigma += 1.5;
@@ -712,8 +713,8 @@ export function nbaPredictGame({
   if (calibrationFactor !== 1.0) {
     hwp = Math.min(0.95, Math.max(0.05, 0.5 + (hwp - 0.5) * calibrationFactor));
   }
-  const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100);
-  const aml = -mml;
+  const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100) + VIG;
+  const aml = -mml + VIG;
 
   // ── NBA-C1 FIX (v16): Confidence = DATA QUALITY only ──
   // Previously mixed prediction strength (netGap=35pts, winPctStrength=30pts) into

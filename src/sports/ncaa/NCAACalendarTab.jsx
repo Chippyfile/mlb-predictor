@@ -34,10 +34,10 @@ const formatSpread = (spread) => {
 const BetBanner = ({ signals, homeName, awayName }) => {
   if (!signals?.betSizing) return null;
   const sz = signals.betSizing;
-  const verdict = signals.ml?.verdict || "SKIP";
-  const side = signals.ml?.side || "";
-  const edgePct = signals.ml?.edgePct || "0";
-  const isGo = verdict === "GO";
+  const verdict = signals.ml?.verdict === "GO" ? "GO" : signals.ml?.verdict === "LEAN" ? "LEAN" : (sz.units >= 2 ? "BET" : "LEAN");
+  const side = sz.side || signals.ml?.side || "";
+  const edgePct = sz.edge || signals.ml?.edgePct || "0";
+  const isGo = verdict === "GO" || verdict === "BET";
   const badgeColor = isGo ? "#2ea043" : "#d29922";
   const badgeText = isGo ? "BET" : "LEAN";
   const pickName = side === "HOME" ? homeName : awayName;
@@ -252,10 +252,17 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const blendedWinHome = Math.max(0.05, Math.min(0.95, rawBlended));
         const blendedWinAway = 1 - blendedWinHome;
 
+        // Model moneylines with simulated vig (~4.5% total, split per side)
+        // Fair: 72.6% → -265/+265. With vig: -280/+230 (realistic book line)
+        const VIG = 0.0225; // 2.25% juice per side
+        const homeProb = blendedWinHome + VIG;
+        const awayProb = (1 - blendedWinHome) + VIG;
         const newModelML_home = blendedWinHome >= 0.5
-          ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100));
-        const newModelML_away = -newModelML_home;
+          ? -Math.min(ML_CAP, Math.round((homeProb / (1 - homeProb)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - homeProb) / homeProb) * 100));
+        const newModelML_away = blendedWinHome < 0.5
+          ? -Math.min(ML_CAP, Math.round((awayProb / (1 - awayProb)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - awayProb) / awayProb) * 100));
 
         return {
           ...pred,
@@ -302,7 +309,29 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       setGames([...allEnriched]); // progressive render after each batch
     } // end for-loop
     
-    onGamesLoaded?.(allEnriched);
+    // ── Top-75 filter: only show games where ≥1 team is ranked top 75 ──
+    // Uses KenPom rank (preferred) or ESPN rank as fallback.
+    const TOP_N = 75;
+    const filtered = allEnriched.filter(g => {
+      const hRank = g.homeStats?._kenPomRank || g.homeRank || 999;
+      const aRank = g.awayStats?._kenPomRank || g.awayRank || 999;
+      return hRank <= TOP_N || aRank <= TOP_N;
+    });
+    if (filtered.length < allEnriched.length) {
+      console.log(`Top-${TOP_N} filter: ${allEnriched.length} → ${filtered.length} games`);
+    }
+    
+    // ── Sort: Finals sink to bottom, rest by start time ──
+    filtered.sort((a, b) => {
+      const aFinal = a.status === "Final" ? 1 : 0;
+      const bFinal = b.status === "Final" ? 1 : 0;
+      if (aFinal !== bFinal) return aFinal - bFinal;
+      // Within same group, sort by game time
+      return new Date(a.gameDate || 0) - new Date(b.gameDate || 0);
+    });
+    
+    setGames(filtered);
+    onGamesLoaded?.(filtered);
     setLoading(false);
   }, [calibrationFactor]);
 

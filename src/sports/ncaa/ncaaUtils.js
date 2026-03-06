@@ -615,12 +615,17 @@ export function ncaaPredictGame({
 
   const spread = parseFloat(projectedSpread.toFixed(1));
   // FIX: Cap moneyline values at ±800 to prevent absurd display values
-  // (matches NCAA CalendarTab ML_CAP and aligns with NBA pattern)
-  const ML_CAP = 800;
+  // Model moneylines with simulated vig (~4.5% total juice)
+  const ML_CAP = 4000;
+  const VIG = 0.0225;
+  const hProb = homeWinPct + VIG;
+  const aProb = (1 - homeWinPct) + VIG;
   const modelML_home = homeWinPct >= 0.5
-    ? -Math.min(ML_CAP, Math.round((homeWinPct / (1 - homeWinPct)) * 100))
-    : +Math.min(ML_CAP, Math.round(((1 - homeWinPct) / homeWinPct) * 100));
-  const modelML_away = -modelML_home;
+    ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
+    : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100));
+  const modelML_away = homeWinPct < 0.5
+    ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
+    : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100));
 
   const decisiveness = Math.abs(homeWinPct - 0.5) * 100;
   // F14: Raised STRONG threshold from 15→20 for NCAAB (higher variance than pro leagues)
