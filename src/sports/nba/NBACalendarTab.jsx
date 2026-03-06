@@ -1,10 +1,11 @@
 // src/sports/nba/NBACalendarTab.jsx
-// v17 audit fixes: removed redundant fetchNBARealPace calls (data already in team stats)
+// v2: Matched to NCAA grid layout — BetBanner, UnitBadge, confidence footer, green ML styling
+// v17 audit fixes preserved: removed redundant fetchNBARealPace calls
 import { useState, useEffect, useCallback } from "react";
 import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, BetSignalsPanel } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { getBetSignals, fetchOdds } from "../../utils/sharedUtils.js";
+import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
 import { nbaAutoSync, computeDaysRest } from "./nbaSync.js";
 import {
@@ -15,6 +16,110 @@ import {
   NBA_TEAM_COLORS,
   computeLeagueAverages,
 } from "./nbaUtils.js";
+
+// ML moneyline cap
+const ML_CAP = 500;
+
+// Unit badge for spread/ML/OU cells
+const UnitBadge = ({ units, isGo }) => {
+  if (!units) return null;
+  const badgeColor = isGo ? "#2ea043" : "#d29922";
+  return (
+    <div style={{
+      position: "absolute", top: -8, right: -6,
+      display: "flex", alignItems: "center", gap: 2,
+      background: badgeColor, borderRadius: 4,
+      padding: "0 4px", lineHeight: "15px",
+      zIndex: 1,
+    }}>
+      {[1, 2, 3].map(i => (
+        <span key={i} style={{
+          fontSize: 7, fontWeight: 900, color: i <= units ? "#fff" : "rgba(255,255,255,0.3)",
+        }}>✓</span>
+      ))}
+      <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", marginLeft: 1 }}>{units}u</span>
+    </div>
+  );
+};
+
+// Format moneyline for display
+const formatML = (ml) => {
+  if (!ml) return "-";
+  return ml > 0 ? `+${ml}` : ml.toString();
+};
+
+// Format spread for display (positive = underdog, negative = favorite)
+const formatSpread = (spread) => {
+  if (spread === null || spread === undefined) return "-";
+  return spread > 0 ? `+${spread.toFixed(1)}` : spread.toFixed(1);
+};
+
+// Bet advantage banner for game cards
+const BetBanner = ({ signals, homeName, awayName }) => {
+  if (!signals?.betSizing) return null;
+  const sz = signals.betSizing;
+  const side = sz.side || signals.ml?.side || "";
+  const edgePct = sz.edge || signals.ml?.edgePct || "0";
+  const badgeColor = sz.units >= 2 ? "#2ea043" : "#d29922";
+  const pickName = side === "HOME" ? homeName : awayName;
+  const checks = "✓".repeat(sz.units);
+
+  return (
+    <div style={{
+      padding: "8px 14px",
+      background: sz.units >= 2
+        ? "linear-gradient(135deg, #0b2012, #0e2818)"
+        : "linear-gradient(135deg, #1a1500, #1e1a08)",
+      borderBottom: `1px solid ${sz.units >= 2 ? "#2ea04355" : "#d2992244"}`,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8,
+    }}>
+      {/* Left: unit blocks + pick */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", gap: 3 }}>
+          {[1, 2, 3].map(i => (
+            <div key={i} style={{
+              width: 20, height: 20, borderRadius: 4,
+              background: i <= sz.units ? badgeColor : "#1a1e24",
+              border: `1px solid ${i <= sz.units ? badgeColor : "#30363d"}`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: i <= sz.units ? 12 : 9, fontWeight: 800,
+              color: i <= sz.units ? "#fff" : "#484f58",
+            }}>{i <= sz.units ? "✓" : `${i}u`}</div>
+          ))}
+        </div>
+        <div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
+            {pickName}
+          </span>
+          <span style={{ fontSize: 10, color: C.muted, marginLeft: 6 }}>
+            +{edgePct}% edge
+          </span>
+        </div>
+      </div>
+
+      {/* Right: unit badge with checkmarks */}
+      <div style={{
+        padding: "3px 10px",
+        borderRadius: 4,
+        background: badgeColor,
+        color: "#fff",
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: 2,
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+      }}>
+        <span>{checks}</span>
+        <span style={{ fontSize: 9, letterSpacing: 0.5 }}>{sz.units}u</span>
+      </div>
+    </div>
+  );
+};
 
 // ─────────────────────────────────────────────────────────────
 // NBACalendarTab
@@ -35,9 +140,6 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     // Pre-load all team stats and compute dynamic league averages
     const allStatsPairs = await Promise.all(raw.map(async g => {
       const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
-      // AUDIT: fetchNBARealPace was redundant wrapper over fetchNBATeamStats.
-      // Team stats already contain pace, adjOE, adjDE, netRtg.
-      // Pass them directly as realStats to preserve backward compat with nbaPredictGame.
       const nbaRealH = hs ? { pace: hs.pace, offRtg: hs.adjOE, defRtg: hs.adjDE, netRtg: hs.netRtg } : null;
       const nbaRealA = as_ ? { pace: as_.pace, offRtg: as_.adjOE, defRtg: as_.adjDE, netRtg: as_.netRtg } : null;
       return { game: g, hs, as_, nbaRealH, nbaRealA };
@@ -52,9 +154,6 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     if (uniqueNbaStats.length >= 10) computeLeagueAverages(uniqueNbaStats);
 
     const enriched = await Promise.all(allStatsPairs.map(async ({ game: g, hs, as_, nbaRealH, nbaRealA }) => {
-      // NBA-H3 FIX (v16): Compute rest + travel for CalendarTab predictions
-      // Previously these defaulted to homeDaysRest=2, awayDaysRest=2, missing
-      // the ±1.8–2.2 pt B2B penalties entirely for live predictions.
       const homeDaysRest = hs ? computeDaysRest(hs, d) : 2;
       const awayDaysRest = as_ ? computeDaysRest(as_, d) : 2;
       const awayPrevCityAbbr = as_?.lastGameCity || null;
@@ -69,9 +168,6 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         awayPrevCityAbbr,
       }) : null;
       const rawOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
-      // ── ODDS NORMALIZATION ──
-      // Normalize field names (odds.js returns marketSpreadHome/marketTotal)
-      // and detect home/away swap between The Odds API and ESPN
       const gameOdds = rawOdds ? (() => {
         const normalize = s => (s || "").toLowerCase().replace(/[^a-z]/g, "");
         const oddsHome = normalize(rawOdds.homeTeam);
@@ -93,7 +189,6 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       // ── ML API: calibrated win prob + SHAP + Monte Carlo ──
       let mlResult = null, mcResult = null;
       if (pred) {
-        // Run ML prediction first, then MC with ML-adjusted means
         try {
           mlResult = await mlPredict("nba", {
             pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
@@ -102,7 +197,6 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
             model_ml_home: pred.modelML_home,
             market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
             market_spread_home: gameOdds?.marketSpreadHome ?? 0,
-            // v22: Send full stats so Railway can build all 27 features
             home_ppg: hs?.ppg, away_ppg: as_?.ppg,
             home_opp_ppg: hs?.oppPpg, away_opp_ppg: as_?.oppPpg,
             home_fgpct: hs?.fgPct, away_fgpct: as_?.fgPct,
@@ -126,9 +220,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           });
           if (mlResult) console.log(`[NBA ML] ${g.homeAbbr}: margin=${mlResult.ml_margin}, shap=${!!mlResult.shap}, meta=${!!mlResult.model_meta}`);
         } catch (e) { console.warn("[NBA ML] predict failed:", e.message); }
-        // FIX (v22): MC was using raw heuristic scores, ignoring the ML margin
-        // entirely. Now split ouTotal by heuristic ratio + ML margin shift,
-        // matching the NCAA fix for the double-division bug.
+        // MC with ML-adjusted means
         const heuristicTotal = pred.homeScore + pred.awayScore;
         const ouBase = pred.ouTotal ?? heuristicTotal;
         const homeRatio = heuristicTotal > 0 ? pred.homeScore / heuristicTotal : 0.5;
@@ -139,26 +231,19 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           mcResult = await mlMonteCarlo("NBA", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
         } catch (e) { console.warn("[NBA MC] failed:", e.message); }
       }
-      // FIX: Reconcile projected scores with ML margin so all displayed
-      // values are internally consistent.
+      // Reconcile projected scores with ML margin
       const finalPred = pred && mlResult ? (() => {
         const mlMargin = mlResult.ml_margin;
         const heuristicMargin = pred.projectedSpread;
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-        // CONSISTENCY FIX: Derive win prob FROM margin so spread/win%/ML always agree.
         const SIGMA = 15.0;
         const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
         const MARGIN_WEIGHT = 0.70;
         const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
-        // NBA-M2 FIX (v16): Widened caps from [0.12, 0.88] to [0.08, 0.92]
-        // to match the wider caps in nbaPredictGame and allow edge detection on heavies
         const blendedWinHome = Math.max(0.08, Math.min(0.92, rawBlended));
         const blendedWinAway = 1 - blendedWinHome;
-        const ML_CAP = 500;
-        // VIG FIX: away ML ≠ -homeML. Real lines are asymmetric due to vig.
-        // Same VIG = 0.0225 (~4.5% total juice) pattern as ncaaUtils.js.
         const VIG = 0.0225;
         const hProb = blendedWinHome + VIG;
         const aProb = blendedWinAway + VIG;
@@ -188,10 +273,49 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       })() : pred;
       return { ...g, homeStats: hs, awayStats: as_, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
+
+    // ── Sort: Finals sink to bottom, rest by start time ──
+    enriched.sort((a, b) => {
+      const aFinal = a.status === "Final" ? 1 : 0;
+      const bFinal = b.status === "Final" ? 1 : 0;
+      if (aFinal !== bFinal) return aFinal - bFinal;
+      return new Date(a.gameDate || 0) - new Date(b.gameDate || 0);
+    });
+
     setGames(enriched); onGamesLoaded?.(enriched); setLoading(false);
   }, [calibrationFactor]);
 
   useEffect(() => { load(dateStr); }, [dateStr, calibrationFactor]);
+
+  const getBannerInfo = (pred, odds) => {
+    if (!pred) return { color: "yellow", label: "⚠ No prediction" };
+    const dec = pred.decisiveness ?? (Math.abs(pred.homeWinPct - 0.5) * 100);
+    const favSide = pred.homeWinPct >= 0.5 ? "HOME" : "AWAY";
+    const favPct = Math.max(pred.homeWinPct, 1 - pred.homeWinPct);
+    if (odds?.homeML && odds?.awayML) {
+      const market = trueImplied(odds.homeML, odds.awayML);
+      const homeEdge = pred.homeWinPct - market.home;
+      if (dec >= (DECISIVENESS_GATE?.nba ?? 15) && Math.abs(homeEdge) >= EDGE_THRESHOLD)
+        return { color: "green", edge: homeEdge, label: `+${(Math.abs(homeEdge) * 100).toFixed(1)}% ${homeEdge >= 0 ? "HOME" : "AWAY"} edge` };
+      if (Math.abs(homeEdge) >= EDGE_THRESHOLD)
+        return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge (lean)` };
+      return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge` };
+    }
+    if (dec >= (DECISIVENESS_GATE?.nba ?? 15)) return { color: "green", label: `${favSide} ${(favPct * 100).toFixed(0)}%` };
+    return { color: "neutral", label: "Close matchup" };
+  };
+
+  const formatGameTime = (gameDate, status) => {
+    if (status === "Final") return "FINAL";
+    if (status === "Live") return "LIVE";
+    if (!gameDate) return "";
+    try {
+      const date = new Date(gameDate);
+      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } catch {
+      return "";
+    }
+  };
 
   return (
     <div>
@@ -203,67 +327,350 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           ↻ REFRESH
         </button>
         {!loading && oddsInfo?.games?.length > 0 && <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsInfo.games.length})</span>}
-        {loading && <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading…</span>}
-        {!loading && games.length === 0 && <span style={{ color: C.dim, fontSize: 11 }}>No NBA games on {dateStr}</span>}
+        {loading && (
+          <span style={{ color: C.dim, fontSize: 11 }}>
+            ⏳ Loading {games.length > 0 ? `${games.length} games` : "schedule"}…
+          </span>
+        )}
       </div>
+
+      {!loading && games.length === 0 && (
+        <div style={{ color: C.dim, textAlign: "center", marginTop: 40 }}>
+          No NBA games on {dateStr}
+        </div>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {games.map(game => {
           const homeColor = NBA_TEAM_COLORS[game.homeAbbr] || "#334";
           const awayColor = NBA_TEAM_COLORS[game.awayAbbr] || "#334";
-          const isOpen = expanded === game.gameId;
-          const sigs = game.pred ? getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" }) : null;
-          const dec = game.pred ? (game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100)) : 0;
-          const hasBet = sigs && dec >= 15 && (sigs.ml?.verdict === "GO" || sigs.ml?.verdict === "LEAN" || sigs.spread?.verdict === "GO" || sigs.ou?.verdict === "GO");
-          return (
-            <div key={game.gameId} style={{ background: hasBet ? "linear-gradient(135deg,#0b2012,#0e2315)" : "linear-gradient(135deg,#0d1117,#111822)", border: `1px solid ${hasBet ? "#2ea043" : C.border}`, borderRadius: 10, overflow: "hidden" }}>
-              <div style={{ height: 3, background: `linear-gradient(90deg,${awayColor},${homeColor})` }} />
-              <div onClick={() => setExpanded(isOpen ? null : game.gameId)}
-                style={{ padding: "14px 18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ textAlign: "center" }}>
-                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: awayColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{game.awayAbbr}</div>
-                    <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
+          const homeName = game.homeAbbr;
+          const awayName = game.awayAbbr;
+
+          if (!game.pred || game.loading) {
+            return (
+              <div
+                key={game.gameId}
+                style={{
+                  background: `linear-gradient(135deg,${C.card},#111822)`,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  cursor: "pointer"
+                }}
+                onClick={() => setExpanded(expanded === game.gameId ? null : game.gameId)}
+              >
+                {/* Team color bar */}
+                <div style={{ height: 3, background: `linear-gradient(90deg,${awayColor},${homeColor})` }} />
+                <div style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                    <div style={{ minWidth: 60 }}>
+                      <div style={{ fontSize: 11, color: C.dim }}>
+                        {formatGameTime(game.gameDate, game.status)}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 800 }}>{awayName}</div>
+                      <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
+                    </div>
+                    <div style={{ fontSize: 13, color: C.dim }}>@</div>
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 800 }}>{homeName}</div>
+                      <div style={{ fontSize: 9, color: C.dim }}>HOME</div>
+                    </div>
                   </div>
-                  <span style={{ color: C.dim }}>@</span>
-                  <div style={{ textAlign: "center" }}>
-                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: homeColor, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", margin: "0 auto 2px" }}>{game.homeAbbr}</div>
-                    <div style={{ fontSize: 9, color: C.dim }}>HOME</div>
+                  <div style={{ color: C.dim, fontSize: 11 }}>
+                    {game.loading ? "Calculating…" : "⚠ Stats unavailable"}
                   </div>
-                </div>
-                {game.pred ? (
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <Pill label="PROJ" value={`${game.awayAbbr} ${game.pred.awayScore.toFixed(0)}–${game.pred.homeScore.toFixed(0)} ${game.homeAbbr}`} />
-                    <Pill label="SPREAD" value={game.pred.projectedSpread > 0 ? `${game.homeAbbr} -${game.pred.projectedSpread}` : `${game.awayAbbr} -${-game.pred.projectedSpread}`} highlight={sigs?.spread?.verdict === "GO"} lean={sigs?.spread?.verdict === "LEAN"} />
-                    <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs?.ml?.verdict === "GO"} lean={sigs?.ml?.verdict === "LEAN"} />
-                    {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                    <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs?.ou?.verdict === "GO"} lean={sigs?.ou?.verdict === "LEAN"} />
-                  </div>
-                ) : (
-                  <span style={{ color: C.dim, fontSize: 11 }}>{game.loading ? "Calculating…" : "Stats unavailable"}</span>
-                )}
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}–{game.homeScore}</span>}
-                  {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
-                  <span style={{ color: C.dim, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
                 </div>
               </div>
-              {isOpen && game.pred && (
-                <div style={{ borderTop: `1px solid ${C.border}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8, marginBottom: 10 }}>
-                    <Kv k="Win %" v={`${game.homeAbbr} ${(game.pred.homeWinPct*100).toFixed(1)}% / ${game.awayAbbr} ${(game.pred.awayWinPct*100).toFixed(1)}%`} />
+            );
+          }
+
+          const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" });
+          const isBetGame = !!signals.betSizing;
+          const bannerInfo = getBannerInfo(game.pred, game.odds);
+
+          const borderColor = isBetGame ? "#3fb950" : (bannerInfo.color === "green" ? "#f97316" : C.border);
+          const borderWidth = isBetGame ? "2px" : "1px";
+          const nbaDecGate = DECISIVENESS_GATE?.nba ?? 15;
+
+          // Team records
+          const homeRecord = game.homeStats && (game.homeStats.wins > 0 || game.homeStats.losses > 0)
+            ? `${game.homeStats.wins}-${game.homeStats.losses}` : null;
+          const awayRecord = game.awayStats && (game.awayStats.wins > 0 || game.awayStats.losses > 0)
+            ? `${game.awayStats.wins}-${game.awayStats.losses}` : null;
+
+          return (
+            <div
+              key={game.gameId}
+              style={{
+                background: `linear-gradient(135deg,${C.card},#111822)`,
+                border: `${borderWidth} solid ${borderColor}`,
+                borderRadius: 10,
+                overflow: "hidden",
+                boxShadow: isBetGame ? "0 0 10px rgba(63, 185, 80, 0.2)" : "none",
+                cursor: "pointer"
+              }}
+              onClick={() => setExpanded(expanded === game.gameId ? null : game.gameId)}
+            >
+              {/* Team color bar */}
+              <div style={{ height: 3, background: `linear-gradient(90deg,${awayColor},${homeColor})` }} />
+
+              {/* Bet advantage banner */}
+              {isBetGame && (
+                <BetBanner signals={signals} homeName={homeName} awayName={awayName} />
+              )}
+
+              {/* Header - Game time and edge label */}
+              <div style={{
+                padding: "8px 18px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: isBetGame ? "transparent" : "rgba(0,0,0,0.2)"
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: C.orange }}>
+                    {formatGameTime(game.gameDate, game.status)}
+                  </div>
+
+                  {!isBetGame && bannerInfo.edge != null && Math.abs(bannerInfo.edge) >= EDGE_THRESHOLD && (
+                    <div style={{
+                      fontSize: 10,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "#2d1a0f",
+                      color: C.orange
+                    }}>
+                      {bannerInfo.label}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}–{game.homeScore}</span>}
+                  {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
+                  <span style={{ color: C.dim, fontSize: 12 }}>
+                    {expanded === game.gameId ? "▲" : "▼"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Main game row — NCAA grid layout */}
+              <div style={{ padding: "16px 18px" }}>
+                {/* Column headers */}
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+                  gap: 4,
+                  marginBottom: 8,
+                  color: C.dim,
+                  fontSize: 9,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px"
+                }}>
+                  <div></div>
+                  <div>Spread</div>
+                  <div>Mkt</div>
+                  <div>ML</div>
+                  <div>Mkt</div>
+                  <div style={{ textAlign: "center" }}>Total (O/U)</div>
+                </div>
+
+                {/* Away team */}
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+                  gap: 4,
+                  alignItems: "center",
+                  marginBottom: 8
+                }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 16, fontWeight: 700 }}>{awayName}</span>
+                      <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>AWAY</span>
+                    </div>
+                    {awayRecord && (
+                      <span style={{ fontSize: 10, color: C.dim }}>{awayRecord}</span>
+                    )}
+                  </div>
+
+                  {/* Away spread */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0", position: "relative" }}>
+                    {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "AWAY" && (
+                      <UnitBadge units={signals.betSizing.units} isGo={signals.spread?.verdict === "GO"} />
+                    )}
+                    {formatSpread(game.pred.projectedSpread)}
+                  </div>
+                  {/* Away market spread */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
+                    {game.odds?.homeSpread ? formatSpread(-game.odds.homeSpread) : "-"}
+                  </div>
+                  {/* Away model ML — green when away favored + decisive */}
+                  <div style={{ fontSize: 12, fontWeight: 500, position: "relative", color: (() => {
+                    const dec = game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100);
+                    const awayFavored = game.pred.homeWinPct < 0.5;
+                    return (awayFavored && dec >= nbaDecGate) ? C.green : "#e2e8f0";
+                  })() }}>
+                    {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "AWAY" && signals.betSizing && (
+                      <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"} />
+                    )}
+                    {formatML(game.pred.modelML_away)}
+                  </div>
+                  {/* Away market ML */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.awayML ? "#e2e8f0" : C.dim }}>
+                    {formatML(game.odds?.awayML)}
+                  </div>
+                  {/* Empty cell for total */}
+                  <div></div>
+                </div>
+
+                {/* Separator */}
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  marginLeft: 70,
+                  marginBottom: 8,
+                  color: C.dim,
+                  fontSize: 10
+                }}>
+                  @
+                </div>
+
+                {/* Home team */}
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+                  gap: 4,
+                  alignItems: "center"
+                }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 16, fontWeight: 700 }}>{homeName}</span>
+                      <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>HOME</span>
+                    </div>
+                    {homeRecord && (
+                      <span style={{ fontSize: 10, color: C.dim }}>{homeRecord}</span>
+                    )}
+                  </div>
+
+                  {/* Home spread */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0", position: "relative" }}>
+                    {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "HOME" && (
+                      <UnitBadge units={signals.betSizing.units} isGo={signals.spread?.verdict === "GO"} />
+                    )}
+                    {formatSpread(-game.pred.projectedSpread)}
+                  </div>
+                  {/* Home market spread */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
+                    {game.odds?.homeSpread ? formatSpread(game.odds.homeSpread) : "-"}
+                  </div>
+                  {/* Home model ML — green when home favored + decisive */}
+                  <div style={{ fontSize: 12, fontWeight: 500, position: "relative", color: (() => {
+                    const dec = game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100);
+                    const homeFavored = game.pred.homeWinPct >= 0.5;
+                    return (homeFavored && dec >= nbaDecGate) ? C.green : "#e2e8f0";
+                  })() }}>
+                    {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "HOME" && signals.betSizing && (
+                      <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"} />
+                    )}
+                    {formatML(game.pred.modelML_home)}
+                  </div>
+                  {/* Home market ML */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeML ? "#e2e8f0" : C.dim }}>
+                    {formatML(game.odds?.homeML)}
+                  </div>
+
+                  {/* Total column - shown once for both teams */}
+                  <div style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textAlign: "center",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                    position: "relative",
+                  }}>
+                    {(signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && signals.betSizing && (
+                      <UnitBadge units={signals.ou?.verdict === "GO" ? Math.min(3, (signals.betSizing?.units || 0) + 1) : 1} isGo={signals.ou?.verdict === "GO"} />
+                    )}
+                    <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
+                      {game.pred.ouTotal}
+                      {signals.ou?.side && (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && (
+                        <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>
+                      )}
+                    </div>
+                    {game.odds?.ouLine && (
+                      <div style={{ fontSize: 10, color: C.yellow }}>mkt: {game.odds.ouLine}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Confidence footer for bet games */}
+              {isBetGame && (
+                <div style={{
+                  padding: "5px 18px",
+                  background: "rgba(0,0,0,0.25)",
+                  borderTop: `1px solid ${borderColor}22`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontSize: 10,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: C.dim }}>Confidence:</span>
+                    <span style={{
+                      color: game.pred.confidence === "HIGH" ? C.green : game.pred.confidence === "MEDIUM" ? C.yellow : C.dim,
+                      fontWeight: 700,
+                    }}>
+                      {game.pred.confidence} ({game.pred.confScore})
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: C.dim }}>Win%:</span>
+                    <span style={{ color: C.green, fontWeight: 700 }}>
+                      {(Math.max(game.pred.homeWinPct, 1 - game.pred.homeWinPct) * 100).toFixed(1)}%
+                    </span>
+                    <span style={{ color: C.dim }}>
+                      {game.pred.homeWinPct >= 0.5 ? homeName : awayName}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Expanded view */}
+              {expanded === game.gameId && (
+                <div style={{
+                  borderTop: `1px solid ${borderColor}`,
+                  padding: "14px 18px",
+                  background: "rgba(0,0,0,0.3)"
+                }}>
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))",
+                    gap: 8,
+                    marginBottom: 10
+                  }}>
+                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore.toFixed(0)} — ${homeName} ${game.pred.homeScore.toFixed(0)}`} />
+                    <Kv k="Win %" v={`${homeName} ${(game.pred.homeWinPct*100).toFixed(1)}% / ${awayName} ${((game.pred.awayWinPct ?? (1-game.pred.homeWinPct))*100).toFixed(1)}%`} />
+                    <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${homeName} -${game.pred.projectedSpread.toFixed(1)}` : `${awayName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
                     <Kv k="O/U Total" v={game.pred.ouTotal} />
                     <Kv k="Possessions" v={game.pred.possessions} />
-                    <Kv k={`${game.homeAbbr} Net Rtg`} v={game.pred.homeNetRtg} />
-                    <Kv k={`${game.awayAbbr} Net Rtg`} v={game.pred.awayNetRtg} />
-                    {game.homeStats && <Kv k={`${game.homeAbbr} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
-                    {game.awayStats && <Kv k={`${game.awayAbbr} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
-                    {game.homeStats && <Kv k={`${game.homeAbbr} Opp PPG`} v={game.homeStats.oppPpg?.toFixed(1)} />}
-                    {game.awayStats && <Kv k={`${game.awayAbbr} Opp PPG`} v={game.awayStats.oppPpg?.toFixed(1)} />}
+                    <Kv k={`${homeName} Net Rtg`} v={game.pred.homeNetRtg} />
+                    <Kv k={`${awayName} Net Rtg`} v={game.pred.awayNetRtg} />
+                    {game.homeStats && <Kv k={`${homeName} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${awayName} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
+                    {game.homeStats && <Kv k={`${homeName} Opp PPG`} v={game.homeStats.oppPpg?.toFixed(1)} />}
+                    {game.awayStats && <Kv k={`${awayName} Opp PPG`} v={game.awayStats.oppPpg?.toFixed(1)} />}
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
                   </div>
-                  <BetSignalsPanel signals={sigs} pred={game.pred} odds={game.odds} sport="nba" homeName={game.homeAbbr} awayName={game.awayAbbr} />
+                  <BetSignalsPanel signals={signals} pred={game.pred} odds={game.odds} sport="nba" homeName={homeName} awayName={awayName} />
                   {game.pred?.mlEnhanced && <div style={{ fontSize: 8, color: "#58a6ff", marginTop: 4 }}>⚡ ML-enhanced · trained on {game.mlMeta?.n_train} games · MAE {game.mlMeta?.mae_cv?.toFixed(1)} pts</div>}
-                  <ShapPanel shap={game.mlShap} homeName={game.homeAbbr} awayName={game.awayAbbr} />
+                  <ShapPanel shap={game.mlShap} homeName={homeName} awayName={awayName} />
                   <MonteCarloPanel mc={game.mc} />
                 </div>
               )}

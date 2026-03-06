@@ -1,10 +1,10 @@
 // src/sports/mlb/MLBCalendarTab.jsx
-// Lines 2722–3054 of App.jsx (extracted)
+// v2: Matched to NCAA grid layout — BetBanner, UnitBadge, confidence footer, green ML styling
 import React, { useState, useEffect, useCallback } from "react";
 import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds } from "../../utils/sharedUtils.js";
+import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
 import {
   mlbTeamById, resolveStatTeamId,
@@ -15,6 +15,110 @@ import {
   mlbPredictGame,
 } from "./mlb.js";
 import { mlbAutoSync } from "./mlbSync.js";
+
+// ML moneyline cap
+const ML_CAP = 4000;
+
+// Unit badge for spread/ML/OU cells
+const UnitBadge = ({ units, isGo }) => {
+  if (!units) return null;
+  const badgeColor = isGo ? "#2ea043" : "#d29922";
+  return (
+    <div style={{
+      position: "absolute", top: -8, right: -6,
+      display: "flex", alignItems: "center", gap: 2,
+      background: badgeColor, borderRadius: 4,
+      padding: "0 4px", lineHeight: "15px",
+      zIndex: 1,
+    }}>
+      {[1, 2, 3].map(i => (
+        <span key={i} style={{
+          fontSize: 7, fontWeight: 900, color: i <= units ? "#fff" : "rgba(255,255,255,0.3)",
+        }}>✓</span>
+      ))}
+      <span style={{ fontSize: 7, fontWeight: 800, color: "#fff", marginLeft: 1 }}>{units}u</span>
+    </div>
+  );
+};
+
+// Format moneyline for display
+const formatML = (ml) => {
+  if (!ml) return "-";
+  return ml > 0 ? `+${ml}` : ml.toString();
+};
+
+// Format spread for display (positive = underdog, negative = favorite)
+const formatSpread = (spread) => {
+  if (spread === null || spread === undefined) return "-";
+  return spread > 0 ? `+${spread.toFixed(1)}` : spread.toFixed(1);
+};
+
+// Bet advantage banner for game cards
+const BetBanner = ({ signals, homeName, awayName }) => {
+  if (!signals?.betSizing) return null;
+  const sz = signals.betSizing;
+  const side = sz.side || signals.ml?.side || "";
+  const edgePct = sz.edge || signals.ml?.edgePct || "0";
+  const badgeColor = sz.units >= 2 ? "#2ea043" : "#d29922";
+  const pickName = side === "HOME" ? homeName : awayName;
+  const checks = "✓".repeat(sz.units);
+
+  return (
+    <div style={{
+      padding: "8px 14px",
+      background: sz.units >= 2
+        ? "linear-gradient(135deg, #0b2012, #0e2818)"
+        : "linear-gradient(135deg, #1a1500, #1e1a08)",
+      borderBottom: `1px solid ${sz.units >= 2 ? "#2ea04355" : "#d2992244"}`,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8,
+    }}>
+      {/* Left: unit blocks + pick */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", gap: 3 }}>
+          {[1, 2, 3].map(i => (
+            <div key={i} style={{
+              width: 20, height: 20, borderRadius: 4,
+              background: i <= sz.units ? badgeColor : "#1a1e24",
+              border: `1px solid ${i <= sz.units ? badgeColor : "#30363d"}`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: i <= sz.units ? 12 : 9, fontWeight: 800,
+              color: i <= sz.units ? "#fff" : "#484f58",
+            }}>{i <= sz.units ? "✓" : `${i}u`}</div>
+          ))}
+        </div>
+        <div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
+            {pickName}
+          </span>
+          <span style={{ fontSize: 10, color: C.muted, marginLeft: 6 }}>
+            +{edgePct}% edge
+          </span>
+        </div>
+      </div>
+
+      {/* Right: unit badge with checkmarks */}
+      <div style={{
+        padding: "3px 10px",
+        borderRadius: 4,
+        background: badgeColor,
+        color: "#fff",
+        fontSize: 11,
+        fontWeight: 800,
+        letterSpacing: 2,
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+      }}>
+        <span>{checks}</span>
+        <span style={{ fontSize: 9, letterSpacing: 0.5 }}>{sz.units}u</span>
+      </div>
+    </div>
+  );
+};
 
 export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
   const todayStr = new Date().toISOString().split("T")[0];
@@ -49,7 +153,6 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       const [homeBullpen, awayBullpen] = await Promise.all([
         fetchBullpenFatigue(g.homeTeamId), fetchBullpenFatigue(g.awayTeamId),
       ]);
-      // Phase 3: Fetch weather + Statcast for full feature pipeline
       const [parkWeather, homeStatcast, awayStatcast] = await Promise.all([
         fetchParkWeather(g.homeTeamId).catch(() => null),
         fetchStatcast(homeStatId).catch(() => null),
@@ -70,38 +173,26 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         calibrationFactor,
       });
       const gameOdds = odds?.games?.find(o => matchMLBOddsToGame(o, g)) || null;
-      // H-4 FIX: Use prediction output directly instead of recalculating with different logic.
-      // Previously this had no 7.5 IP cap and an extra ip/10 fallback that diverged from
-      // mlb.js's calculation, causing frontend display ≠ ML model input.
       const homeSPipPerStart = pred.homeSpAvgIP ?? 5.5;
       const awaySPipPerStart = pred.awaySpAvgIP ?? 5.5;
       const [mlResult, mcResult] = await Promise.all([
         mlPredict("mlb", {
-          // Heuristic outputs
           pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
           win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
           model_ml_home: pred.modelML_home,
-          // Raw offensive features
           home_woba: pred.homeWOBA, away_woba: pred.awayWOBA,
-          // Pitching features (use home_fip + home_sp_fip keys for backend compat)
           home_fip: pred.hFIP, away_fip: pred.aFIP,
           home_sp_fip: pred.hFIP, away_sp_fip: pred.aFIP,
-          // Bullpen
           home_bullpen_era: homeBullpen?.era || 4.10,
           away_bullpen_era: awayBullpen?.era || 4.10,
-          // Park & weather
           park_factor: pred.parkFactor,
           temp_f: parkWeather?.tempF ?? 70,
           wind_mph: parkWeather?.windMph ?? 5,
           wind_out_flag: parkWeather
             ? ((parkWeather.windDir >= 145 && parkWeather.windDir <= 255) ? 1 : 0)
             : 0,
-          // SP workload (avg IP per start)
           home_sp_ip: homeSPipPerStart,
           away_sp_ip: awaySPipPerStart,
-          // H-2 FIX: Compute real rest days from last game date instead of binary 1/4 proxy.
-          // ML model is trained on continuous rest data (0-7+); binary proxy hid meaningful signal
-          // like 0-day rest (day game after night game → -0.15 run penalty).
           home_rest_days: (() => {
             if (!homeForm?.lastGameDate) return 4;
             const daysSince = Math.floor((Date.now() - new Date(homeForm.lastGameDate).getTime()) / 86400000);
@@ -115,15 +206,18 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         }),
         mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
       ]);
-      // FIX: Recalculate modelML from ML win probability for display consistency
+      // Recalculate modelML from ML win probability with vig for display consistency
       const finalPred = pred && mlResult ? (() => {
         const mlWinHome = mlResult.ml_win_prob_home;
+        const VIG = 0.0225;
+        const hProb = mlWinHome + VIG;
+        const aProb = (1 - mlWinHome) + VIG;
         const newModelML_home = mlWinHome >= 0.5
-          ? -Math.round((mlWinHome / (1 - mlWinHome)) * 100)
-          : +Math.round(((1 - mlWinHome) / mlWinHome) * 100);
-        const newModelML_away = mlWinHome >= 0.5
-          ? +Math.round(((1 - mlWinHome) / mlWinHome) * 100)
-          : -Math.round((mlWinHome / (1 - mlWinHome)) * 100);
+          ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100));
+        const newModelML_away = mlWinHome < 0.5
+          ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100));
         return {
           ...pred,
           homeWinPct: mlResult.ml_win_prob_home,
@@ -135,6 +229,15 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       })() : pred;
       return { ...g, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
+
+    // ── Sort: Finals sink to bottom, rest by start time ──
+    enriched.sort((a, b) => {
+      const aFinal = a.status === "Final" ? 1 : 0;
+      const bFinal = b.status === "Final" ? 1 : 0;
+      if (aFinal !== bFinal) return aFinal - bFinal;
+      return new Date(a.gameDate || 0) - new Date(b.gameDate || 0);
+    });
+
     setGames(enriched);
     onGamesLoaded?.(enriched);
     setLoading(false);
@@ -151,78 +254,386 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
     if (odds?.homeML && odds?.awayML) {
       const market = trueImplied(odds.homeML, odds.awayML);
       const homeEdge = pred.homeWinPct - market.home;
-      if (dec >= 10 && Math.abs(homeEdge) >= EDGE_THRESHOLD)
+      if (dec >= (DECISIVENESS_GATE?.mlb ?? 10) && Math.abs(homeEdge) >= EDGE_THRESHOLD)
         return { color: "green", edge: homeEdge, label: `+${(Math.abs(homeEdge) * 100).toFixed(1)}% ${homeEdge >= 0 ? "HOME" : "AWAY"} edge` };
       if (Math.abs(homeEdge) >= EDGE_THRESHOLD)
         return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge (lean)` };
       return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge` };
     }
-    if (dec >= 10) return { color: "green", label: `${favSide} ${(favPct * 100).toFixed(0)}%` };
+    if (dec >= (DECISIVENESS_GATE?.mlb ?? 10)) return { color: "green", label: `${favSide} ${(favPct * 100).toFixed(0)}%` };
     return { color: "neutral", label: "Close matchup" };
+  };
+
+  const formatGameTime = (gameDate, status) => {
+    if (status === "Final") return "FINAL";
+    if (status === "Live") return "LIVE";
+    if (!gameDate) return "";
+    try {
+      const date = new Date(gameDate);
+      return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } catch {
+      return "";
+    }
   };
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-        <input type="date" value={dateStr} onChange={e => setDateStr(e.target.value)} style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "inherit" }} />
-        <button onClick={() => loadGames(dateStr)} style={{ background: "#161b22", color: C.blue, border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>↻ REFRESH</button>
+        <input
+          type="date"
+          value={dateStr}
+          onChange={e => setDateStr(e.target.value)}
+          style={{
+            background: C.card,
+            color: "#e2e8f0",
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            padding: "6px 10px",
+            fontSize: 12,
+            fontFamily: "inherit"
+          }}
+        />
+        <button
+          onClick={() => loadGames(dateStr)}
+          style={{
+            background: "#161b22",
+            color: C.blue,
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            padding: "6px 14px",
+            cursor: "pointer",
+            fontSize: 11,
+            fontWeight: 700
+          }}
+        >
+          ↻ REFRESH
+        </button>
         {!loading && oddsData?.games?.length > 0 && <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsData.games.length})</span>}
         {!loading && oddsData?.noKey && <span style={{ fontSize: 11, color: C.dim }}>⚠ Add ODDS_API_KEY for live lines</span>}
-        {loading && <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading predictions…</span>}
+        {loading && (
+          <span style={{ color: C.dim, fontSize: 11 }}>
+            ⏳ Loading {games.length > 0 ? `${games.length} games` : "predictions"}…
+          </span>
+        )}
       </div>
-      {!loading && games.length === 0 && <div style={{ color: C.dim, textAlign: "center", marginTop: 40 }}>No games scheduled for {dateStr}</div>}
+
+      {!loading && games.length === 0 && (
+        <div style={{ color: C.dim, textAlign: "center", marginTop: 40 }}>
+          No games scheduled for {dateStr}
+        </div>
+      )}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {games.map(game => {
           const home = mlbTeamById(game.homeTeamId), away = mlbTeamById(game.awayTeamId);
-          const bannerInfo = game.loading ? { color: "yellow", label: "Calculating…" } : getBannerInfo(game.pred, game.odds, game.homeStarter && game.awayStarter);
-          const color = bannerInfo.color;
-          const isOpen = expanded === game.gamePk;
-          const bannerBg = color === "green" ? "linear-gradient(135deg,#0b2012,#0e2315)" : color === "yellow" ? "linear-gradient(135deg,#1a1200,#1a1500)" : `linear-gradient(135deg,${C.card},#111822)`;
-          const borderColor = color === "green" ? "#2ea043" : color === "yellow" ? "#4a3a00" : C.border;
-          return (
-            <div key={game.gamePk} style={{ background: bannerBg, border: `1px solid ${borderColor}`, borderRadius: 10, overflow: "hidden" }}>
-              <div onClick={() => setExpanded(isOpen ? null : game.gamePk)} style={{ padding: "14px 18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 160 }}>
-                  <div style={{ textAlign: "center" }}>
-                    <div style={{ fontSize: 20, fontWeight: 800 }}>{away.abbr}</div>
-                    <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
-                    {game.awayStarter && <div style={{ fontSize: 10, color: C.muted }}>{game.awayStarter.split(" ").pop()}{game.awayStarterHand ? ` (${game.awayStarterHand})` : ""}</div>}
+          const homeName = home.abbr;
+          const awayName = away.abbr;
+
+          if (!game.pred || game.loading) {
+            return (
+              <div
+                key={game.gamePk}
+                style={{
+                  background: `linear-gradient(135deg,${C.card},#111822)`,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  cursor: "pointer"
+                }}
+                onClick={() => setExpanded(expanded === game.gamePk ? null : game.gamePk)}
+              >
+                <div style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                    <div style={{ minWidth: 60 }}>
+                      <div style={{ fontSize: 11, color: C.dim }}>
+                        {formatGameTime(game.gameDate, game.status)}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 800 }}>{awayName}</div>
+                      <div style={{ fontSize: 9, color: C.dim }}>AWAY</div>
+                      {game.awayStarter && <div style={{ fontSize: 10, color: C.muted }}>{game.awayStarter.split(" ").pop()}{game.awayStarterHand ? ` (${game.awayStarterHand})` : ""}</div>}
+                    </div>
+                    <div style={{ fontSize: 13, color: C.dim }}>@</div>
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 800 }}>{homeName}</div>
+                      <div style={{ fontSize: 9, color: C.dim }}>HOME</div>
+                      {game.homeStarter && <div style={{ fontSize: 10, color: C.muted }}>{game.homeStarter.split(" ").pop()}{game.homeStarterHand ? ` (${game.homeStarterHand})` : ""}</div>}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 14, color: C.dim }}>@</div>
-                  <div style={{ textAlign: "center" }}>
-                    <div style={{ fontSize: 20, fontWeight: 800 }}>{home.abbr}</div>
-                    <div style={{ fontSize: 9, color: C.dim }}>HOME</div>
-                    {game.homeStarter && <div style={{ fontSize: 10, color: C.muted }}>{game.homeStarter.split(" ").pop()}{game.homeStarterHand ? ` (${game.homeStarterHand})` : ""}</div>}
+                  <div style={{ color: C.dim, fontSize: 11 }}>
+                    {game.loading ? "Calculating…" : "⚠ Data unavailable"}
                   </div>
                 </div>
-                {game.loading ? <div style={{ color: C.dim, fontSize: 11 }}>Calculating…</div>
-                  : game.pred ? (() => {
-                    const sigs = getBetSignals({ pred: game.pred, odds: game.odds, sport: "mlb" });
-                    return (
-                      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-                        <Pill label="PROJ" value={`${away.abbr} ${game.pred.awayRuns.toFixed(1)} — ${home.abbr} ${game.pred.homeRuns.toFixed(1)}`} />
-                        <Pill label="MDL ML" value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} highlight={sigs.ml?.verdict === "GO"} lean={sigs.ml?.verdict === "LEAN"} />
-                        {game.odds?.homeML && <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                        <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs.ou?.verdict === "GO"} lean={sigs.ou?.verdict === "LEAN"} />
-                        <Pill label="WIN%" value={`${Math.round(game.pred.homeWinPct * 100)}%`} color={game.pred.homeWinPct >= 0.55 ? C.green : "#e2e8f0"} />
-                      </div>
-                    );
-                  })() : <div style={{ color: C.dim, fontSize: 11 }}>⚠ Data unavailable</div>}
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              </div>
+            );
+          }
+
+          const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "mlb" });
+          const isBetGame = !!signals.betSizing;
+          const bannerInfo = getBannerInfo(game.pred, game.odds, game.homeStarter && game.awayStarter);
+
+          const borderColor = isBetGame ? "#3fb950" : (bannerInfo.color === "green" ? "#f97316" : C.border);
+          const borderWidth = isBetGame ? "2px" : "1px";
+          const mlbDecGate = DECISIVENESS_GATE?.mlb ?? 10;
+
+          return (
+            <div
+              key={game.gamePk}
+              style={{
+                background: `linear-gradient(135deg,${C.card},#111822)`,
+                border: `${borderWidth} solid ${borderColor}`,
+                borderRadius: 10,
+                overflow: "hidden",
+                boxShadow: isBetGame ? "0 0 10px rgba(63, 185, 80, 0.2)" : "none",
+                cursor: "pointer"
+              }}
+              onClick={() => setExpanded(expanded === game.gamePk ? null : game.gamePk)}
+            >
+              {/* Bet advantage banner */}
+              {isBetGame && (
+                <BetBanner signals={signals} homeName={homeName} awayName={awayName} />
+              )}
+
+              {/* Header - Game time and edge label */}
+              <div style={{
+                padding: "8px 18px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                background: isBetGame ? "transparent" : "rgba(0,0,0,0.2)"
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: C.blue }}>
+                    {formatGameTime(game.gameDate, game.status)}
+                  </div>
+
+                  {!isBetGame && bannerInfo.edge != null && Math.abs(bannerInfo.edge) >= EDGE_THRESHOLD && (
+                    <div style={{
+                      fontSize: 10,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      background: "#0d1a2d",
+                      color: C.blue
+                    }}>
+                      {bannerInfo.label}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
                   {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE {game.inningHalf} {game.inning}</span>}
                   {game.umpire?.name && <span style={{ fontSize: 9, color: C.dim }}>⚖ {game.umpire.name.split(" ").pop()}</span>}
-                  <span style={{ color: C.dim, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+                  <span style={{ color: C.dim, fontSize: 12 }}>
+                    {expanded === game.gamePk ? "▲" : "▼"}
+                  </span>
                 </div>
               </div>
-              {isOpen && game.pred && (
-                <div style={{ borderTop: `1px solid ${borderColor}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(130px,1fr))", gap: 8, marginBottom: 10 }}>
-                    <Kv k="Projected Score" v={`${away.abbr} ${game.pred.awayRuns.toFixed(1)} — ${home.abbr} ${game.pred.homeRuns.toFixed(1)}`} />
+
+              {/* Main game row — NCAA grid layout */}
+              <div style={{ padding: "16px 18px" }}>
+                {/* Column headers */}
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+                  gap: 4,
+                  marginBottom: 8,
+                  color: C.dim,
+                  fontSize: 9,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px"
+                }}>
+                  <div></div>
+                  <div>Runs</div>
+                  <div>Mkt RL</div>
+                  <div>ML</div>
+                  <div>Mkt</div>
+                  <div style={{ textAlign: "center" }}>Total (O/U)</div>
+                </div>
+
+                {/* Away team */}
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+                  gap: 4,
+                  alignItems: "center",
+                  marginBottom: 8
+                }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 16, fontWeight: 700 }}>{awayName}</span>
+                      <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>AWAY</span>
+                    </div>
+                    {game.awayStarter && (
+                      <span style={{ fontSize: 10, color: C.muted }}>
+                        {game.awayStarter.split(" ").pop()}{game.awayStarterHand ? ` (${game.awayStarterHand})` : ""}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Away projected runs */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
+                    {game.pred.awayRuns?.toFixed(1)}
+                  </div>
+                  {/* Away market run line */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
+                    {game.odds?.homeSpread ? formatSpread(-game.odds.homeSpread) : "-"}
+                  </div>
+                  {/* Away model ML — green when away favored + decisive */}
+                  <div style={{ fontSize: 12, fontWeight: 500, position: "relative", color: (() => {
+                    const dec = game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100);
+                    const awayFavored = game.pred.homeWinPct < 0.5;
+                    return (awayFavored && dec >= mlbDecGate) ? C.green : "#e2e8f0";
+                  })() }}>
+                    {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "AWAY" && signals.betSizing && (
+                      <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"} />
+                    )}
+                    {formatML(game.pred.modelML_away)}
+                  </div>
+                  {/* Away market ML */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.awayML ? "#e2e8f0" : C.dim }}>
+                    {formatML(game.odds?.awayML)}
+                  </div>
+                  {/* Empty cell for total */}
+                  <div></div>
+                </div>
+
+                {/* Separator */}
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  marginLeft: 70,
+                  marginBottom: 8,
+                  color: C.dim,
+                  fontSize: 10
+                }}>
+                  @
+                </div>
+
+                {/* Home team */}
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "160px 70px 70px 70px 70px 100px",
+                  gap: 4,
+                  alignItems: "center"
+                }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 16, fontWeight: 700 }}>{homeName}</span>
+                      <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>HOME</span>
+                    </div>
+                    {game.homeStarter && (
+                      <span style={{ fontSize: 10, color: C.muted }}>
+                        {game.homeStarter.split(" ").pop()}{game.homeStarterHand ? ` (${game.homeStarterHand})` : ""}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Home projected runs */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
+                    {game.pred.homeRuns?.toFixed(1)}
+                  </div>
+                  {/* Home market run line */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
+                    {game.odds?.homeSpread ? formatSpread(game.odds.homeSpread) : "-"}
+                  </div>
+                  {/* Home model ML — green when home favored + decisive */}
+                  <div style={{ fontSize: 12, fontWeight: 500, position: "relative", color: (() => {
+                    const dec = game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100);
+                    const homeFavored = game.pred.homeWinPct >= 0.5;
+                    return (homeFavored && dec >= mlbDecGate) ? C.green : "#e2e8f0";
+                  })() }}>
+                    {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "HOME" && signals.betSizing && (
+                      <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"} />
+                    )}
+                    {formatML(game.pred.modelML_home)}
+                  </div>
+                  {/* Home market ML */}
+                  <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeML ? "#e2e8f0" : C.dim }}>
+                    {formatML(game.odds?.homeML)}
+                  </div>
+
+                  {/* Total column - shown once for both teams */}
+                  <div style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    textAlign: "center",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                    position: "relative",
+                  }}>
+                    {(signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && signals.betSizing && (
+                      <UnitBadge units={signals.ou?.verdict === "GO" ? Math.min(3, (signals.betSizing?.units || 0) + 1) : 1} isGo={signals.ou?.verdict === "GO"} />
+                    )}
+                    <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
+                      {game.pred.ouTotal}
+                      {signals.ou?.side && (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && (
+                        <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>
+                      )}
+                    </div>
+                    {game.odds?.ouLine && (
+                      <div style={{ fontSize: 10, color: C.yellow }}>mkt: {game.odds.ouLine}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Confidence footer for bet games */}
+              {isBetGame && (
+                <div style={{
+                  padding: "5px 18px",
+                  background: "rgba(0,0,0,0.25)",
+                  borderTop: `1px solid ${borderColor}22`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontSize: 10,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: C.dim }}>Confidence:</span>
+                    <span style={{
+                      color: game.pred.confidence === "HIGH" ? C.green : game.pred.confidence === "MEDIUM" ? C.yellow : C.dim,
+                      fontWeight: 700,
+                    }}>
+                      {game.pred.confidence} ({game.pred.confScore})
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: C.dim }}>Win%:</span>
+                    <span style={{ color: C.green, fontWeight: 700 }}>
+                      {(Math.max(game.pred.homeWinPct, 1 - game.pred.homeWinPct) * 100).toFixed(1)}%
+                    </span>
+                    <span style={{ color: C.dim }}>
+                      {game.pred.homeWinPct >= 0.5 ? homeName : awayName}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Expanded view */}
+              {expanded === game.gamePk && (
+                <div style={{
+                  borderTop: `1px solid ${borderColor}`,
+                  padding: "14px 18px",
+                  background: "rgba(0,0,0,0.3)"
+                }}>
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill,minmax(130px,1fr))",
+                    gap: 8,
+                    marginBottom: 10
+                  }}>
+                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayRuns.toFixed(1)} — ${homeName} ${game.pred.homeRuns.toFixed(1)}`} />
                     <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
                     <Kv k="O/U Total" v={`${game.pred.ouTotal}`} />
-                    <Kv k="Model ML (H)" v={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home} />
-                    {game.odds?.homeML && <Kv k="Market ML (H)" v={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} />}
+                    <Kv k="Model ML (H)" v={formatML(game.pred.modelML_home)} />
+                    <Kv k="Model ML (A)" v={formatML(game.pred.modelML_away)} />
+                    {game.odds?.homeML && <Kv k="Market ML (H)" v={formatML(game.odds.homeML)} />}
+                    {game.odds?.awayML && <Kv k="Market ML (A)" v={formatML(game.odds.awayML)} />}
                     <Kv k="Home FIP" v={game.pred.hFIP?.toFixed(2)} />
                     <Kv k="Away FIP" v={game.pred.aFIP?.toFixed(2)} />
                     <Kv k="Home wOBA" v={game.pred.homeWOBA?.toFixed(3)} />
@@ -232,12 +643,12 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                     {game.venue && <Kv k="Venue" v={game.venue} />}
                   </div>
                   <BetSignalsPanel
-                    signals={getBetSignals({ pred: game.pred, odds: game.odds, sport: "mlb" })}
+                    signals={signals}
                     pred={game.pred} odds={game.odds} sport="mlb"
-                    homeName={home.abbr} awayName={away.abbr}
+                    homeName={homeName} awayName={awayName}
                   />
                   {game.pred?.mlEnhanced && <div style={{ fontSize: 8, color: "#58a6ff", marginTop: 4 }}>⚡ ML-enhanced · trained on {game.mlMeta?.n_train} games · MAE {game.mlMeta?.mae_cv?.toFixed(2)} runs</div>}
-                  <ShapPanel shap={game.mlShap} homeName={home.abbr} awayName={away.abbr} />
+                  <ShapPanel shap={game.mlShap} homeName={homeName} awayName={awayName} />
                   <MonteCarloPanel mc={game.mc} />
                 </div>
               )}
