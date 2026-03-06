@@ -15,8 +15,8 @@ const _ncaaSeasonStart = (() => {
   return `${seasonYear}-11-01`;
 })();
 
-// ML moneyline cap — prevents absurd -1194 type values
-const ML_CAP = 800;
+// ML moneyline cap
+const ML_CAP = 4000;
 
 // Format moneyline for display
 const formatML = (ml) => {
@@ -93,37 +93,37 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     }
     
     // ── Filter out junk games BEFORE expensive enrichment ──
-    // ESPN scoreboard returns TBD placeholders, negative team IDs, and 
-    // non-D1 exhibition teams that each fire 4 API calls for useless data.
+    // ESPN scoreboard returns TBD placeholders (team ID -2), exhibition
+    // teams, and non-D1 schools that each waste 4+ API calls for useless data.
     const validGames = raw.filter(g => {
-      // Skip negative or missing team IDs (ESPN returns -2 for TBD slots)
       const hId = parseInt(g.homeTeamId);
       const aId = parseInt(g.awayTeamId);
       if (!hId || !aId || hId < 0 || aId < 0) return false;
-      // Skip TBD placeholder teams
-      const tbd = /^TBD$/i;
-      if (tbd.test(g.homeAbbr) || tbd.test(g.awayAbbr) || 
-          tbd.test(g.homeTeamName) || tbd.test(g.awayTeamName)) return false;
+      if (/^TBD$/i.test(g.homeAbbr) || /^TBD$/i.test(g.awayAbbr) ||
+          /^TBD$/i.test(g.homeTeamName) || /^TBD$/i.test(g.awayTeamName)) return false;
       return true;
     });
-    
     if (validGames.length < raw.length) {
-      console.log(`Filtered ${raw.length - validGames.length} TBD/invalid games → ${validGames.length} valid`);
+      console.log(`Filtered ${raw.length - validGames.length} TBD/invalid → ${validGames.length} valid`);
     }
-    
-    // ── Batch processing: 8 games at a time to avoid ESPN throttling ──
+    if (validGames.length === 0) {
+      setGames([]);
+      onGamesLoaded?.([]);
+      setLoading(false);
+      return;
+    }
+
+    // ── Batch process 8 games at a time to avoid ESPN throttling ──
     // Promise.all on 37+ games fires 150+ simultaneous ESPN requests.
-    // Batching to 8 keeps ~32 parallel calls which ESPN handles fine.
-    const BATCH_SIZE = 8;
+    const BATCH = 8;
     const allEnriched = [];
-    
-    for (let i = 0; i < validGames.length; i += BATCH_SIZE) {
-      const batch = validGames.slice(i, i + BATCH_SIZE);
-      const batchResults = await Promise.all(batch.map(async (g) => {
-        const [homeStats, awayStats] = await Promise.all([
-          fetchNCAATeamStats(g.homeTeamId).catch(() => null),
-          fetchNCAATeamStats(g.awayTeamId).catch(() => null)
-        ]);
+    for (let bi = 0; bi < validGames.length; bi += BATCH) {
+      const slice = validGames.slice(bi, bi + BATCH);
+      const batchResults = await Promise.all(slice.map(async (g) => {
+      const [homeStats, awayStats] = await Promise.all([
+        fetchNCAATeamStats(g.homeTeamId).catch(() => null),
+        fetchNCAATeamStats(g.awayTeamId).catch(() => null)
+      ]);
       
       if (kenPomMap && kenPomMap.size > 100) {
         if (homeStats) applyKenPomRatings(homeStats, kenPomMap);
@@ -261,25 +261,16 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       }
       
       return {
-        ...g,
-        homeStats,
-        awayStats,
-        pred: finalPred,
-        loading: false,
-        odds: gameOdds,
-        mlShap: mlResult?.shap ?? null,
-        mlMeta: mlResult?.model_meta ?? null,
-        mc: mcResult,
-        homeRestDays,
-        awayRestDays
+        ...g, homeStats, awayStats, pred: finalPred, loading: false,
+        odds: gameOdds, mlShap: mlResult?.shap ?? null,
+        mlMeta: mlResult?.model_meta ?? null, mc: mcResult,
+        homeRestDays, awayRestDays
       };
-    }));
+    })); // end Promise.all(slice.map)
       allEnriched.push(...batchResults);
-      // Progressive render: show games as each batch completes
-      setGames([...allEnriched]);
-    }
+      setGames([...allEnriched]); // progressive render after each batch
+    } // end for-loop
     
-    setGames(allEnriched);
     onGamesLoaded?.(allEnriched);
     setLoading(false);
   }, [calibrationFactor]);

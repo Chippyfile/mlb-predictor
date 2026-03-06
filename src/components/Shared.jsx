@@ -14,7 +14,7 @@ export const NCAA_LIVE_CUTOFF = "2025-01-01"; // games on/after this date used r
 // ── COLOUR PALETTE ────────────────────────────────────────────
 export const C = {
   green: "#3fb950", yellow: "#e3b341", red: "#f85149", blue: "#58a6ff",
-  orange: "#f97316", dim: "#484f58", muted: "#8b949e",
+  orange: "#f97316", dim: "#7d8590", muted: "#8b949e",
   border: "#21262d", bg: "#080c10", card: "#0d1117",
 };
 
