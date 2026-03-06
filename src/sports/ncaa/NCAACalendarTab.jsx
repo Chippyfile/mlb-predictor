@@ -447,7 +447,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 )}
               </div>
 
-            {/* Main game row */}
+           {/* Main game row */}
             <div style={{ padding: "16px 18px" }}>
               {/* Column headers */}
               <div style={{
@@ -493,19 +493,18 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     )}
                     <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>AWAY</span>
                   </div>
-                  {/* Team record - with null checks */}
+                  {/* Team record */}
                   {game.awayStats && (game.awayStats.wins > 0 || game.awayStats.losses > 0) ? (
                     <span style={{ fontSize: 10, color: C.dim }}>
-                      {game.awayStats.wins || 0}-{game.awayStats.losses || 0}
+                      {game.awayStats.wins}-{game.awayStats.losses}
                     </span>
                   ) : (
                     <span style={{ fontSize: 10, color: C.dim, fontStyle: "italic" }}>
-                      No record data
+                      No record
                     </span>
                   )}
                 </div>
                 
-                {/* All white text - no colors */}
                 <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                   {formatSpread(game.pred.projectedSpread)}
                 </div>
@@ -560,19 +559,18 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       HOME{game.neutralSite ? " (N)" : ""}
                     </span>
                   </div>
-                  {/* Team record - with null checks */}
+                  {/* Team record */}
                   {game.homeStats && (game.homeStats.wins > 0 || game.homeStats.losses > 0) ? (
                     <span style={{ fontSize: 10, color: C.dim }}>
-                      {game.homeStats.wins || 0}-{game.homeStats.losses || 0}
+                      {game.homeStats.wins}-{game.homeStats.losses}
                     </span>
                   ) : (
                     <span style={{ fontSize: 10, color: C.dim, fontStyle: "italic" }}>
-                      No record data
+                      No record
                     </span>
                   )}
                 </div>
                 
-                {/* All white text - no colors */}
                 <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                   {formatSpread(-game.pred.projectedSpread)}
                 </div>
