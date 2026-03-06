@@ -234,17 +234,12 @@ export async function ncaaFillFinalScores(pendingRows) {
         const mktSpread = matchedRow.market_spread_home ?? null;
         let rl_correct = null;
         if (mktSpread !== null) {
+          // ATS: grade against market spread only (not model's own spread)
           if (actualMargin > mktSpread) rl_correct = true;
           else if (actualMargin < mktSpread) rl_correct = false;
-          else rl_correct = null;
-        } else {
-          const projSpread = matchedRow.spread_home || 0;
-          const modelPickedHomeBySpread = projSpread > 0;
-          if (actualMargin > 0 && modelPickedHomeBySpread) rl_correct = true;
-          else if (actualMargin < 0 && !modelPickedHomeBySpread) rl_correct = true;
-          else if (actualMargin === 0) rl_correct = null;
-          else rl_correct = false;
+          else rl_correct = null; // push
         }
+        // No fallback — if no market spread, rl_correct stays null
         const total = homeScore + awayScore;
         const ouLine = matchedRow.market_ou_total ?? matchedRow.ou_total ?? null;
         const predTotal = (matchedRow.pred_home_score ?? 0) + (matchedRow.pred_away_score ?? 0);
@@ -286,17 +281,12 @@ export async function ncaaRegradeAllResults(onProgress) {
     const mktSpread = row.market_spread_home ?? null;
     let rl_correct = null;
     if (mktSpread !== null) {
+      // ATS: grade against market spread only (not model's own spread)
       if (actualMargin > mktSpread) rl_correct = true;
       else if (actualMargin < mktSpread) rl_correct = false;
-      else rl_correct = null;
-    } else {
-      const projSpread = row.spread_home || 0;
-      const modelPickedHomeBySpread = projSpread > 0;
-      if (actualMargin === 0) rl_correct = null;
-      else if (actualMargin > 0 && modelPickedHomeBySpread) rl_correct = true;
-      else if (actualMargin < 0 && !modelPickedHomeBySpread) rl_correct = true;
-      else rl_correct = false;
+      else rl_correct = null; // push
     }
+    // No fallback — if no market spread, rl_correct stays null
     const total = homeScore + awayScore;
     const ouLine = row.market_ou_total ?? row.ou_total ?? null;
     const predTotal = (row.pred_home_score ?? 0) + (row.pred_away_score ?? 0);
