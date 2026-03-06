@@ -448,7 +448,6 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
               </div>
 
             {/* Main game row */}
-            {/* Main game row */}
             <div style={{ padding: "16px 18px" }}>
               {/* Column headers */}
               <div style={{
