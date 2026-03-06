@@ -63,7 +63,7 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState("overview");
   const [gameTypeFilter, setGameTypeFilter] = useState(table === "mlb_predictions" ? "R" : "ALL");
-  const [forwardOnly, setForwardOnly] = useState(false);
+  const [forwardOnly, setForwardOnly] = useState(isNCAA ? true : false);
 
   useEffect(() => {
     (async () => {
@@ -229,6 +229,11 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
       {activeSection === "calibration" && calib && (
         <div style={{ background: "#0a0f14", border: "1px solid #1e3448", borderRadius: 10, padding: "14px 18px" }}>
           <div style={{ fontSize: 11, color: C.blue, fontWeight: 700, letterSpacing: 1, marginBottom: 8 }}>CALIBRATION ANALYSIS</div>
+          {isNCAA && !forwardOnly && (
+            <div style={{ background: "#1a0a00", border: "1px solid #5a2a00", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 10, color: C.orange, lineHeight: 1.5 }}>
+              ⚠️ Calibration computed on backtested data — results are misleading. The suggested correction factor should <strong>not</strong> be applied. Switch to <strong>✓ Live Only</strong> for meaningful calibration.
+            </div>
+          )}
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 10 }}>
             <Kv k="Brier Score" v={calib.brierScore} />
             <Kv k="Skill vs Coin" v={`${(calib.brierSkill * 100).toFixed(1)}%`} />
@@ -370,16 +375,17 @@ export function HistoryTab({ table, refreshKey }) {
                   const bg = r.result_entered ? (r.ml_correct ? "rgba(63,185,80,0.06)" : "rgba(248,81,73,0.06)") : "transparent";
                   const homeScore = isMLB ? r.actual_home_runs : r.actual_home_score;
                   const awayScore = isMLB ? r.actual_away_runs : r.actual_away_score;
-                  const homeName = isMLB ? r.home_team : (r.home_team_name || r.home_team);
-                  const awayName = isMLB ? r.away_team : (r.away_team_name || r.away_team);
+                  // Always prefer abbreviation (r.home_team / r.away_team) over full names
+                  const homeAbbr = r.home_team || (r.home_team_name || "HOME").split(" ").pop();
+                  const awayAbbr = r.away_team || (r.away_team_name || "AWAY").split(" ").pop();
                   return (
                     <tr key={r.id} style={{ borderBottom: `1px solid #0d1117`, background: bg }}>
-                      <td style={{ padding: "7px 8px", fontWeight: 700, whiteSpace: "nowrap" }}>{awayName} @ {homeName} {r.game_type === "S" && <span style={{ fontSize: 8, color: C.yellow, marginLeft: 4 }}>ST</span>}</td>
+                      <td style={{ padding: "7px 8px", fontWeight: 700, whiteSpace: "nowrap" }}>{awayAbbr} @ {homeAbbr} {r.game_type === "S" && <span style={{ fontSize: 8, color: C.yellow, marginLeft: 4 }}>ST</span>}</td>
                       <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}><span style={{ color: C.blue }}>H:{mlSign(r.model_ml_home)}</span><span style={{ color: C.dim, margin: "0 3px" }}>|</span><span style={{ color: C.dim }}>A:{mlSign(r.model_ml_away)}</span></td>
                       <td style={{ padding: "7px 8px", color: C.yellow }}>{r.ou_total}</td>
                       <td style={{ padding: "7px 8px", color: C.blue }}>{r.win_pct_home != null ? `${Math.round(r.win_pct_home * 100)}%` : "—"}</td>
                       <td style={{ padding: "7px 8px" }}><span style={{ color: confColor(r.confidence), fontWeight: 700, fontSize: 10 }}>{r.confidence}</span></td>
-                      <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayName} {awayScore} — {homeName} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
+                      <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayAbbr} {awayScore} – {homeAbbr} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.rl_correct === null ? "🔲" : r.rl_correct ? "✅" : "❌") : "—"}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ou_correct === "PUSH" ? <span style={{ color: C.yellow, fontSize: 10 }}>🔲</span> : r.ou_correct === "OVER" || r.ou_correct === true ? "✅" : r.ou_correct === "UNDER" || r.ou_correct === false ? "❌" : <span style={{ color: C.dim, fontSize: 10 }}>—</span>) : "—"}</td>
