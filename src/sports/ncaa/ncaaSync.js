@@ -234,9 +234,13 @@ export async function ncaaFillFinalScores(pendingRows) {
         const mktSpread = matchedRow.market_spread_home ?? null;
         let rl_correct = null;
         if (mktSpread !== null) {
-          // ATS: grade against market spread only (not model's own spread)
-          if (actualMargin > mktSpread) rl_correct = true;
-          else if (actualMargin < mktSpread) rl_correct = false;
+          // ATS: home covers when actualMargin + spread > 0
+          // spread is negative for home favorites (Vegas convention)
+          // e.g., home -14.5, wins by 20: margin(+20) + spread(-14.5) = +5.5 > 0 → covered
+          // e.g., home -14.5, wins by 5:  margin(+5) + spread(-14.5) = -9.5 < 0 → didn't cover
+          const atsResult = actualMargin + mktSpread;
+          if (atsResult > 0) rl_correct = true;
+          else if (atsResult < 0) rl_correct = false;
           else rl_correct = null; // push
         }
         // No fallback — if no market spread, rl_correct stays null
@@ -281,9 +285,10 @@ export async function ncaaRegradeAllResults(onProgress) {
     const mktSpread = row.market_spread_home ?? null;
     let rl_correct = null;
     if (mktSpread !== null) {
-      // ATS: grade against market spread only (not model's own spread)
-      if (actualMargin > mktSpread) rl_correct = true;
-      else if (actualMargin < mktSpread) rl_correct = false;
+      // ATS: home covers when actualMargin + spread > 0
+      const atsResult = actualMargin + mktSpread;
+      if (atsResult > 0) rl_correct = true;
+      else if (atsResult < 0) rl_correct = false;
       else rl_correct = null; // push
     }
     // No fallback — if no market spread, rl_correct stays null
