@@ -157,10 +157,17 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const blendedWinHome = Math.max(0.08, Math.min(0.92, rawBlended));
         const blendedWinAway = 1 - blendedWinHome;
         const ML_CAP = 500;
+        // VIG FIX: away ML ≠ -homeML. Real lines are asymmetric due to vig.
+        // Same VIG = 0.0225 (~4.5% total juice) pattern as ncaaUtils.js.
+        const VIG = 0.0225;
+        const hProb = blendedWinHome + VIG;
+        const aProb = blendedWinAway + VIG;
         const newModelML_home = blendedWinHome >= 0.5
-          ? -Math.min(ML_CAP, Math.round((blendedWinHome / (1 - blendedWinHome)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - blendedWinHome) / blendedWinHome) * 100));
-        const newModelML_away = -newModelML_home;
+          ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100));
+        const newModelML_away = blendedWinAway >= 0.5
+          ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100));
         return {
           ...pred,
           homeScore: adjHomeScore,

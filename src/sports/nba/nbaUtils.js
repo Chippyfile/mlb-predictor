@@ -713,9 +713,18 @@ export function nbaPredictGame({
   if (calibrationFactor !== 1.0) {
     hwp = Math.min(0.95, Math.max(0.05, 0.5 + (hwp - 0.5) * calibrationFactor));
   }
-  const mml = hwp >= 0.5 ? -Math.round((hwp / (1 - hwp)) * 100) : +Math.round(((1 - hwp) / hwp) * 100) + VIG;
-  const aml = -mml + VIG;
-
+  // VIG FIX: away ML ≠ -homeML. Real lines are asymmetric due to vig.
+  // Same VIG = 0.0225 (~4.5% total juice) pattern as ncaaUtils.js.
+  const VIG = 0.0225;
+  const hProb = hwp + VIG;
+  const aProb = (1 - hwp) + VIG;
+  const mml = hwp >= 0.5
+    ? -Math.round((hProb / (1 - hProb)) * 100)
+    : +Math.round(((1 - hProb) / hProb) * 100);
+  const aml = hwp < 0.5
+    ? -Math.round((aProb / (1 - aProb)) * 100)
+    : +Math.round(((1 - aProb) / aProb) * 100);
+    
   // ── NBA-C1 FIX (v16): Confidence = DATA QUALITY only ──
   // Previously mixed prediction strength (netGap=35pts, winPctStrength=30pts) into
   // confidence, causing HIGH confidence on lopsided games even when data was sparse.
