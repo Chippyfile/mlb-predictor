@@ -142,12 +142,55 @@ export async function fetchNCAATeamStats(teamId) {
     const assists = getStat("avgAssists") || 14.0;
     const turnovers = getStat("avgTurnovers") || 12.0;
 
-    // Pre-compute games played for converting season totals to per-game if needed
-    const totalGamesForAvg = (parseInt(recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value) || 0)
-      + (parseInt(recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value) || 0);
-    const wins = parseInt(recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value) || 0;
-    const losses = parseInt(recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value) || 0;
+    // ── Wins/Losses extraction with multiple fallback methods ──
+    // ESPN record endpoint structure varies: sometimes items[0].stats has wins/losses,
+    // sometimes it's in items with type "total", sometimes only in summary strings like "22-8"
+    let wins = 0, losses = 0;
+    
+    // Method 1: Search all items for type "total" or "Overall" with stats array
+    if (recordData?.items) {
+      for (const item of recordData.items) {
+        if (item.type === "total" || item.description === "Overall" || recordData.items.length === 1) {
+          const wStat = item.stats?.find(s => s.name === "wins");
+          const lStat = item.stats?.find(s => s.name === "losses");
+          if (wStat) wins = parseInt(wStat.value) || 0;
+          if (lStat) losses = parseInt(lStat.value) || 0;
+          if (wins > 0 || losses > 0) break;
+        }
+      }
+    }
+    
+    // Method 2: Parse summary string (e.g., "22-8") from any item
+    if (wins === 0 && losses === 0 && recordData?.items) {
+      for (const item of recordData.items) {
+        const summary = item.summary || "";
+        if (summary.includes("-")) {
+          const parts = summary.split("-");
+          if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+            wins = parseInt(parts[0]) || 0;
+            losses = parseInt(parts[1]) || 0;
+            if (wins > 0 || losses > 0) break;
+          }
+        }
+      }
+    }
+    
+    // Method 3: Count from completed games in schedule
+    if (wins === 0 && losses === 0 && schedData?.events) {
+      const completed = schedData.events.filter(e => e.competitions?.[0]?.status?.type?.completed);
+      for (const ev of completed) {
+        const comp = ev.competitions?.[0];
+        const teamComp = comp?.competitors?.find(c => String(c.team?.id) === String(teamId));
+        if (teamComp) {
+          if (teamComp.winner) wins++;
+          else losses++;
+        }
+      }
+    }
+    
     const totalGames = wins + losses;
+    const totalGamesForAvg = totalGames || 0;
+
 
     // ── Additional stats for Four Factors, defensive metrics, tempo ──
     const fga = getStat("avgFieldGoalsAttempted") || (() => {

@@ -15,8 +15,8 @@ const _ncaaSeasonStart = (() => {
   return `${seasonYear}-11-01`;
 })();
 
-// ML moneyline cap 
-const ML_CAP = 4000;
+// ML moneyline cap — prevents absurd -1194 type values
+const ML_CAP = 800;
 
 // Format moneyline for display
 const formatML = (ml) => {
@@ -111,11 +111,19 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       console.log(`Filtered ${raw.length - validGames.length} TBD/invalid games → ${validGames.length} valid`);
     }
     
-    const enriched = await Promise.all(validGames.map(async (g) => {
-      const [homeStats, awayStats] = await Promise.all([
-        fetchNCAATeamStats(g.homeTeamId).catch(() => null),
-        fetchNCAATeamStats(g.awayTeamId).catch(() => null)
-      ]);
+    // ── Batch processing: 8 games at a time to avoid ESPN throttling ──
+    // Promise.all on 37+ games fires 150+ simultaneous ESPN requests.
+    // Batching to 8 keeps ~32 parallel calls which ESPN handles fine.
+    const BATCH_SIZE = 8;
+    const allEnriched = [];
+    
+    for (let i = 0; i < validGames.length; i += BATCH_SIZE) {
+      const batch = validGames.slice(i, i + BATCH_SIZE);
+      const batchResults = await Promise.all(batch.map(async (g) => {
+        const [homeStats, awayStats] = await Promise.all([
+          fetchNCAATeamStats(g.homeTeamId).catch(() => null),
+          fetchNCAATeamStats(g.awayTeamId).catch(() => null)
+        ]);
       
       if (kenPomMap && kenPomMap.size > 100) {
         if (homeStats) applyKenPomRatings(homeStats, kenPomMap);
@@ -266,9 +274,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         awayRestDays
       };
     }));
+      allEnriched.push(...batchResults);
+      // Progressive render: show games as each batch completes
+      setGames([...allEnriched]);
+    }
     
-    setGames(enriched);
-    onGamesLoaded?.(enriched);
+    setGames(allEnriched);
+    onGamesLoaded?.(allEnriched);
     setLoading(false);
   }, [calibrationFactor]);
 
