@@ -263,13 +263,16 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// ODDS FETCH (cached, 10-min TTL)
+// ODDS FETCH (cached, 6-hour TTL to conserve API quota)
+// Free tier = 500 req/month. At 3 sports × ~2 fetches/day = ~180/month.
+// Sync functions can pass forceRefresh=true when grading closing lines.
 // ─────────────────────────────────────────────────────────────
+const ODDS_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
 let _oddsCache = {}, _oddsCacheTime = {};
 
-export async function fetchOdds(sport = "baseball_mlb") {
+export async function fetchOdds(sport = "baseball_mlb", forceRefresh = false) {
   const key = sport;
-  if (_oddsCache[key] && Date.now() - (_oddsCacheTime[key] || 0) < 10 * 60 * 1000)
+  if (!forceRefresh && _oddsCache[key] && Date.now() - (_oddsCacheTime[key] || 0) < ODDS_CACHE_TTL)
     return _oddsCache[key];
   try {
     const res  = await fetch(`/api/odds?sport=${sport}`);

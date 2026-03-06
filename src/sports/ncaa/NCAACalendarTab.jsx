@@ -30,34 +30,67 @@ const formatSpread = (spread) => {
   return spread > 0 ? `+${spread.toFixed(1)}` : spread.toFixed(1);
 };
 
-// Bet size indicator component (compact version for header)
-const CompactBetIndicator = ({ betSizing }) => {
-  if (!betSizing) return null;
-  
-  const colors = {
-    green: "#3fb950",
-    yellow: "#f97316",
-    muted: "#8b949e"
-  };
+// Bet advantage banner for game cards
+const BetBanner = ({ signals, homeName, awayName }) => {
+  if (!signals?.betSizing) return null;
+  const sz = signals.betSizing;
+  const verdict = signals.ml?.verdict || "SKIP";
+  const side = signals.ml?.side || "";
+  const edgePct = signals.ml?.edgePct || "0";
+  const isGo = verdict === "GO";
+  const badgeColor = isGo ? "#2ea043" : "#d29922";
+  const badgeText = isGo ? "BET" : "LEAN";
+  const pickName = side === "HOME" ? homeName : awayName;
   
   return (
     <div style={{
-      display: "inline-flex",
+      padding: "8px 14px",
+      background: isGo
+        ? "linear-gradient(135deg, #0b2012, #0e2818)"
+        : "linear-gradient(135deg, #1a1500, #1e1a08)",
+      borderBottom: `1px solid ${isGo ? "#2ea04355" : "#d2992244"}`,
+      display: "flex",
       alignItems: "center",
-      gap: 4,
-      padding: "2px 8px",
-      background: "#161b22",
-      borderRadius: 12,
-      border: `1px solid ${colors[betSizing.color]}`,
-      fontSize: 10,
-      fontWeight: 600,
-      color: colors[betSizing.color],
-      marginLeft: 8
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8,
     }}>
-      <span>🎯 BET {betSizing.units}u</span>
-      <span style={{ color: "#c9d1d9", fontSize: 9 }}>
-        ({betSizing.edge}% edge)
-      </span>
+      {/* Left: unit blocks + pick */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", gap: 3 }}>
+          {[1, 2, 3].map(i => (
+            <div key={i} style={{
+              width: 20, height: 20, borderRadius: 4,
+              background: i <= sz.units ? badgeColor : "#1a1e24",
+              border: `1px solid ${i <= sz.units ? badgeColor : "#30363d"}`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 9, fontWeight: 800,
+              color: i <= sz.units ? "#fff" : "#484f58",
+            }}>{i}u</div>
+          ))}
+        </div>
+        <div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
+            {pickName}
+          </span>
+          <span style={{ fontSize: 10, color: C.muted, marginLeft: 6 }}>
+            +{edgePct}% edge
+          </span>
+        </div>
+      </div>
+      
+      {/* Right: verdict badge */}
+      <div style={{
+        padding: "3px 10px",
+        borderRadius: 4,
+        background: badgeColor,
+        color: "#fff",
+        fontSize: 10,
+        fontWeight: 800,
+        letterSpacing: 1,
+      }}>
+        {badgeText}
+      </div>
     </div>
   );
 };
@@ -430,21 +463,24 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
               }}
               onClick={() => setExpanded(expanded === game.gameId ? null : game.gameId)}
             >
-              {/* Header - Game time and bet indicator */}
+              {/* Bet advantage banner - shows unit sizing + LEAN/BET */}
+              {isBetGame && (
+                <BetBanner signals={signals} homeName={homeName} awayName={awayName} />
+              )}
+
+              {/* Header - Game time and edge label (non-bet games) */}
               <div style={{
                 padding: "8px 18px",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                borderBottom: expanded === game.gameId ? `1px solid ${borderColor}` : "none",
-                background: "rgba(0,0,0,0.2)"
+                background: isBetGame ? "transparent" : "rgba(0,0,0,0.2)"
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ fontSize: 11, fontWeight: 600, color: C.orange }}>
                     {formatGameTime(game.gameDate, game.status)}
                   </div>
                   
-                  {/* Edge label if no bet but has edge */}
                   {!isBetGame && bannerInfo.edge != null && Math.abs(bannerInfo.edge) >= EDGE_THRESHOLD && (
                     <div style={{
                       fontSize: 10,
@@ -458,14 +494,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   )}
                 </div>
                 
-                {/* Compact bet indicator on the right */}
-                {isBetGame && <CompactBetIndicator betSizing={signals.betSizing} />}
-                
-                {!isBetGame && (
-                  <div style={{ color: C.dim, fontSize: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
+                  {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
+                  <span style={{ color: C.dim, fontSize: 12 }}>
                     {expanded === game.gameId ? "▲" : "▼"}
-                  </div>
-                )}
+                  </span>
+                </div>
               </div>
 
               {/* Main game row */}
@@ -532,7 +567,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
                     {game.odds?.homeSpread ? formatSpread(-game.odds.homeSpread) : "-"}
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: (() => {
+                    const dec = game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100);
+                    const awayFavored = game.pred.homeWinPct < 0.5;
+                    return (awayFavored && dec >= DECISIVENESS_GATE.ncaa) ? C.green : "#e2e8f0";
+                  })() }}>
                     {formatML(game.pred.modelML_away)}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.awayML ? "#e2e8f0" : C.dim }}>
@@ -598,7 +637,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeSpread ? "#e2e8f0" : C.dim }}>
                     {game.odds?.homeSpread ? formatSpread(game.odds.homeSpread) : "-"}
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: (() => {
+                    const dec = game.pred.decisiveness ?? (Math.abs(game.pred.homeWinPct - 0.5) * 100);
+                    const homeFavored = game.pred.homeWinPct >= 0.5;
+                    return (homeFavored && dec >= DECISIVENESS_GATE.ncaa) ? C.green : "#e2e8f0";
+                  })() }}>
                     {formatML(game.pred.modelML_home)}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: game.odds?.homeML ? "#e2e8f0" : C.dim }}>
@@ -621,6 +664,38 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   </div>
                 </div>
               </div>
+
+              {/* Confidence footer for bet games */}
+              {isBetGame && (
+                <div style={{
+                  padding: "5px 18px",
+                  background: "rgba(0,0,0,0.25)",
+                  borderTop: `1px solid ${borderColor}22`,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontSize: 10,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: C.dim }}>Confidence:</span>
+                    <span style={{
+                      color: game.pred.confidence === "HIGH" ? C.green : game.pred.confidence === "MEDIUM" ? C.yellow : C.dim,
+                      fontWeight: 700,
+                    }}>
+                      {game.pred.confidence} ({game.pred.confScore})
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: C.dim }}>Win%:</span>
+                    <span style={{ color: C.green, fontWeight: 700 }}>
+                      {(Math.max(game.pred.homeWinPct, 1 - game.pred.homeWinPct) * 100).toFixed(1)}%
+                    </span>
+                    <span style={{ color: C.dim }}>
+                      {game.pred.homeWinPct >= 0.5 ? homeName : awayName}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Expanded view */}
               {expanded === game.gameId && (
