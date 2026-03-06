@@ -15,8 +15,8 @@ const _ncaaSeasonStart = (() => {
   return `${seasonYear}-11-01`;
 })();
 
-// ML moneyline cap — prevents absurd -1194 type values
-const ML_CAP = 800;
+// ML moneyline cap 
+const ML_CAP = 4000;
 
 // Format moneyline for display
 const formatML = (ml) => {
@@ -92,7 +92,26 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       return;
     }
     
-    const enriched = await Promise.all(raw.map(async (g) => {
+    // ── Filter out junk games BEFORE expensive enrichment ──
+    // ESPN scoreboard returns TBD placeholders, negative team IDs, and 
+    // non-D1 exhibition teams that each fire 4 API calls for useless data.
+    const validGames = raw.filter(g => {
+      // Skip negative or missing team IDs (ESPN returns -2 for TBD slots)
+      const hId = parseInt(g.homeTeamId);
+      const aId = parseInt(g.awayTeamId);
+      if (!hId || !aId || hId < 0 || aId < 0) return false;
+      // Skip TBD placeholder teams
+      const tbd = /^TBD$/i;
+      if (tbd.test(g.homeAbbr) || tbd.test(g.awayAbbr) || 
+          tbd.test(g.homeTeamName) || tbd.test(g.awayTeamName)) return false;
+      return true;
+    });
+    
+    if (validGames.length < raw.length) {
+      console.log(`Filtered ${raw.length - validGames.length} TBD/invalid games → ${validGames.length} valid`);
+    }
+    
+    const enriched = await Promise.all(validGames.map(async (g) => {
       const [homeStats, awayStats] = await Promise.all([
         fetchNCAATeamStats(g.homeTeamId).catch(() => null),
         fetchNCAATeamStats(g.awayTeamId).catch(() => null)

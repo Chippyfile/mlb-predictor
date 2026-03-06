@@ -143,10 +143,10 @@ export async function fetchNCAATeamStats(teamId) {
     const turnovers = getStat("avgTurnovers") || 12.0;
 
     // Pre-compute games played for converting season totals to per-game if needed
-    const totalGamesForAvg = (recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0)
-      + (recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0);
-    const wins = recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value || 0;
-    const losses = recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value || 0;
+    const totalGamesForAvg = (parseInt(recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value) || 0)
+      + (parseInt(recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value) || 0);
+    const wins = parseInt(recordData?.items?.[0]?.stats?.find(s => s.name === "wins")?.value) || 0;
+    const losses = parseInt(recordData?.items?.[0]?.stats?.find(s => s.name === "losses")?.value) || 0;
     const totalGames = wins + losses;
 
     // ── Additional stats for Four Factors, defensive metrics, tempo ──
@@ -295,7 +295,15 @@ export async function fetchNCAAGamesForDate(dateStr) {
         venue: comp?.venue?.fullName,
         neutralSite: isNeutral,
       };
-    }).filter(g => g.homeTeamId && g.awayTeamId);
+    }).filter(g => {
+      // Must have valid positive team IDs (ESPN returns -2 for TBD conf tourney slots)
+      const hId = parseInt(g.homeTeamId);
+      const aId = parseInt(g.awayTeamId);
+      if (!hId || !aId || hId < 0 || aId < 0) return false;
+      // Skip TBD placeholder teams
+      if (/^TBD$/i.test(g.homeAbbr) || /^TBD$/i.test(g.awayAbbr)) return false;
+      return true;
+    });
   } catch (e) { console.warn("fetchNCAAGamesForDate error:", dateStr, e); return []; }
 }
 
