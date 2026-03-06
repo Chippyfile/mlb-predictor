@@ -77,7 +77,7 @@ export default function NCAAAnalyzer() {
     const atsCovered = atsPool.filter(r => r.rl_correct === true).length;
     // O/U
     const ouPool = pool.filter(r => r.market_ou_total != null && r.ou_correct !== "PUSH" && r.ou_correct !== undefined);
-    const ouCorrect = ouPool.filter(r => r.ou_correct === "OVER" || r.ou_correct === "UNDER").length;
+    const ouCorrect = ouPool.filter(r => r.ou_correct === "OVER" || r.ou_correct === "UNDER" || r.ou_correct === true).length;
     return {
       tier, total: pool.length, wins,
       pct: pool.length ? (wins / pool.length * 100).toFixed(1) : "—",
