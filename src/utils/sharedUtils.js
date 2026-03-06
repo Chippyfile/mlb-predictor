@@ -120,13 +120,22 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
       };
     }
   } else {
+    // No market odds — model conviction is the edge
     const winPct = Math.max(homeWin, awayWin);
-    if (winPct >= 0.65) {
+    const side = homeWin >= awayWin ? "HOME" : "AWAY";
+    if (winPct >= 0.80) {
+      mlSignal = {
+        verdict: "GO",
+        side,
+        edgePct: ((winPct - 0.5) * 100).toFixed(1),
+        reason: `Model gives ${(winPct * 100).toFixed(1)}% win probability — high conviction bet`,
+      };
+    } else if (winPct >= 0.65) {
       mlSignal = {
         verdict: "LEAN",
-        side: homeWin >= 0.65 ? "HOME" : "AWAY",
+        side,
         edgePct: ((winPct - 0.5) * 100).toFixed(1),
-        reason: `Strong model win probability (${(winPct * 100).toFixed(1)}%) — no market to compare`,
+        reason: `Model gives ${(winPct * 100).toFixed(1)}% win probability — no market to compare`,
       };
     } else {
       mlSignal = { verdict: "SKIP", reason: "No market odds and model win% < 65%" };
@@ -257,6 +266,32 @@ export function getBetSignals({ pred, odds, sport = "ncaa" }) {
         ev: parseFloat(((winPct * (decOdds - 1) - (1 - winPct)) * 100).toFixed(1)),
       };
     }
+  }
+
+  // ── MODEL-CONVICTION BET (no market odds available) ────────
+  // When there's no market line to compare, the model's calibrated
+  // win probability IS the edge — backtesting shows predictions at
+  // these decisiveness levels hit at >80%. Size by win probability tiers.
+  if (!betSizing && _decisiveness >= _decGate) {
+    const favHome = homeWin >= 0.5;
+    const winPct = favHome ? homeWin : awayWin;
+    const side = favHome ? "HOME" : "AWAY";
+    // Tier by win probability: 90%+ → MAX, 75%+ → STRONG, else LEAN
+    const units = winPct >= 0.90 ? 3 : winPct >= 0.75 ? 2 : 1;
+    const label = units === 3 ? "MAX (3u)" : units === 2 ? "STRONG (2u)" : "LEAN (1u)";
+    const color = units === 3 ? "green" : units === 2 ? "yellow" : "muted";
+    betSizing = {
+      fraction: null, // no Kelly without market odds
+      pct: null,
+      units,
+      label,
+      color,
+      side,
+      marketML: null,
+      winPct: parseFloat((winPct * 100).toFixed(1)),
+      edge: parseFloat(((winPct - 0.5) * 100).toFixed(1)), // edge over coin flip
+      ev: null, // can't compute EV without market odds
+    };
   }
 
   return { ml: mlSignal, ou: ouSignal, spread: spreadSignal, conf: confSignal, dec: decSignal, anyEdge, betSizing };
