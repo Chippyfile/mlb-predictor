@@ -601,7 +601,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
               </div>
             </div>
 
-  {/* Separator */}
+ {/* Separator */}
   <div style={{
     display: "flex",
     alignItems: "center",
