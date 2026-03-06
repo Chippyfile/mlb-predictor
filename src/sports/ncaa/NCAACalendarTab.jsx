@@ -448,6 +448,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
               </div>
 
             {/* Main game row */}
+            {/* Main game row */}
             <div style={{ padding: "16px 18px" }}>
               {/* Column headers */}
               <div style={{
@@ -505,7 +506,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   )}
                 </div>
                 
-                {/* Removed color conditions - all white now */}
+                {/* All white text - no colors */}
                 <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                   {formatSpread(game.pred.projectedSpread)}
                 </div>
@@ -572,7 +573,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   )}
                 </div>
                 
-                {/* Removed color conditions - all white now */}
+                {/* All white text - no colors */}
                 <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                   {formatSpread(-game.pred.projectedSpread)}
                 </div>
