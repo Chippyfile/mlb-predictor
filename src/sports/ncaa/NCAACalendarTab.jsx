@@ -19,24 +19,25 @@ const _ncaaSeasonStart = (() => {
 const ML_CAP = 4000;
 
 // Unit badge for spread/ML/OU cells — replaces "BET"/"LEAN" text with ✓ 1u/2u/3u
-const UnitBadge = ({ units, isGo, children }) => {
-  if (!units) return <>{children}</>;
-  const badgeColor = isGo ? "#2ea043" : "#d29922";
+// Inline signal badge — wraps a value with a colored label tag
+// For ML: shows "2u" (bet sizing). For ATS/O/U: shows "ATS"/"O/U" (signal type)
+const SignalBadge = ({ label, color, children }) => {
+  if (!label) return <>{children}</>;
   return (
     <div style={{
       display: "inline-flex", alignItems: "center", gap: 4,
-      background: `${badgeColor}18`,
-      border: `1px solid ${badgeColor}55`,
+      background: `${color}18`,
+      border: `1px solid ${color}55`,
       borderRadius: 5,
       padding: "2px 6px",
     }}>
       <span>{children}</span>
       <span style={{
-        fontSize: 7, fontWeight: 800, color: badgeColor,
-        background: `${badgeColor}30`, borderRadius: 3,
+        fontSize: 7, fontWeight: 800, color,
+        background: `${color}30`, borderRadius: 3,
         padding: "0 3px", lineHeight: "13px",
         whiteSpace: "nowrap",
-      }}>{units}u</span>
+      }}>{label}</span>
     </div>
   );
 };
@@ -620,7 +621,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                     {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "AWAY"
-                      ? <UnitBadge units={signals.betSizing.units} isGo={signals.spread?.verdict === "GO"}>{formatSpread(game.pred.projectedSpread)}</UnitBadge>
+                      ? <SignalBadge label="ATS" color="#d29922">{formatSpread(game.pred.projectedSpread)}</SignalBadge>
                       : formatSpread(game.pred.projectedSpread)
                     }
                   </div>
@@ -633,7 +634,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     return (awayFavored && dec >= DECISIVENESS_GATE.ncaa) ? C.green : "#e2e8f0";
                   })() }}>
                     {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "AWAY" && signals.betSizing
-                      ? <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"}>{formatML(game.pred.modelML_away)}</UnitBadge>
+                      ? <SignalBadge label={`${signals.betSizing.units}u`} color={signals.ml?.verdict === "GO" ? "#2ea043" : "#d29922"}>{formatML(game.pred.modelML_away)}</SignalBadge>
                       : formatML(game.pred.modelML_away)
                     }
                   </div>
@@ -696,7 +697,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                     {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "HOME"
-                      ? <UnitBadge units={signals.betSizing.units} isGo={signals.spread?.verdict === "GO"}>{formatSpread(-game.pred.projectedSpread)}</UnitBadge>
+                      ? <SignalBadge label="ATS" color="#d29922">{formatSpread(-game.pred.projectedSpread)}</SignalBadge>
                       : formatSpread(-game.pred.projectedSpread)
                     }
                   </div>
@@ -709,7 +710,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     return (homeFavored && dec >= DECISIVENESS_GATE.ncaa) ? C.green : "#e2e8f0";
                   })() }}>
                     {(signals.ml?.verdict === "GO" || signals.ml?.verdict === "LEAN") && signals.ml?.side === "HOME" && signals.betSizing
-                      ? <UnitBadge units={signals.betSizing.units} isGo={signals.ml?.verdict === "GO"}>{formatML(game.pred.modelML_home)}</UnitBadge>
+                      ? <SignalBadge label={`${signals.betSizing.units}u`} color={signals.ml?.verdict === "GO" ? "#2ea043" : "#d29922"}>{formatML(game.pred.modelML_home)}</SignalBadge>
                       : formatML(game.pred.modelML_home)
                     }
                   </div>
@@ -728,9 +729,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   }}>
                     <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
                       {(signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && signals.betSizing
-                        ? <UnitBadge units={signals.ou?.verdict === "GO" ? Math.min(3, (signals.betSizing?.units || 0) + 1) : 1} isGo={signals.ou?.verdict === "GO"}>
+                        ? <SignalBadge label={signals.ou?.side === "OVER" ? "OVER" : "UNDER"} color={signals.ou?.side === "OVER" ? "#2ea043" : "#58a6ff"}>
                             {game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
-                          </UnitBadge>
+                          </SignalBadge>
                         : game.pred.ouTotal
                       }
                     </div>

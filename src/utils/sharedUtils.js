@@ -338,14 +338,25 @@ export function computeAccuracy(records) {
   const ou = withResults.filter(r => r.ou_correct !== null);
 
   const tiers = {
-    HIGH:   { total: 0, correct: 0 },
-    MEDIUM: { total: 0, correct: 0 },
-    LOW:    { total: 0, correct: 0 },
+    HIGH:   { total: 0, correct: 0, atsTotal: 0, atsCovered: 0, ouTotal: 0, ouCorrect: 0 },
+    MEDIUM: { total: 0, correct: 0, atsTotal: 0, atsCovered: 0, ouTotal: 0, ouCorrect: 0 },
+    LOW:    { total: 0, correct: 0, atsTotal: 0, atsCovered: 0, ouTotal: 0, ouCorrect: 0 },
   };
   withResults.forEach(r => {
     if (r.confidence && tiers[r.confidence]) {
-      tiers[r.confidence].total++;
-      if (r.ml_correct) tiers[r.confidence].correct++;
+      const t = tiers[r.confidence];
+      t.total++;
+      if (r.ml_correct) t.correct++;
+      // ATS: rl_correct is bool true/false or null (push/no line)
+      if (r.rl_correct === true || r.rl_correct === false) {
+        t.atsTotal++;
+        if (r.rl_correct === true) t.atsCovered++;
+      }
+      // O/U: "OVER"/"UNDER" = model correct, null = wrong or no line, "PUSH" = excluded
+      if (r.market_ou_total != null && r.ou_correct !== "PUSH" && r.ou_correct !== undefined) {
+        t.ouTotal++;
+        if (r.ou_correct === "OVER" || r.ou_correct === "UNDER") t.ouCorrect++;
+      }
     }
   });
 

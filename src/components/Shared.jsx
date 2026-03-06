@@ -176,20 +176,39 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
               </div>
             </div>
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 18px", flex: 1 }}>
-              <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 10 }}>BY CONFIDENCE</div>
-              <div style={{ display: "flex", gap: 14 }}>
-                {["HIGH", "MEDIUM", "LOW"].map(tier => {
-                  const t = acc.tiers[tier];
-                  const p = t.total ? Math.round(t.correct / t.total * 100) : null;
-                  return (
-                    <div key={tier} style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 18, fontWeight: 800, color: p ? (p >= 60 ? C.green : p >= 52 ? C.yellow : C.red) : C.dim }}>{p ? `${p}%` : "—"}</div>
-                      <div style={{ fontSize: 9, color: C.dim }}>{tier}</div>
-                      <div style={{ fontSize: 9, color: C.dim }}>{t.total}g</div>
-                    </div>
-                  );
-                })}
-              </div>
+              <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 10 }}>BY CONFIDENCE (ML / ATS / O/U)</div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                <thead>
+                  <tr style={{ color: C.dim, fontSize: 8, letterSpacing: 1 }}>
+                    <th style={{ textAlign: "left", padding: "3px 6px", borderBottom: `1px solid ${C.border}` }}>TIER</th>
+                    <th style={{ textAlign: "center", padding: "3px 6px", borderBottom: `1px solid ${C.border}` }}>N</th>
+                    <th style={{ textAlign: "center", padding: "3px 6px", borderBottom: `1px solid ${C.border}` }}>ML</th>
+                    <th style={{ textAlign: "center", padding: "3px 6px", borderBottom: `1px solid ${C.border}` }}>{spreadLabel === "Spread" ? "ATS" : "RL"}</th>
+                    <th style={{ textAlign: "center", padding: "3px 6px", borderBottom: `1px solid ${C.border}` }}>O/U</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {["HIGH", "MEDIUM", "LOW"].map(tier => {
+                    const t = acc.tiers[tier];
+                    const mlP = t.total ? Math.round(t.correct / t.total * 100) : null;
+                    const atsP = t.atsTotal > 0 ? Math.round(t.atsCovered / t.atsTotal * 100) : null;
+                    const ouP = t.ouTotal > 0 ? Math.round(t.ouCorrect / t.ouTotal * 100) : null;
+                    const mlC = mlP ? (mlP >= 60 ? C.green : mlP >= 52 ? C.yellow : C.red) : C.dim;
+                    const atsC = atsP ? (atsP >= 55 ? C.green : atsP >= 50 ? C.yellow : C.red) : C.dim;
+                    const ouC = ouP ? (ouP >= 55 ? C.green : ouP >= 50 ? C.yellow : C.red) : C.dim;
+                    return (
+                      <tr key={tier} style={{ borderBottom: `1px solid #0d1117` }}>
+                        <td style={{ padding: "4px 6px", color: tier === "HIGH" ? C.green : tier === "MEDIUM" ? C.yellow : C.muted, fontWeight: 700, fontSize: 9 }}>{tier}</td>
+                        <td style={{ textAlign: "center", padding: "4px 6px", color: C.dim }}>{t.total}</td>
+                        <td style={{ textAlign: "center", padding: "4px 6px", color: mlC, fontWeight: 700 }}>{mlP ? `${mlP}%` : "—"}</td>
+                        <td style={{ textAlign: "center", padding: "4px 6px", color: atsC, fontWeight: 700 }}>{atsP ? `${atsP}%` : "—"}{t.atsTotal > 0 && <span style={{ color: C.dim, fontSize: 7, marginLeft: 2 }}>({t.atsTotal})</span>}</td>
+                        <td style={{ textAlign: "center", padding: "4px 6px", color: ouC, fontWeight: 700 }}>{ouP ? `${ouP}%` : "—"}{t.ouTotal > 0 && <span style={{ color: C.dim, fontSize: 7, marginLeft: 2 }}>({t.ouTotal})</span>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 8, color: C.dim, marginTop: 6 }}>ATS/O/U &gt; 52.4% = profitable at -110</div>
             </div>
           </div>
           {cumData.length > 2 && (

@@ -72,7 +72,20 @@ export default function NCAAAnalyzer() {
   const tierStats = ["HIGH", "MEDIUM", "LOW"].map(tier => {
     const pool = graded.filter(r => r.confidence === tier);
     const wins = pool.filter(r => r.ml_correct).length;
-    return { tier, total: pool.length, wins, pct: pool.length ? (wins / pool.length * 100).toFixed(1) : "—" };
+    // ATS
+    const atsPool = pool.filter(r => r.rl_correct === true || r.rl_correct === false);
+    const atsCovered = atsPool.filter(r => r.rl_correct === true).length;
+    // O/U
+    const ouPool = pool.filter(r => r.market_ou_total != null && r.ou_correct !== "PUSH" && r.ou_correct !== undefined);
+    const ouCorrect = ouPool.filter(r => r.ou_correct === "OVER" || r.ou_correct === "UNDER").length;
+    return {
+      tier, total: pool.length, wins,
+      pct: pool.length ? (wins / pool.length * 100).toFixed(1) : "—",
+      atsTotal: atsPool.length, atsCovered,
+      atsPct: atsPool.length > 0 ? (atsCovered / atsPool.length * 100).toFixed(1) : "—",
+      ouTotal: ouPool.length, ouCorrect,
+      ouPct: ouPool.length > 0 ? (ouCorrect / ouPool.length * 100).toFixed(1) : "—",
+    };
   });
 
   // ── SCORE MARGIN OF ERROR ────────────────────────────────────
@@ -281,14 +294,16 @@ export default function NCAAAnalyzer() {
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, padding: 16 }}>
               <div style={{ fontSize: 11, color: C.dim, letterSpacing: 2, marginBottom: 12 }}>ACCURACY BY CONFIDENCE TIER</div>
               <Table
-                headers={["TIER", "GAMES", "CORRECT", "ACCURACY"]}
+                headers={["TIER", "GAMES", "ML", "ATS", "O/U"]}
                 rows={tierStats.map(t => [
                   <span style={{ color: t.tier === "HIGH" ? C.green : t.tier === "MEDIUM" ? C.yellow : C.muted }}>{t.tier}</span>,
                   t.total,
-                  t.wins,
-                  t.pct === "—" ? "—" : `${t.pct}%`
+                  t.pct === "—" ? "—" : <span style={{ color: parseFloat(t.pct) >= 60 ? C.green : parseFloat(t.pct) >= 52 ? C.yellow : C.red, fontWeight: 700 }}>{t.pct}%</span>,
+                  t.atsPct === "—" ? "—" : <span><span style={{ color: parseFloat(t.atsPct) >= 55 ? C.green : parseFloat(t.atsPct) >= 50 ? C.yellow : C.red, fontWeight: 700 }}>{t.atsPct}%</span><span style={{ color: C.dim, fontSize: 8, marginLeft: 3 }}>({t.atsTotal})</span></span>,
+                  t.ouPct === "—" ? "—" : <span><span style={{ color: parseFloat(t.ouPct) >= 55 ? C.green : parseFloat(t.ouPct) >= 50 ? C.yellow : C.red, fontWeight: 700 }}>{t.ouPct}%</span><span style={{ color: C.dim, fontSize: 8, marginLeft: 3 }}>({t.ouTotal})</span></span>,
                 ])}
               />
+              <div style={{ fontSize: 9, color: C.dim, marginTop: 8 }}>ATS/O/U &gt; 52.4% = profitable at -110 juice · Games with market lines shown in ()</div>
             </div>
           </div>
         )}
