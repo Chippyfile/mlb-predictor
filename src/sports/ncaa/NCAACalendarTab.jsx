@@ -73,12 +73,16 @@ const BetBanner = ({ signals, homeName, awayName }) => {
         ? "linear-gradient(135deg, #0b2012, #0e2818)"
         : "linear-gradient(135deg, #1a1500, #1e1a08)",
       borderBottom: `1px solid ${sz.units >= 2 ? "#2ea04355" : "#d2992244"}`,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      flexWrap: "wrap",
-      gap: 8,
+      overflowX: "auto",
+      WebkitOverflowScrolling: "touch",
     }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        minWidth: 320,
+      }}>
       {/* Left: unit blocks + pick + market ML */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ display: "flex", gap: 3 }}>
@@ -121,6 +125,7 @@ const BetBanner = ({ signals, homeName, awayName }) => {
       }}>
         <span>{checks}</span>
         <span style={{ fontSize: 9, letterSpacing: 0.5 }}>{sz.units}u</span>
+      </div>
       </div>
     </div>
   );
@@ -340,9 +345,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       setGames([...allEnriched]); // progressive render after each batch
     } // end for-loop
     
-    // ── Top-75 filter: only show games where ≥1 team is ranked top 75 ──
+    // ── Top-100 filter: only show games where ≥1 team is ranked top 100 ──
     // Uses KenPom rank (preferred) or ESPN rank as fallback.
-    const TOP_N = 75;
+    const TOP_N = 100;
     const filtered = allEnriched.filter(g => {
       const hRank = g.homeStats?._kenPomRank || g.homeRank || 999;
       const aRank = g.awayStats?._kenPomRank || g.awayRank || 999;
@@ -561,8 +566,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 </div>
               </div>
 
-              {/* Main game row */}
-              <div style={{ padding: "16px 18px" }}>
+              {/* Main game row — scrollable on mobile */}
+              <div style={{ padding: "16px 18px", overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+                <div style={{ minWidth: 540 }}>
                 {/* Column headers */}
                 <div style={{
                   display: "grid",
@@ -740,6 +746,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     )}
                   </div>
                 </div>
+                </div>
               </div>
 
               {/* Confidence footer for bet games */}
@@ -748,10 +755,15 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   padding: "5px 18px",
                   background: "rgba(0,0,0,0.25)",
                   borderTop: `1px solid ${borderColor}22`,
+                  overflowX: "auto",
+                  WebkitOverflowScrolling: "touch",
+                }}>
+                <div style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
                   fontSize: 10,
+                  minWidth: 320,
                 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ color: C.dim }}>Confidence:</span>
@@ -771,6 +783,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       {game.pred.homeWinPct >= 0.5 ? homeName : awayName}
                     </span>
                   </div>
+                </div>
                 </div>
               )}
 
