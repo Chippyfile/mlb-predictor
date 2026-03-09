@@ -223,6 +223,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             spread_home: pred.projectedSpread,
             market_spread_home: gameOdds?.homeSpread ?? null,
             market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
+            // ESPN odds — extracted from same /summary call as injuries (zero extra API calls)
+            espn_spread: injuryData?.espn_spread ?? 0,
+            espn_over_under: injuryData?.espn_over_under ?? 0,
+            espn_home_win_pct: injuryData?.espn_home_win_pct ?? 0.5,
+            espn_predictor_home_pct: injuryData?.espn_predictor_home_pct ?? 0.5,
             home_conference: homeStats?.conferenceName || "",
             away_conference: awayStats?.conferenceName || "",
             game_date: d,

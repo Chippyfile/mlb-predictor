@@ -830,27 +830,68 @@ export async function detectMissingStarters(gameId, homeTeamId, awayTeamId) {
       ...headlines.map(h => h.headline || ""),
     ].join(" ").toLowerCase();
 
-    if (injuries.home.length === 0 && injuries.away.length === 0 && notesText.length < 10) {
-      return {
-        home_injury_penalty: 0, away_injury_penalty: 0,
-        injury_diff: 0, home_missing_starters: 0, away_missing_starters: 0,
-        home_injured_players: [], away_injured_players: [],
-        detection_method: "no_data",
-      };
+    // ── Extract ESPN Odds from pickcenter (DraftKings) ──
+    // Same endpoint, zero extra API calls — just reading more of the response
+    let espn_spread = null, espn_over_under = null;
+    let espn_home_ml = null, espn_away_ml = null;
+    let espn_home_win_pct = null, espn_predictor_home_pct = null;
+
+    const pickcenter = data?.pickcenter || [];
+    // Prefer DraftKings, fall back to any provider
+    const dk = pickcenter.find(p => /draft\s*kings/i.test(p?.provider?.name || ""));
+    const provider = dk || pickcenter[0] || null;
+    if (provider) {
+      // Spread & O/U can be top-level or in details array
+      espn_spread = provider.spread ?? null;
+      espn_over_under = provider.overUnder ?? null;
+      // Moneylines
+      espn_home_ml = provider.homeTeamOdds?.moneyLine ?? null;
+      espn_away_ml = provider.awayTeamOdds?.moneyLine ?? null;
+      // Details fallback (some games only have details array)
+      if (espn_spread == null || espn_over_under == null) {
+        for (const d of (provider.details || [])) {
+          if (d.type === "spread" && espn_spread == null) espn_spread = parseFloat(d.value);
+          if (d.type === "overUnder" && espn_over_under == null) espn_over_under = parseFloat(d.value);
+        }
+      }
+      console.log(`[ESPN odds] ${gameId}: spread=${espn_spread}, O/U=${espn_over_under}, ML=${espn_home_ml}/${espn_away_ml} (${provider.provider?.name || "unknown"})`);
+    }
+
+    // ── Extract ESPN Predictor win probability ──
+    // Can be in data.predictor or data.header.competitions[0].predictor
+    const predictor = data?.predictor?.homeTeam
+      || data?.header?.competitions?.[0]?.predictor?.homeTeam;
+    if (predictor?.gameProjection != null) {
+      espn_home_win_pct = parseFloat(predictor.gameProjection) / 100;
+    }
+    // ESPN's BPI predictor (separate model)
+    const bpi = data?.header?.competitions?.[0]?.predictor;
+    if (bpi?.provider?.name && bpi?.homeTeam?.gameProjection != null) {
+      espn_predictor_home_pct = parseFloat(bpi.homeTeam.gameProjection) / 100;
     }
 
     const homeImpact = calculateInjuryImpact(injuries.home);
     const awayImpact = calculateInjuryImpact(injuries.away);
 
+    const noInjuryData = injuries.home.length === 0 && injuries.away.length === 0 && notesText.length < 10;
+
     return {
-      home_injury_penalty: parseFloat(homeImpact.emPenalty.toFixed(2)),
-      away_injury_penalty: parseFloat(awayImpact.emPenalty.toFixed(2)),
-      injury_diff: parseFloat((homeImpact.emPenalty - awayImpact.emPenalty).toFixed(2)),
-      home_missing_starters: homeImpact.starters,
-      away_missing_starters: awayImpact.starters,
+      // Injury data (original)
+      home_injury_penalty: noInjuryData ? 0 : parseFloat(homeImpact.emPenalty.toFixed(2)),
+      away_injury_penalty: noInjuryData ? 0 : parseFloat(awayImpact.emPenalty.toFixed(2)),
+      injury_diff: noInjuryData ? 0 : parseFloat((homeImpact.emPenalty - awayImpact.emPenalty).toFixed(2)),
+      home_missing_starters: noInjuryData ? 0 : homeImpact.starters,
+      away_missing_starters: noInjuryData ? 0 : awayImpact.starters,
       home_injured_players: injuries.home.map(p => p.name),
       away_injured_players: injuries.away.map(p => p.name),
-      detection_method: "espn_summary",
+      detection_method: noInjuryData ? "no_data" : "espn_summary",
+      // ESPN odds (NEW — piggybacked from same API call)
+      espn_spread: espn_spread != null ? parseFloat(espn_spread) : null,
+      espn_over_under: espn_over_under != null ? parseFloat(espn_over_under) : null,
+      espn_home_ml: espn_home_ml != null ? parseFloat(espn_home_ml) : null,
+      espn_away_ml: espn_away_ml != null ? parseFloat(espn_away_ml) : null,
+      espn_home_win_pct: espn_home_win_pct,
+      espn_predictor_home_pct: espn_predictor_home_pct ?? espn_home_win_pct,
     };
   } catch (e) {
     console.warn("detectMissingStarters error:", gameId, e.message);
