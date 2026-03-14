@@ -21,7 +21,7 @@ export async function supabaseQuery(path, method = "GET", body = null, onConflic
         "Prefer": isUpsert
           ? "resolution=merge-duplicates,return=representation"
           : method === "POST" ? "return=representation" : "",
-        "Range": method === "GET" ? "0-9999" : "",
+
       },
     };
 
