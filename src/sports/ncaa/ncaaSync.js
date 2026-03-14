@@ -285,7 +285,7 @@ export async function ncaaFillFinalScores(pendingRows) {
 export async function ncaaRegradeAllResults(onProgress) {
   onProgress?.("⏳ Loading all graded NCAA records…");
   const allGraded = await supabaseQuery(
-    `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em&limit=5000limit=10000`
+    `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em&limit=10000`
   );
   if (!allGraded?.length) { onProgress?.("No graded records found"); return 0; }
   onProgress?.(`⏳ Regrading ${allGraded.length} records…`);
