@@ -69,7 +69,7 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
     (async () => {
       setLoading(true);
       const typeFilter = (table === "mlb_predictions" && gameTypeFilter !== "ALL") ? `&game_type=eq.${gameTypeFilter}` : "";
-      const data = await supabaseQuery(`/${table}?result_entered=eq.true${typeFilter}&order=game_date.asc&limit=2000`);
+      const data = await supabaseQuery(`/${table}?result_entered=eq.true${typeFilter}&order=game_date.asc&limit=10000`);
       setRecords(data || []);
       setLoading(false);
     })();
