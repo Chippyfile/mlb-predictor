@@ -1020,7 +1020,7 @@ export function calculateDynamicSigma(homeStats, awayStats, gameDateStr) {
   const qualityAdj = -1.5 * avgQuality;
 
   const finalSigma = (baseSigma * 0.50) + (confSigma * 0.35) + ((baseSigma + qualityAdj) * 0.15);
-  return parseFloat(Math.max(13.0, Math.min(21.0, finalSigma)).toFixed(2));
+  return parseFloat(Math.max(11.0, Math.min(17.0, finalSigma - 2.0)).toFixed(2));
 }
 
 
