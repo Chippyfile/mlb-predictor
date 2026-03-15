@@ -277,31 +277,27 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       
       const finalPred = pred && mlResult ? (() => {
         const mlMargin = mlResult.ml_margin;
+        const mlWinProb = mlResult.ml_win_prob_home;
+
+        // v22: Use ML values directly — no blending, no sigma conversion
+        // The StackedClassifier + isotonic calibration (Brier 0.111) is the
+        // best-calibrated probability. Previous 70/30 blend was compressing it.
         const heuristicMargin = pred.projectedSpread;
         const marginShift = (mlMargin - heuristicMargin) / 2;
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
 
-        const SIGMA = dynamicSigma || 16.0;
-        const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
-
-        const MARGIN_WEIGHT_BASE = 0.70;
-        const divergence = Math.abs(marginBasedWinProb - mlResult.ml_win_prob_home);
-        const adaptiveMarginWeight = Math.min(0.95, MARGIN_WEIGHT_BASE + divergence);
-        const rawBlended = adaptiveMarginWeight * marginBasedWinProb + (1 - adaptiveMarginWeight) * mlResult.ml_win_prob_home;
-
-        const blendedWinHome = Math.max(0.05, Math.min(0.95, rawBlended));
-        const blendedWinAway = 1 - blendedWinHome;
+        const winHome = Math.max(0.05, Math.min(0.95, mlWinProb));
+        const winAway = 1 - winHome;
 
         // Model moneylines with simulated vig (~4.5% total, split per side)
-        // Fair: 72.6% → -265/+265. With vig: -280/+230 (realistic book line)
         const VIG = 0.0225; // 2.25% juice per side
-        const homeProb = blendedWinHome + VIG;
-        const awayProb = (1 - blendedWinHome) + VIG;
-        const newModelML_home = blendedWinHome >= 0.5
+        const homeProb = winHome + VIG;
+        const awayProb = (1 - winHome) + VIG;
+        const newModelML_home = winHome >= 0.5
           ? -Math.min(ML_CAP, Math.round((homeProb / (1 - homeProb)) * 100))
           : +Math.min(ML_CAP, Math.round(((1 - homeProb) / homeProb) * 100));
-        const newModelML_away = blendedWinHome < 0.5
+        const newModelML_away = winHome < 0.5
           ? -Math.min(ML_CAP, Math.round((awayProb / (1 - awayProb)) * 100))
           : +Math.min(ML_CAP, Math.round(((1 - awayProb) / awayProb) * 100));
 
@@ -309,8 +305,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           ...pred,
           homeScore: adjHomeScore,
           awayScore: adjAwayScore,
-          homeWinPct: blendedWinHome,
-          awayWinPct: blendedWinAway,
+          homeWinPct: winHome,
+          awayWinPct: winAway,
           projectedSpread: parseFloat(mlMargin.toFixed(1)),
           ouTotal: pred.ouTotal,
           modelML_home: newModelML_home,
@@ -322,9 +318,6 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _heuristicSpread: pred.projectedSpread,
           _heuristicWinPct: pred.homeWinPct,
           _rawMlWinProb: mlResult.ml_win_prob_home,
-          _marginBasedWinProb: marginBasedWinProb,
-          _adaptiveMarginWeight: adaptiveMarginWeight,
-          _divergence: divergence,
         };
       })() : pred;
       
