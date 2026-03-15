@@ -2,6 +2,7 @@
 // NCAAB v18 — Phase 1: Injury detection, tournament context, dynamic sigma
 import { supabaseQuery } from "../../utils/supabase.js";
 import { fetchOdds } from "../../utils/sharedUtils.js";
+import { mlPredict } from "../../utils/mlApi.js";
 import {
   fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame,
   detectMissingStarters, getGameContext, calculateDynamicSigma,
@@ -142,7 +143,7 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
   const market_spread_home = marketOdds?.marketSpreadHome ?? null;
   const market_ou_total = marketOdds?.marketTotal ?? null;
 
-  return {
+  const row = {
     game_date: dateStr,
     home_team: game.homeAbbr || game.homeTeamName,
     away_team: game.awayAbbr || game.awayTeamName,
@@ -206,6 +207,22 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     ...(market_spread_home !== null && { market_spread_home }),
     ...(market_ou_total !== null && { market_ou_total }),
   };
+
+  // ═══ v22: Override win_pct_home with ML isotonic-calibrated probability ═══
+  // The sigma formula (Brier ~0.174) is replaced by the StackedClassifier
+  // + isotonic calibration (Brier ~0.111) for saved predictions.
+  // Falls back to sigma if ML API is unavailable.
+  try {
+    const mlResult = await mlPredict("ncaa", row);
+    if (mlResult && mlResult.ml_win_prob_home != null && !mlResult.error) {
+      row.win_pct_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
+      row.spread_home = parseFloat(mlResult.ml_margin.toFixed(1));
+    }
+  } catch {
+    // ML API unavailable — keep sigma-based win_pct_home as fallback
+  }
+
+  return row;
 }
 
 
