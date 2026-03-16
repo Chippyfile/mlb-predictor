@@ -57,6 +57,19 @@ export function Kv({ k, v }) {
   );
 }
 
+// ── SESSION CACHE — avoid refetching on tab switches ──────────
+const _queryCache = new Map();
+const _cacheTTL = 10 * 60 * 1000; // 10 minutes
+function cachedQuery(key, fetcher) {
+  const cached = _queryCache.get(key);
+  if (cached && (Date.now() - cached.ts) < _cacheTTL) return Promise.resolve(cached.data);
+  return fetcher().then(data => { _queryCache.set(key, { data, ts: Date.now() }); return data; });
+}
+function _daysAgo(n) {
+  const d = new Date(); d.setDate(d.getDate() - n);
+  return d.toISOString().split("T")[0];
+}
+
 // ── ACCURACY DASHBOARD ────────────────────────────────────────
 export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel = "Run Line", isNCAA = false }) {
   const [records, setRecords] = useState([]);
@@ -64,16 +77,22 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
   const [activeSection, setActiveSection] = useState("overview");
   const [gameTypeFilter, setGameTypeFilter] = useState(table === "mlb_predictions" ? "R" : "ALL");
   const [forwardOnly, setForwardOnly] = useState(isNCAA ? true : false);
+  const [daysBack, setDaysBack] = useState(10);
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       const typeFilter = (table === "mlb_predictions" && gameTypeFilter !== "ALL") ? `&game_type=eq.${gameTypeFilter}` : "";
-      const data = await supabaseQuery(`/${table}?result_entered=eq.true${typeFilter}&order=game_date.asc&limit=10000`);
+      const accCols = "id,game_date,ml_correct,rl_correct,ou_correct,win_pct_home,confidence,spread_home,market_spread_home,market_ou_total,game_type";
+      const dateFilter = daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "";
+      const cacheKey = `acc_${table}_${gameTypeFilter}_${daysBack}_${refreshKey}`;
+      const data = await cachedQuery(cacheKey, () =>
+        supabaseQuery(`/${table}?result_entered=eq.true${typeFilter}&select=${accCols}${dateFilter}&order=game_date.asc&limit=5000`)
+      );
       setRecords(data || []);
       setLoading(false);
     })();
-  }, [refreshKey, gameTypeFilter, table]);
+  }, [refreshKey, gameTypeFilter, table, daysBack]);
 
   const filteredRecords = useMemo(() => {
     if (!isNCAA || !forwardOnly) return records;
@@ -113,6 +132,11 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
         <h2 style={{ margin: 0, fontSize: 16, color: C.blue, letterSpacing: 2, textTransform: "uppercase" }}>📊 Accuracy Dashboard</h2>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 3, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3 }}>
+            {[[10,"10d"],[30,"30d"],[90,"90d"],[999,"All"]].map(([v,l]) => (
+              <button key={v} onClick={() => setDaysBack(v)} style={{ padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 9, fontWeight: 700, background: daysBack === v ? C.green : "transparent", color: daysBack === v ? C.bg : C.dim }}>{l}</button>
+            ))}
+          </div>
           {table === "mlb_predictions" && (
             <div style={{ display: "flex", gap: 3, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3 }}>
               {[["R", "⚾ Regular"], ["S", "🌸 Spring"], ["ALL", "All"]].map(([v, l]) => (
@@ -330,17 +354,20 @@ export function HistoryTab({ table, refreshKey }) {
   const [loading, setLoading] = useState(true);
   const [filterDate, setFilterDate] = useState("");
   const [gameTypeFilter, setGameTypeFilter] = useState("ALL");
+  const [daysBack, setDaysBack] = useState(10);
   const isMLB = table === "mlb_predictions";
 
   const load = useCallback(async () => {
     setLoading(true);
-    let path = `/${table}?order=game_date.desc&limit=200`;
-    if (filterDate) path += `&game_date=eq.${filterDate}`;
+    const histCols = "id,game_date,home_team,away_team,home_team_name,away_team_name,model_ml_home,model_ml_away,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type";
+    const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
+    let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
-    const data = await supabaseQuery(path);
+    const cacheKey = `hist_${table}_${filterDate}_${gameTypeFilter}_${daysBack}_${refreshKey}`;
+    const data = await cachedQuery(cacheKey, () => supabaseQuery(path));
     setRecords(data || []);
     setLoading(false);
-  }, [filterDate, gameTypeFilter, table]);
+  }, [filterDate, gameTypeFilter, table, daysBack, refreshKey]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
@@ -366,6 +393,11 @@ export function HistoryTab({ table, refreshKey }) {
         <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "inherit" }} />
         {filterDate && <button onClick={() => setFilterDate("")} style={{ background: C.card, color: C.muted, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11 }}>Clear</button>}
         <button onClick={load} style={{ background: C.card, color: C.blue, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11 }}>↻</button>
+        <div style={{ display: "flex", gap: 3, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3 }}>
+          {[[10,"10d"],[30,"30d"],[90,"90d"],[999,"All"]].map(([v,l]) => (
+            <button key={v} onClick={() => { setDaysBack(v); setFilterDate(""); }} style={{ padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 9, fontWeight: 700, background: daysBack === v && !filterDate ? C.green : "transparent", color: daysBack === v && !filterDate ? C.bg : C.dim }}>{l}</button>
+          ))}
+        </div>
         {isMLB && (
           <div style={{ display: "flex", gap: 2, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 2 }}>
             {[["ALL", "All"], ["R", "⚾ RS"], ["S", "🌸 ST"]].map(([v, l]) => (
