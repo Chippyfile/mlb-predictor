@@ -384,6 +384,173 @@ function F4Panel({counters,nSims,ratings}) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// FINAL FOUR BRACKET — full matchups with scores
+// ═══════════════════════════════════════════════════════════════
+
+function FinalFourBracket({counters,nSims,locked,onLock,ml,ratings}) {
+  if(!counters||!nSims) return (
+    <div style={{padding:20,textAlign:"center",color:"rgba(255,255,255,0.3)",fontSize:11}}>
+      Run a simulation first to see Final Four matchups and predicted scores.
+    </div>
+  );
+
+  const prob=(id,rk)=>(counters[id]?.[rk]||0)/nSims;
+
+  // Get most likely regional winners (or locked)
+  const getRegionWinner=(rKey)=>{
+    const lk=locked.get(`${rKey}_r3_0`);
+    if(lk) return lk;
+    let best=null, bestP=0;
+    for(const t of REGIONS[rKey].teams){
+      const p=prob(t.id,"f4");
+      if(p>bestP){bestP=p;best=t;}
+    }
+    return best;
+  };
+
+  const eastW=getRegionWinner("east"), southW=getRegionWinner("south");
+  const westW=getRegionWinner("west"), midwestW=getRegionWinner("midwest");
+
+  // Semi winners
+  const getSemiWinner=(lockKey,a,b)=>{
+    const lk=locked.get(lockKey);
+    if(lk) return lk;
+    if(!a||!b) return a||b;
+    const pA=prob(a.id,"ncg")||0, pB=prob(b.id,"ncg")||0;
+    return pA>=pB?a:b;
+  };
+
+  const semi1W=getSemiWinner("ff_semi1",eastW,southW);
+  const semi2W=getSemiWinner("ff_semi2",westW,midwestW);
+
+  // Championship winner
+  const champW=(()=>{
+    const lk=locked.get("ff_final");
+    if(lk) return lk;
+    if(!semi1W||!semi2W) return semi1W||semi2W;
+    const pA=prob(semi1W.id,"champ")||0, pB=prob(semi2W.id,"champ")||0;
+    return pA>=pB?semi1W:semi2W;
+  })();
+
+  const GameCard=({title,subtitle,teamA,teamB,lockKey,color,roundKey})=>{
+    if(!teamA&&!teamB) return null;
+    const w=locked.get(lockKey);
+    const sp=teamA&&teamB?lookupSpread(ml,ratings,teamA,teamB):null;
+    const favName=sp&&sp.spread>0?teamA?.name:teamB?.name;
+    const absSpread=sp?Math.abs(sp.spread):0;
+    const tierColor=sp?.tier==="ml"?"#4ade80":sp?.tier==="em"?"#60a5fa":"rgba(255,255,255,0.15)";
+    const sA=sp?.detail?.homeScore, sB=sp?.detail?.awayScore;
+    const pA=teamA?prob(teamA.id,roundKey)*100:0;
+    const pB=teamB?prob(teamB.id,roundKey)*100:0;
+    const rA=teamA?ratings?.get(String(teamA.id)):null;
+    const rB=teamB?ratings?.get(String(teamB.id)):null;
+
+    const TeamRow=({team,pct,rating,isW,isL,side})=>{
+      if(!team) return <div style={{padding:"10px 12px",color:"rgba(255,255,255,0.15)",fontSize:11,fontStyle:"italic"}}>TBD</div>;
+      const score=side==="a"?sA:sB;
+      return (
+        <div onClick={()=>onLock(lockKey,team)} style={{
+          display:"flex",alignItems:"center",gap:8,padding:"10px 12px",cursor:"pointer",
+          background:isW?`${color}25`:"transparent",borderLeft:isW?`3px solid ${color}`:"3px solid transparent",
+          opacity:isL?0.35:1,transition:"all 0.15s",
+        }}>
+          <span style={{fontSize:10,color:"rgba(255,255,255,0.3)",fontWeight:700,fontFamily:"'JetBrains Mono',monospace",width:16,textAlign:"right"}}>{team.seed}</span>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13,fontWeight:isW?800:600,color:isW?"#fff":"rgba(255,255,255,0.8)"}}>{team.name}</div>
+            <div style={{fontSize:8,color:"rgba(255,255,255,0.25)",fontFamily:"'JetBrains Mono',monospace",marginTop:1}}>
+              {rating?`#${rating.rank_adj_em} · EM ${rating.adj_em?.toFixed(1)}`:""}{" "}
+              {team.full?`(${team.full.split(" ").pop()})`:""} 
+            </div>
+          </div>
+          {score!=null&&(
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:18,fontWeight:800,color:isW?color:"rgba(255,255,255,0.6)",fontFamily:"'Bebas Neue',sans-serif",letterSpacing:1}}>{Math.round(score)}</div>
+            </div>
+          )}
+          <div style={{textAlign:"right",minWidth:40}}>
+            <div style={{fontSize:12,fontWeight:700,color:pct>55?"#4ade80":pct>40?"#fbbf24":"rgba(255,255,255,0.35)",fontFamily:"'JetBrains Mono',monospace"}}>{pct.toFixed(0)}%</div>
+          </div>
+          {isW&&<span style={{fontSize:9,color:"#4ade80"}}>✓</span>}
+        </div>
+      );
+    };
+
+    return (
+      <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.06)",borderRadius:8,overflow:"hidden",marginBottom:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"rgba(255,255,255,0.02)",borderBottom:"1px solid rgba(255,255,255,0.04)"}}>
+          <div>
+            <div style={{fontSize:11,fontWeight:700,color,letterSpacing:1}}>{title}</div>
+            {subtitle&&<div style={{fontSize:8,color:"rgba(255,255,255,0.2)"}}>{subtitle}</div>}
+          </div>
+          {sp&&(
+            <div style={{display:"flex",gap:8,alignItems:"center",fontSize:9,fontFamily:"'JetBrains Mono',monospace"}}>
+              <span style={{color:"rgba(255,255,255,0.3)"}}>{favName} -{absSpread.toFixed(1)}</span>
+              <span style={{color:tierColor,fontWeight:700,fontSize:7}}>{sp.tier.toUpperCase()}</span>
+            </div>
+          )}
+        </div>
+        <TeamRow team={teamA} pct={pA} rating={rA} isW={w?.id===teamA?.id} isL={w&&w.id!==teamA?.id} side="a"/>
+        <div style={{height:1,background:"rgba(255,255,255,0.04)"}}/>
+        <TeamRow team={teamB} pct={pB} rating={rB} isW={w?.id===teamB?.id} isL={w&&w.id!==teamB?.id} side="b"/>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <div style={{fontFamily:"'Bebas Neue','Impact',sans-serif",fontSize:20,letterSpacing:4,color:"#fbbf24",textAlign:"center",marginBottom:4}}>
+        FINAL FOUR
+      </div>
+      <div style={{textAlign:"center",fontSize:9,color:"rgba(255,255,255,0.25)",marginBottom:16,fontFamily:"'JetBrains Mono',monospace"}}>
+        Lucas Oil Stadium · Indianapolis · April 4-6, 2026
+      </div>
+
+      {/* Semis */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+        <GameCard
+          title="SEMIFINAL 1" subtitle="East vs South"
+          teamA={eastW} teamB={southW} lockKey="ff_semi1"
+          color="#f59e0b" roundKey="ncg"
+        />
+        <GameCard
+          title="SEMIFINAL 2" subtitle="West vs Midwest"
+          teamA={westW} teamB={midwestW} lockKey="ff_semi2"
+          color="#f59e0b" roundKey="ncg"
+        />
+      </div>
+
+      {/* Championship */}
+      <div style={{
+        background:"linear-gradient(160deg,#2a1f00 0%,#0d1117 100%)",
+        border:"1px solid rgba(251,191,36,0.2)",borderRadius:10,padding:2,marginBottom:12
+      }}>
+        <GameCard
+          title="NATIONAL CHAMPIONSHIP" subtitle="Monday, April 6 · 8:30 PM ET · TBS"
+          teamA={semi1W} teamB={semi2W} lockKey="ff_final"
+          color="#fbbf24" roundKey="champ"
+        />
+      </div>
+
+      {/* Champion callout */}
+      {champW&&(
+        <div style={{textAlign:"center",padding:"16px 20px",background:"rgba(251,191,36,0.04)",borderRadius:10,border:"1px solid rgba(251,191,36,0.1)"}}>
+          <div style={{fontSize:10,color:"rgba(255,255,255,0.3)",letterSpacing:3,marginBottom:4}}>🏆 PREDICTED NATIONAL CHAMPION 🏆</div>
+          <div style={{fontSize:28,fontWeight:800,color:"#fbbf24",fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2}}>{champW.name}</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",fontFamily:"'JetBrains Mono',monospace",marginTop:4}}>
+            ({champW.seed} seed) — {(prob(champW.id,"champ")*100).toFixed(1)}% championship probability
+          </div>
+          {ratings?.get(String(champW.id))&&(
+            <div style={{fontSize:10,color:"rgba(255,255,255,0.2)",fontFamily:"'JetBrains Mono',monospace",marginTop:2}}>
+              Rank #{ratings.get(String(champW.id)).rank_adj_em} · Adj EM {ratings.get(String(champW.id)).adj_em?.toFixed(1)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════
 
@@ -497,9 +664,14 @@ export default function MarchMadnessPanel() {
         {Object.entries(REGIONS).map(([k,r])=>(
           <button key={k} onClick={()=>setActiveRegion(k)} style={{padding:"4px 12px",borderRadius:5,border:"none",cursor:"pointer",background:activeRegion===k?`${r.color}1a`:"transparent",color:activeRegion===k?r.color:"rgba(255,255,255,0.3)",fontSize:10,fontWeight:700,letterSpacing:1,borderBottom:activeRegion===k?`2px solid ${r.color}`:"2px solid transparent"}}>{r.label}</button>
         ))}
+        <button onClick={()=>setActiveRegion("f4")} style={{padding:"4px 14px",borderRadius:5,border:"none",cursor:"pointer",background:activeRegion==="f4"?"rgba(251,191,36,0.15)":"transparent",color:activeRegion==="f4"?"#fbbf24":"rgba(255,255,255,0.3)",fontSize:10,fontWeight:700,letterSpacing:1,borderBottom:activeRegion==="f4"?"2px solid #fbbf24":"2px solid transparent"}}>🏆 FINAL 4</button>
       </div>
 
-      <RegionBracket regionKey={activeRegion} counters={counters} locked={locked} onLock={onLock} nSims={nSims} ml={mlRef.current} ratings={ratings}/>
+      {activeRegion==="f4" ? (
+        <FinalFourBracket counters={counters} nSims={nSims} locked={locked} onLock={onLock} ml={mlRef.current} ratings={ratings}/>
+      ) : (
+        <RegionBracket regionKey={activeRegion} counters={counters} locked={locked} onLock={onLock} nSims={nSims} ml={mlRef.current} ratings={ratings}/>
+      )}
     </div>
   );
 }
