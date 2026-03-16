@@ -3,9 +3,9 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { getBetSignals, trueImplied, EDGE_THRESHOLD, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
-import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, normalizeNCAAOdds, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
+import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
 import MarchMadnessPanel from "./MarchMadnessPanel.jsx";
 
@@ -138,21 +138,18 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(null);
-  const [oddsData, setOddsData] = useState(null);
 
   const loadGames = useCallback(async (d) => {
     setLoading(true);
     setGames([]);
     console.log(`Loading NCAA games for ${d}...`);
     
-    const [raw, odds, kenPomMap] = await Promise.all([
+    const [raw, kenPomMap] = await Promise.all([
       fetchNCAAGamesForDate(d),
-      fetchOdds("basketball_ncaab"),
       fetchNCAAKenPomRatings(),
     ]);
     
     console.log(`Found ${raw?.length || 0} games on ${d}`);
-    setOddsData(odds);
     
     // If no games from ESPN, show empty state
     if (!raw || raw.length === 0) {
@@ -238,8 +235,16 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 16.0;
       const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
       const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null;
-      const rawOdds = odds?.games?.find(o => matchNCAAOddsToGame(o, g)) || null;
-      const gameOdds = normalizeNCAAOdds(rawOdds, g);
+      const rawOdds = null; // Removed: Odds API matching — using ESPN pickcenter instead
+      // Build gameOdds from ESPN data (already extracted in detectMissingStarters, zero extra calls)
+      const gameOdds = (injuryData?.espn_spread != null || injuryData?.espn_home_ml != null) ? {
+        homeSpread: injuryData.espn_spread,
+        awaySpread: injuryData.espn_spread != null ? -injuryData.espn_spread : null,
+        homeML: injuryData.espn_home_ml,
+        awayML: injuryData.espn_away_ml,
+        ouLine: injuryData.espn_over_under,
+        source: "ESPN",
+      } : null;
       
       let mlResult = null, mcResult = null;
       if (pred) {
@@ -456,11 +461,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         >
           ↻ REFRESH
         </button>
-        {!loading && oddsData?.games?.length > 0 && (
-          <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsData.games.length})</span>
-        )}
-        {!loading && oddsData?.noKey && (
-          <span style={{ fontSize: 11, color: C.dim }}>⚠ Add ODDS_API_KEY for live lines</span>
+        {!loading && games.some(g => g.odds) && (
+          <span style={{ fontSize: 11, color: C.green }}>✓ ESPN odds</span>
         )}
         {loading && (
           <span style={{ color: C.dim, fontSize: 11 }}>

@@ -1,10 +1,9 @@
 // src/sports/ncaa/ncaaSync.js
 // NCAAB v18 — Phase 1: Injury detection, tournament context, dynamic sigma
 import { supabaseQuery } from "../../utils/supabase.js";
-import { fetchOdds } from "../../utils/sharedUtils.js";
 import { mlPredict } from "../../utils/mlApi.js";
 import {
-  fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame,
+  fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame,
   detectMissingStarters, getGameContext, calculateDynamicSigma,
   batchProcess, createTTLCache,
 } from "./ncaaUtils.js";
@@ -76,7 +75,7 @@ async function fetchNCAATeamRecord(teamId) {
   } catch { return { sos: null, splits: null }; }
 }
 
-async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
+async function ncaaBuildPredictionRow(game, dateStr) {
   // v18: Use TTL-cached stats to avoid redundant API calls
   const [homeStats, awayStats] = await Promise.all([
     _cachedTeamStats(game.homeTeamId),
@@ -141,8 +140,9 @@ async function ncaaBuildPredictionRow(game, dateStr, marketOdds = null) {
     adjSpread += contextBoost;
   }
 
-  const market_spread_home = marketOdds?.marketSpreadHome ?? null;
-  const market_ou_total = marketOdds?.marketTotal ?? null;
+  // Market odds from ESPN pickcenter (extracted in detectMissingStarters, zero extra API calls)
+  const market_spread_home = injuryData?.espn_spread ?? null;
+  const market_ou_total = injuryData?.espn_over_under ?? null;
 
   const row = {
     game_date: dateStr,
@@ -403,8 +403,6 @@ export async function ncaaAutoSync(onProgress) {
   }
   const scanCur = new Date(scanStart);
   while (scanCur <= todayDate) { allDates.push(scanCur.toISOString().split("T")[0]); scanCur.setDate(scanCur.getDate() + 1); }
-  const todayOdds = await fetchOdds("basketball_ncaab");
-  const todayOddsGames = todayOdds?.games || [];
   let newPred = 0, datesChecked = 0;
   for (const dateStr of allDates) {
     const games = await fetchNCAAGamesForDate(dateStr);
@@ -413,11 +411,10 @@ export async function ncaaAutoSync(onProgress) {
     if (!games.length) { await _sleep(80); continue; }
     const unsaved = games.filter(g => !savedKeys.has(g.gameId || `${dateStr}|${g.homeTeamId}|${g.awayTeamId}`));
     if (!unsaved.length) { await _sleep(80); continue; }
-    const isToday = dateStr === today;
     // v18: Use batchProcess for parallel game processing
+    // ESPN odds come from detectMissingStarters inside ncaaBuildPredictionRow — no separate fetch needed
     const rows = await batchProcess(unsaved, (g) => {
-      const gameOdds = isToday ? (todayOddsGames.find(o => matchNCAAOddsToGame(o, g)) || null) : null;
-      return ncaaBuildPredictionRow(g, dateStr, gameOdds);
+      return ncaaBuildPredictionRow(g, dateStr);
     }, 5, 100);
     if (rows.length) {
       // Normalize keys across all rows for batch insert
@@ -448,7 +445,6 @@ export async function ncaaFullBackfill(onProgress, signal) {
     `/ncaa_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=10000`
   );
   const savedKeys = new Set((existing || []).map(r => r.game_id || `${r.game_date}|${r.home_team_id}|${r.away_team_id}`));
-  const backfillTodayOdds = (await fetchOdds("basketball_ncaab"))?.games || [];
   const pendingResults = (existing || []).filter(r => !r.result_entered);
   if (pendingResults.length) {
     onProgress?.(`🏀 Grading ${pendingResults.length} pending result(s)…`);
@@ -472,9 +468,9 @@ export async function ncaaFullBackfill(onProgress, signal) {
     let rows;
     try {
       // v18: Use batchProcess for parallel game processing
+      // ESPN odds come from detectMissingStarters inside ncaaBuildPredictionRow
       rows = await batchProcess(unsaved, (g) => {
-        const gameOdds = (dateStr === today && backfillTodayOdds) ? (backfillTodayOdds.find(o => matchNCAAOddsToGame(o, g)) || null) : null;
-        return ncaaBuildPredictionRow(g, dateStr, gameOdds);
+        return ncaaBuildPredictionRow(g, dateStr);
       }, 5, 100);
     } catch (e) { errors++; await _sleep(500); continue; }
     if (rows.length) {
