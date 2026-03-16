@@ -182,7 +182,7 @@ function ChampionshipTable({ filter, onSelect, selectedTeam }) {
   );
 }
 
-export default function MarchMadnessSim() {
+export default function MarchMadnessPanel() {
   const [selectedTeam, setSelectedTeam] = useState("Duke");
   const [view, setView] = useState("bracket");
   const [regionFilter, setRegionFilter] = useState("all");

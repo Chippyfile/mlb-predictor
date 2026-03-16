@@ -7,6 +7,7 @@ import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GAT
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
 import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, matchNCAAOddsToGame, normalizeNCAAOdds, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
+import MarchMadnessPanel from "./MarchMadnessPanel.jsx";
 
 // Season start (Nov 1 of prior year) — keep in sync with ncaaSync.js
 const _ncaaSeasonStart = (() => {
@@ -182,12 +183,45 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       return;
     }
 
+    // ── Top-150 filter BEFORE expensive enrichment ──
+    // Use KenPom rank (from already-fetched kenPomMap) + ESPN rank to skip
+    // games with no top-150 team. This avoids ~100+ wasted API calls per load.
+    const TOP_N = 150;
+    const _lookupKenPomRank = (teamName) => {
+      if (!kenPomMap || kenPomMap.size < 100) return 999;
+      // Try exact match first
+      const entry = kenPomMap.get(teamName);
+      if (entry?.rank) return entry.rank;
+      // Try normalized: strip suffixes like "Wolverines", "Blue Devils" etc.
+      for (const [key, val] of kenPomMap) {
+        if (teamName.includes(key) || key.includes(teamName)) return val?.rank || 999;
+      }
+      return 999;
+    };
+
+    const rankedGames = validGames.filter(g => {
+      const hKP = _lookupKenPomRank(g.homeTeamName || "");
+      const aKP = _lookupKenPomRank(g.awayTeamName || "");
+      const hRank = Math.min(hKP, g.homeRank || 999);
+      const aRank = Math.min(aKP, g.awayRank || 999);
+      return hRank <= TOP_N || aRank <= TOP_N;
+    });
+    if (rankedGames.length < validGames.length) {
+      console.log(`Top-${TOP_N} pre-filter: ${validGames.length} → ${rankedGames.length} games (skipped ${validGames.length - rankedGames.length} low-ranked)`);
+    }
+    if (rankedGames.length === 0) {
+      setGames([]);
+      onGamesLoaded?.([]);
+      setLoading(false);
+      return;
+    }
+
     // ── Batch process 8 games at a time to avoid ESPN throttling ──
     // Promise.all on 37+ games fires 150+ simultaneous ESPN requests.
     const BATCH = 8;
     const allEnriched = [];
-    for (let bi = 0; bi < validGames.length; bi += BATCH) {
-      const slice = validGames.slice(bi, bi + BATCH);
+    for (let bi = 0; bi < rankedGames.length; bi += BATCH) {
+      const slice = rankedGames.slice(bi, bi + BATCH);
       const batchResults = await Promise.all(slice.map(async (g) => {
       const [homeStats, awayStats] = await Promise.all([
         fetchNCAATeamStats(g.homeTeamId).catch(() => null),
@@ -343,20 +377,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       setGames([...allEnriched]); // progressive render after each batch
     } // end for-loop
     
-    // ── Top-100 filter: only show games where ≥1 team is ranked top 100 ──
-    // Uses KenPom rank (preferred) or ESPN rank as fallback.
-    const TOP_N = 100;
-    const filtered = allEnriched.filter(g => {
-      const hRank = g.homeStats?._kenPomRank || g.homeRank || 999;
-      const aRank = g.awayStats?._kenPomRank || g.awayRank || 999;
-      return hRank <= TOP_N || aRank <= TOP_N;
-    });
-    if (filtered.length < allEnriched.length) {
-      console.log(`Top-${TOP_N} filter: ${allEnriched.length} → ${filtered.length} games`);
-    }
-    
     // ── Sort: Finals sink to bottom, rest by start time ──
-    filtered.sort((a, b) => {
+    // (Top-150 filter already applied BEFORE enrichment — no duplicate work)
+    allEnriched.sort((a, b) => {
       const aFinal = a.status === "Final" ? 1 : 0;
       const bFinal = b.status === "Final" ? 1 : 0;
       if (aFinal !== bFinal) return aFinal - bFinal;
@@ -364,8 +387,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       return new Date(a.gameDate || 0) - new Date(b.gameDate || 0);
     });
     
-    setGames(filtered);
-    onGamesLoaded?.(filtered);
+    setGames(allEnriched);
+    onGamesLoaded?.(allEnriched);
     setLoading(false);
   }, [calibrationFactor]);
 
@@ -854,7 +877,7 @@ export function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalib
   const [syncMsg, setSyncMsg] = useState("");
   const [backfilling, setBackfilling] = useState(false);
   const abortRef = useRef(null);
-  const TABS = ["calendar", "accuracy", "history", "parlay"];
+  const TABS = ["calendar", "madness", "accuracy", "history", "parlay"];
 
   const handleAutoSync = async () => {
     setSyncMsg("🏀 Syncing…");
@@ -899,7 +922,7 @@ export function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalib
               textTransform: "uppercase"
             }}
           >
-            {t === "calendar" ? "📅" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎯"} {t}
+            {t === "calendar" ? "📅" : t === "madness" ? "🏀" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎯"} {t}
           </button>
         ))}
         <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
@@ -981,6 +1004,7 @@ export function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalib
         </div>
       )}
       {tab === "calendar" && <NCAACalendarTab calibrationFactor={calibrationNCAA} onGamesLoaded={setNcaaGames} />}
+      {tab === "madness" && <MarchMadnessPanel />}
       {tab === "accuracy" && <AccuracyDashboard table="ncaa_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNCAA} spreadLabel="Spread" isNCAA={true} />}
       {tab === "history" && <HistoryTab table="ncaa_predictions" refreshKey={refreshKey} />}
       {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={ncaaGames} />}
