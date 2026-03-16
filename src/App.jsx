@@ -73,11 +73,12 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [syncMsg,    setSyncMsg]    = useState("");
 
-  // Run all auto-syncs once on mount
+  // Run auto-syncs once on mount
+  // NOTE: ncaaAutoSync removed — it scans the full season (~120 ESPN calls).
+  // Use the manual 🏀 Sync button in the NCAA tab instead.
   useEffect(() => {
     (async () => {
       setSyncMsg("⚾ Syncing MLB…");   await mlbAutoSync(m => setSyncMsg(m));
-      setSyncMsg("🏀 Syncing NCAA…");  await ncaaAutoSync(m => setSyncMsg(m));
       setSyncMsg("🏀 Syncing NBA…");   await nbaAutoSync(m => setSyncMsg(m));
       setSyncMsg("🏈 Syncing NFL…");   await nflAutoSync(m => setSyncMsg(m));
       setSyncMsg("🏈 Syncing NCAAF…"); await ncaafAutoSync(m => setSyncMsg(m));
