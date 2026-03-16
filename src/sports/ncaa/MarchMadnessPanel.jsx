@@ -221,7 +221,13 @@ function lookupSpread(ml, ratings, a, b) {
   if (rA?.adj_em != null && rB?.adj_em != null) {
     const t = ((rA.adj_tempo||68)+(rB.adj_tempo||68))/2;
     const sp = (rA.adj_em - rB.adj_em) * t / 100;
-    const sA = (rA.adj_oe*(rB.adj_de||100)/100)*t/100, sB = (rB.adj_oe*(rA.adj_de||100)/100)*t/100;
+    // Score estimation: average each team's offensive output with opponent's defensive profile
+    // (raw_ppg + opp_raw_opp_ppg) / 2 gives a realistic baseline, then shift by spread
+    const baseA = ((rA.raw_ppg||75) + (rB.raw_opp_ppg||75)) / 2;
+    const baseB = ((rB.raw_ppg||75) + (rA.raw_opp_ppg||75)) / 2;
+    const currentMargin = baseA - baseB;
+    const adj = (sp - currentMargin) / 2;
+    const sA = baseA + adj, sB = baseB - adj;
     return { spread: sp, sigma: 11, tier: "em", detail: { spread: sp, homeScore: sA, awayScore: sB, rankA: rA.rank_adj_em, rankB: rB.rank_adj_em } };
   }
   return { spread: (b.seed - a.seed) * 1.4, sigma: 11, tier: "seed", detail: null };
@@ -282,10 +288,11 @@ const MInfo = ({a,b,ml,ratings,color}) => {
   let sA=detail?.homeScore, sB=detail?.awayScore;
   if((sA==null||sB==null)){
     const rA=ratings?.get(String(a.id)),rB=ratings?.get(String(b.id));
-    if(rA?.adj_oe&&rB?.adj_oe&&rA?.adj_de&&rB?.adj_de){
-      const t=((rA.adj_tempo||68)+(rB.adj_tempo||68))/2;
-      sA=(rA.adj_oe*(rB.adj_de)/100)*t/100; sB=(rB.adj_oe*(rA.adj_de)/100)*t/100;
-      const adj=(spread-(sA-sB))/2; sA+=adj; sB-=adj;
+    if(rA?.raw_ppg&&rB?.raw_ppg){
+      const baseA=((rA.raw_ppg||75)+(rB.raw_opp_ppg||75))/2;
+      const baseB=((rB.raw_ppg||75)+(rA.raw_opp_ppg||75))/2;
+      const adj=(spread-(baseA-baseB))/2;
+      sA=baseA+adj; sB=baseB-adj;
     }
   }
   return (
@@ -456,17 +463,12 @@ function FinalFourBracket({counters,nSims,locked,onLock,ml,ratings}) {
     // Always compute predicted scores from ratings (reliable),
     // even if ML spread is used for simulation
     let sA=sp?.detail?.homeScore, sB=sp?.detail?.awayScore;
-    if((sA==null||sB==null)&&rA?.adj_oe&&rB?.adj_oe&&rA?.adj_de&&rB?.adj_de){
-      const t=((rA.adj_tempo||68)+(rB.adj_tempo||68))/2;
-      sA=(rA.adj_oe*(rB.adj_de)/100)*t/100;
-      sB=(rB.adj_oe*(rA.adj_de)/100)*t/100;
-    }
-    // Adjust scores to match the spread if we have both
-    if(sA!=null&&sB!=null&&sp){
-      const currentMargin=sA-sB;
-      const targetMargin=sp.spread;
-      const adj=(targetMargin-currentMargin)/2;
-      sA+=adj; sB-=adj;
+    if((sA==null||sB==null)&&rA?.raw_ppg&&rB?.raw_ppg){
+      const baseA=((rA.raw_ppg||75)+(rB.raw_opp_ppg||75))/2;
+      const baseB=((rB.raw_ppg||75)+(rA.raw_opp_ppg||75))/2;
+      const curM=baseA-baseB;
+      const adj=sp?(sp.spread-curM)/2:0;
+      sA=baseA+adj; sB=baseB-adj;
     }
 
     const TeamRow=({team,pct,rating,isW,isL,side})=>{
