@@ -17,6 +17,7 @@ const _ncaaSeasonStart = (() => {
 })();
 
 const _sleep = ms => new Promise(r => setTimeout(r, ms));
+const _todayPT = () => new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })).toISOString().split("T")[0];
 
 // v18: TTL-based stats cache — prevents redundant ESPN API calls
 const _teamStatsCache = createTTLCache(4 * 60 * 60 * 1000); // 4-hour TTL
@@ -374,7 +375,7 @@ export async function ncaaRegradeAllResults(onProgress) {
 
 export async function ncaaAutoSync(onProgress) {
   onProgress?.("🏀 Syncing NCAA…");
-  const today = new Date().toISOString().split("T")[0];
+  const today = _todayPT();
   const existing = await supabaseQuery(
     `/ncaa_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=10000`
   );
@@ -428,7 +429,7 @@ export async function ncaaAutoSync(onProgress) {
 
 export async function ncaaFullBackfill(onProgress, signal) {
   onProgress?.("🏀 Starting full NCAA season backfill…");
-  const today = new Date().toISOString().split("T")[0];
+  const today = _todayPT();
   const existing = await supabaseQuery(
     `/ncaa_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=10000`
   );
