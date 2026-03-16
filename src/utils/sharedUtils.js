@@ -352,10 +352,10 @@ export function computeAccuracy(records) {
         t.atsTotal++;
         if (r.rl_correct === true) t.atsCovered++;
       }
-      // O/U: "OVER"/"UNDER" = model correct, true = correct, null/false = wrong, "PUSH" = excluded
-      if (r.market_ou_total != null && r.ou_correct !== "PUSH" && r.ou_correct != null && r.ou_correct !== undefined) {
+      // O/U: "OVER" = model correctly predicted direction, "UNDER" = wrong, "PUSH" = excluded
+      if (r.ou_correct != null && r.ou_correct !== "PUSH") {
         t.ouTotal++;
-        if (r.ou_correct === "OVER" || r.ou_correct === "UNDER" || r.ou_correct === true) t.ouCorrect++;
+        if (r.ou_correct === "OVER" || r.ou_correct === true) t.ouCorrect++;
       }
     }
   });

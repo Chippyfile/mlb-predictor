@@ -308,7 +308,7 @@ export async function ncaaRegradeAllResults(onProgress) {
   const pageSize = 1000;
   while (true) {
     const page = await supabaseQuery(
-      `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em&limit=${pageSize}&offset=${offset}&order=id.asc`
+      `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em,home_wins,home_losses,away_wins,away_losses,home_ppg,away_ppg,home_opp_ppg,home_form,home_sos&limit=${pageSize}&offset=${offset}&order=id.asc`
     );
     if (!page || !page.length) break;
     allGraded = allGraded.concat(page);
@@ -388,7 +388,21 @@ export async function ncaaAutoSync(onProgress) {
   const allDates = [];
   const cur = new Date(_ncaaSeasonStart);
   const todayDate = new Date(today);
-  while (cur <= todayDate) { allDates.push(cur.toISOString().split("T")[0]); cur.setDate(cur.getDate() + 1); }
+
+  // Optimization: find the latest date with saved predictions — only scan from there
+  // This avoids 100+ ESPN scoreboard calls for dates already fully covered
+  const existingDates = new Set((existing || []).map(r => r.game_date));
+  let scanStart = _ncaaSeasonStart;
+  if (existingDates.size > 0) {
+    const sortedDates = [...existingDates].sort();
+    // Start scanning 2 days before the latest existing date (catch stragglers)
+    const latestExisting = new Date(sortedDates[sortedDates.length - 1]);
+    latestExisting.setDate(latestExisting.getDate() - 2);
+    const candidateStart = latestExisting.toISOString().split("T")[0];
+    if (candidateStart > _ncaaSeasonStart) scanStart = candidateStart;
+  }
+  const scanCur = new Date(scanStart);
+  while (scanCur <= todayDate) { allDates.push(scanCur.toISOString().split("T")[0]); scanCur.setDate(scanCur.getDate() + 1); }
   const todayOdds = await fetchOdds("basketball_ncaab");
   const todayOddsGames = todayOdds?.games || [];
   let newPred = 0, datesChecked = 0;
