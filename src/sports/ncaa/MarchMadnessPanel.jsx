@@ -278,7 +278,16 @@ const MInfo = ({a,b,ml,ratings,color}) => {
   const{spread,tier,detail}=lookupSpread(ml,ratings,a,b);
   const fav=spread>0?a.name:b.name, abs=Math.abs(spread);
   const tc=tier==="ml"?"#4ade80":tier==="em"?"#60a5fa":"rgba(255,255,255,0.15)";
-  const sA=detail?.homeScore,sB=detail?.awayScore;
+  // Compute scores from ratings if not in detail
+  let sA=detail?.homeScore, sB=detail?.awayScore;
+  if((sA==null||sB==null)){
+    const rA=ratings?.get(String(a.id)),rB=ratings?.get(String(b.id));
+    if(rA?.adj_oe&&rB?.adj_oe&&rA?.adj_de&&rB?.adj_de){
+      const t=((rA.adj_tempo||68)+(rB.adj_tempo||68))/2;
+      sA=(rA.adj_oe*(rB.adj_de)/100)*t/100; sB=(rB.adj_oe*(rA.adj_de)/100)*t/100;
+      const adj=(spread-(sA-sB))/2; sA+=adj; sB-=adj;
+    }
+  }
   return (
     <div style={{fontSize:7.5,padding:"1px 4px",display:"flex",gap:5,justifyContent:"center",fontFamily:"'JetBrains Mono',monospace",color:"rgba(255,255,255,0.25)"}}>
       {sA!=null&&sB!=null&&<span>{Math.round(sA)}-{Math.round(sB)}</span>}
@@ -439,11 +448,26 @@ function FinalFourBracket({counters,nSims,locked,onLock,ml,ratings}) {
     const favName=sp&&sp.spread>0?teamA?.name:teamB?.name;
     const absSpread=sp?Math.abs(sp.spread):0;
     const tierColor=sp?.tier==="ml"?"#4ade80":sp?.tier==="em"?"#60a5fa":"rgba(255,255,255,0.15)";
-    const sA=sp?.detail?.homeScore, sB=sp?.detail?.awayScore;
     const pA=teamA?prob(teamA.id,roundKey)*100:0;
     const pB=teamB?prob(teamB.id,roundKey)*100:0;
     const rA=teamA?ratings?.get(String(teamA.id)):null;
     const rB=teamB?ratings?.get(String(teamB.id)):null;
+
+    // Always compute predicted scores from ratings (reliable),
+    // even if ML spread is used for simulation
+    let sA=sp?.detail?.homeScore, sB=sp?.detail?.awayScore;
+    if((sA==null||sB==null)&&rA?.adj_oe&&rB?.adj_oe&&rA?.adj_de&&rB?.adj_de){
+      const t=((rA.adj_tempo||68)+(rB.adj_tempo||68))/2;
+      sA=(rA.adj_oe*(rB.adj_de)/100)*t/100;
+      sB=(rB.adj_oe*(rA.adj_de)/100)*t/100;
+    }
+    // Adjust scores to match the spread if we have both
+    if(sA!=null&&sB!=null&&sp){
+      const currentMargin=sA-sB;
+      const targetMargin=sp.spread;
+      const adj=(targetMargin-currentMargin)/2;
+      sA+=adj; sB-=adj;
+    }
 
     const TeamRow=({team,pct,rating,isW,isL,side})=>{
       if(!team) return <div style={{padding:"10px 12px",color:"rgba(255,255,255,0.15)",fontSize:11,fontStyle:"italic"}}>TBD</div>;
@@ -484,6 +508,11 @@ function FinalFourBracket({counters,nSims,locked,onLock,ml,ratings}) {
           </div>
           {sp&&(
             <div style={{display:"flex",gap:8,alignItems:"center",fontSize:9,fontFamily:"'JetBrains Mono',monospace"}}>
+              {sA!=null&&sB!=null&&(
+                <span style={{color:"rgba(255,255,255,0.5)",fontWeight:600}}>
+                  {Math.round(sA)}-{Math.round(sB)} · O/U {Math.round(sA+sB)}
+                </span>
+              )}
               <span style={{color:"rgba(255,255,255,0.3)"}}>{favName} -{absSpread.toFixed(1)}</span>
               <span style={{color:tierColor,fontWeight:700,fontSize:7}}>{sp.tier.toUpperCase()}</span>
             </div>
