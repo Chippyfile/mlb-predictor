@@ -184,36 +184,31 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     }
 
     // ── Top-150 filter BEFORE expensive enrichment ──
-    // Use KenPom rank (from already-fetched kenPomMap) + ESPN rank to skip
-    // games with no top-150 team. This avoids ~100+ wasted API calls per load.
+    // kenPomMap is keyed by String(team_id) with rank_adj_em field.
+    // Use it to skip games with no top-150 team before expensive API calls.
     const TOP_N = 150;
-    const _lookupKenPomRank = (teamName) => {
-      if (!kenPomMap || kenPomMap.size < 100) return 999;
-      // Try exact match first
-      const entry = kenPomMap.get(teamName);
-      if (entry?.rank) return entry.rank;
-      // Try normalized: strip suffixes like "Wolverines", "Blue Devils" etc.
-      for (const [key, val] of kenPomMap) {
-        if (teamName.includes(key) || key.includes(teamName)) return val?.rank || 999;
-      }
-      return 999;
-    };
+    const hasKenPom = kenPomMap && kenPomMap.size > 100;
 
-    const rankedGames = validGames.filter(g => {
-      const hKP = _lookupKenPomRank(g.homeTeamName || "");
-      const aKP = _lookupKenPomRank(g.awayTeamName || "");
-      const hRank = Math.min(hKP, g.homeRank || 999);
-      const aRank = Math.min(aKP, g.awayRank || 999);
-      return hRank <= TOP_N || aRank <= TOP_N;
-    });
-    if (rankedGames.length < validGames.length) {
+    let rankedGames;
+    if (!hasKenPom) {
+      // Ratings not loaded — skip pre-filter, enrich everything
+      console.log(`Top-${TOP_N} pre-filter: SKIPPED (ratings not loaded, ${kenPomMap?.size || 0} entries)`);
+      rankedGames = validGames;
+    } else {
+      rankedGames = validGames.filter(g => {
+        // kenPomMap is keyed by String(team_id)
+        const hEntry = kenPomMap.get(String(g.homeTeamId));
+        const aEntry = kenPomMap.get(String(g.awayTeamId));
+        const hRank = hEntry?.rank_adj_em ?? hEntry?.rank ?? (g.homeRank || 999);
+        const aRank = aEntry?.rank_adj_em ?? aEntry?.rank ?? (g.awayRank || 999);
+        return hRank <= TOP_N || aRank <= TOP_N;
+      });
       console.log(`Top-${TOP_N} pre-filter: ${validGames.length} → ${rankedGames.length} games (skipped ${validGames.length - rankedGames.length} low-ranked)`);
     }
+
     if (rankedGames.length === 0) {
-      setGames([]);
-      onGamesLoaded?.([]);
-      setLoading(false);
-      return;
+      console.log(`Top-${TOP_N} pre-filter: 0 games passed — showing all ${validGames.length} as fallback`);
+      rankedGames = validGames; // Fallback: never show empty if ESPN returned games
     }
 
     // ── Batch process 8 games at a time to avoid ESPN throttling ──
