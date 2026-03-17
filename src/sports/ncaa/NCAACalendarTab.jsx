@@ -614,10 +614,10 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   letterSpacing: "0.5px"
                 }}>
                   <div></div>
-                  <div>Spread</div>
-                  <div>Mkt</div>
-                  <div>ML</div>
-                  <div>Mkt</div>
+                  <div>ML Spread</div>
+                  <div>Mkt Spread</div>
+                  <div>ML Odds</div>
+                  <div>Mkt Odds</div>
                   <div style={{ textAlign: "center" }}>Total (O/U)</div>
                 </div>
 
