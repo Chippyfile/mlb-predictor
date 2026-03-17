@@ -788,6 +788,7 @@ export async function detectMissingStarters(gameId, homeTeamId, awayTeamId) {
     const data = await response.json();
 
     const injuries = { home: [], away: [] };
+    const starterIds = { home: [], away: [] };
 
     // Parse roster/players arrays from boxscore for OUT/Suspended status
     const boxPlayers = data?.boxscore?.players || [];
@@ -806,6 +807,12 @@ export async function detectMissingStarters(gameId, homeTeamId, awayTeamId) {
           const injuryStatus = athlete?.athlete?.injuries?.[0]?.status || "";
           const displayName = athlete?.athlete?.displayName || "Unknown";
           const starter = athlete?.starter || false;
+          const athleteId = athlete?.athlete?.id;
+
+          // Collect starter IDs for player ratings
+          if (starter && athleteId) {
+            starterIds[side].push(String(athleteId));
+          }
 
           if (
             status === "OUT" || status === "out" ||
@@ -892,6 +899,9 @@ export async function detectMissingStarters(gameId, homeTeamId, awayTeamId) {
       espn_away_ml: espn_away_ml != null ? parseFloat(espn_away_ml) : null,
       espn_home_win_pct: espn_home_win_pct,
       espn_predictor_home_pct: espn_predictor_home_pct ?? espn_home_win_pct,
+      // Starter IDs for player ratings (from boxscore — available once game starts or for completed games)
+      home_starter_ids: starterIds.home.length > 0 ? starterIds.home.join(",") : "",
+      away_starter_ids: starterIds.away.length > 0 ? starterIds.away.join(",") : "",
     };
   } catch (e) {
     console.warn("detectMissingStarters error:", gameId, e.message);

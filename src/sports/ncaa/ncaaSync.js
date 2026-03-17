@@ -1,7 +1,7 @@
 // src/sports/ncaa/ncaaSync.js
 // NCAAB v18 — Phase 1: Injury detection, tournament context, dynamic sigma
 import { supabaseQuery } from "../../utils/supabase.js";
-import { mlPredict } from "../../utils/mlApi.js";
+import { mlPredict, mlPredictFull } from "../../utils/mlApi.js";
 import {
   fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame,
   detectMissingStarters, getGameContext, calculateDynamicSigma,
@@ -196,6 +196,9 @@ async function ncaaBuildPredictionRow(game, dateStr) {
     injury_diff: injuryData?.injury_diff ?? 0,
     home_missing_starters: injuryData?.home_missing_starters ?? 0,
     away_missing_starters: injuryData?.away_missing_starters ?? 0,
+    // v24: Starter IDs for player ratings (from ESPN boxscore)
+    home_starter_ids: injuryData?.home_starter_ids || "",
+    away_starter_ids: injuryData?.away_starter_ids || "",
     // P1-CTX: Tournament context flags for ML training
     is_conference_tournament: gameContext.is_conference_tournament,
     is_ncaa_tournament: gameContext.is_ncaa_tournament,
@@ -209,12 +212,17 @@ async function ncaaBuildPredictionRow(game, dateStr) {
     ...(market_ou_total !== null && { market_ou_total }),
   };
 
-  // ═══ v22: Override win_pct_home with ML isotonic-calibrated probability ═══
-  // The sigma formula (Brier ~0.174) is replaced by the StackedClassifier
-  // + isotonic calibration (Brier ~0.111) for saved predictions.
+  // ═══ v23: Override win_pct_home with ML isotonic-calibrated probability ═══
+  // Uses /predict/ncaa/full (backend fetches all 146 features server-side)
+  // instead of /predict/ncaa (which required frontend to send ~50 fields and
+  // was silently failing, leaving win_pct_home stuck at ~0.537).
   // Falls back to sigma if ML API is unavailable.
   try {
-    const mlResult = await mlPredict("ncaa", row);
+    const mlResult = await mlPredictFull(
+      row.home_team_id,
+      row.away_team_id,
+      { neutralSite: row.neutral_site, gameDate: row.game_date, gameId: row.game_id }
+    );
     if (mlResult && mlResult.ml_win_prob_home != null && !mlResult.error) {
       row.win_pct_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
       row.spread_home = parseFloat(mlResult.ml_margin.toFixed(1));

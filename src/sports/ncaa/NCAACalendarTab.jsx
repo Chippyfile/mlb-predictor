@@ -249,6 +249,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       let mlResult = null, mcResult = null;
       if (pred) {
         mlResult = await mlPredict("ncaa", {
+            home_team_id: g.homeTeamId, away_team_id: g.awayTeamId,
+            home_starter_ids: injuryData?.home_starter_ids || "",
+            away_starter_ids: injuryData?.away_starter_ids || "",
             pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
             home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
             win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,

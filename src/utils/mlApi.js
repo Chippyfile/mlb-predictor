@@ -51,6 +51,45 @@ export async function mlPredict(sport, gameData) {
   }
 }
 
+// Hits /predict/ncaa/full — backend fetches all data server-side.
+// Use this in ncaaSync where only team IDs are reliably available.
+export async function mlPredictFull(homeTeamId, awayTeamId, { neutralSite = false, gameDate = null, gameId = null } = {}) {
+  if (!isAvailable("ncaa")) {
+    console.warn(`[mlApi] ncaa circuit breaker open — skipping mlPredictFull`);
+    return null;
+  }
+  try {
+    const res = await fetch(`${ML_API}/predict/ncaa/full`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        home_team_id: homeTeamId,
+        away_team_id: awayTeamId,
+        neutral_site: neutralSite,
+        game_date: gameDate,
+        game_id: gameId,
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) {
+      console.error(`[mlApi] /predict/ncaa/full returned ${res.status}`);
+      markFailed("ncaa");
+      return null;
+    }
+    const data = await res.json();
+    if (data?.error) {
+      console.error(`[mlApi] /predict/ncaa/full error:`, data.error);
+      return null;
+    }
+    console.log(`[mlApi] /predict/ncaa/full OK — win_prob: ${data.ml_win_prob_home?.toFixed(3)}, margin: ${data.ml_margin?.toFixed(1)}, coverage: ${data.feature_coverage}`);
+    return data;
+  } catch (e) {
+    console.error(`[mlApi] /predict/ncaa/full exception:`, e.message);
+    markFailed("ncaa");
+    return null;
+  }
+}
+
 export async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000, ouLine = null, gameId = null) {
   if (!isAvailable("monte-carlo")) return null;
   try {
