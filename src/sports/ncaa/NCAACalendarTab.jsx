@@ -647,16 +647,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>AWAY</span>
                     </div>
                     {/* Team record */}
-                    {game.awayStats && (game.awayStats.wins > 0 || game.awayStats.losses > 0) ? (
-                      <span style={{ fontSize: 10, color: C.dim }}>
-                        {game.awayStats.wins}-{game.awayStats.losses}
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: 10, color: C.dim, fontStyle: "italic" }}>
-                        No record
-                      </span>
-                    )}
-                  </div>
+                    <span style={{ fontSize: 10, color: C.dim, fontStyle: (game.awayStats?.wins > 0 || game.awayStats?.losses > 0 || game.pred?.away_record_display) ? "normal" : "italic" }}>
+                      {game.awayStats?.wins > 0 || game.awayStats?.losses > 0
+                        ? `${game.awayStats.wins}-${game.awayStats.losses}`
+                        : game.pred?.away_record_display || "No record"}
+                    </span>                  </div>
                   
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                     {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "AWAY"
@@ -723,16 +718,12 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       </span>
                     </div>
                     {/* Team record */}
-                    {game.homeStats && (game.homeStats.wins > 0 || game.homeStats.losses > 0) ? (
-                      <span style={{ fontSize: 10, color: C.dim }}>
-                        {game.homeStats.wins}-{game.homeStats.losses}
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: 10, color: C.dim, fontStyle: "italic" }}>
-                        No record
-                      </span>
-                    )}
-                  </div>
+                    {/* Team record */}
+                    <span style={{ fontSize: 10, color: C.dim, fontStyle: (game.homeStats?.wins > 0 || game.homeStats?.losses > 0 || game.pred?.home_record_display) ? "normal" : "italic" }}>
+                      {game.homeStats?.wins > 0 || game.homeStats?.losses > 0
+                        ? `${game.homeStats.wins}-${game.homeStats.losses}`
+                        : game.pred?.home_record_display || "No record"}
+                    </span>                  </div>
                   
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
                     {signals.spread?.verdict === "LEAN" && signals.betSizing && signals.betSizing.side === "HOME"
