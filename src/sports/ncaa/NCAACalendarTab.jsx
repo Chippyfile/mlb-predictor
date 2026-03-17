@@ -283,15 +283,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             home_opp_threepct: homeStats?.oppThreePct, away_opp_threepct: awayStats?.oppThreePct,
             home_steals: homeStats?.steals, away_steals: awayStats?.steals,
             home_blocks: homeStats?.blocks, away_blocks: awayStats?.blocks,
-            home_wins: homeStats?.wins || 0, away_wins: awayStats?.wins || 0,
-            home_losses: homeStats?.losses || 0, away_losses: awayStats?.losses || 0,
-            home_record_display: homeStats?.wins > 0 || homeStats?.losses > 0
-              ? `${homeStats.wins}-${homeStats.losses}`
-              : g.homeRecord || null,
-            away_record_display: awayStats?.wins > 0 || awayStats?.losses > 0
-              ? `${awayStats.wins}-${awayStats.losses}`
-              : g.awayRecord || null,
-            tv_network: g.tvNetwork || null,
+            home_wins: homeStats?.wins, away_wins: awayStats?.wins,
+            home_losses: homeStats?.losses, away_losses: awayStats?.losses,
             home_form: homeStats?.formScore, away_form: awayStats?.formScore,
             home_sos: null, away_sos: null,
             home_rank: homeStats?._kenPomRank || g.homeRank || 200,
@@ -376,6 +369,17 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         mcResult = await mlMonteCarlo("NCAAB", mcHomeMean, mcAwayMean, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
       
+      // Attach display fields that don't live in pred or mlResult
+      if (finalPred) {
+        finalPred.home_record_display = homeStats?.wins > 0 || homeStats?.losses > 0
+          ? `${homeStats.wins}-${homeStats.losses}`
+          : g.homeRecord || null;
+        finalPred.away_record_display = awayStats?.wins > 0 || awayStats?.losses > 0
+          ? `${awayStats.wins}-${awayStats.losses}`
+          : g.awayRecord || null;
+        finalPred.tv_network = g.tvNetwork || null;
+      }
+
       return {
         ...g, homeStats, awayStats, pred: finalPred, loading: false,
         odds: gameOdds, mlShap: mlResult?.shap ?? null,
@@ -610,10 +614,10 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   letterSpacing: "0.5px"
                 }}>
                   <div></div>
-                  <div>ML Spread</div>
-                  <div>Mkt Spread</div>
-                  <div>ML Odds</div>
-                  <div>Mkt Odds</div>
+                  <div>Spread</div>
+                  <div>Mkt</div>
+                  <div>ML</div>
+                  <div>Mkt</div>
                   <div style={{ textAlign: "center" }}>Total (O/U)</div>
                 </div>
 
@@ -642,9 +646,15 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>AWAY</span>
                     </div>
                     {/* Team record */}
-                    <span style={{ fontSize: 10, color: C.dim, fontStyle: game.pred?.away_record_display ? "normal" : "italic" }}>
-                      {game.pred?.away_record_display || "No record"}
-                    </span>
+                    {game.awayStats && (game.awayStats.wins > 0 || game.awayStats.losses > 0) ? (
+                      <span style={{ fontSize: 10, color: C.dim }}>
+                        {game.awayStats.wins}-{game.awayStats.losses}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 10, color: C.dim, fontStyle: "italic" }}>
+                        No record
+                      </span>
+                    )}
                   </div>
                   
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
@@ -712,9 +722,15 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       </span>
                     </div>
                     {/* Team record */}
-                    <span style={{ fontSize: 10, color: C.dim, fontStyle: game.pred?.home_record_display ? "normal" : "italic" }}>
-                      {game.pred?.home_record_display || "No record"}
-                    </span>
+                    {game.homeStats && (game.homeStats.wins > 0 || game.homeStats.losses > 0) ? (
+                      <span style={{ fontSize: 10, color: C.dim }}>
+                        {game.homeStats.wins}-{game.homeStats.losses}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 10, color: C.dim, fontStyle: "italic" }}>
+                        No record
+                      </span>
+                    )}
                   </div>
                   
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
@@ -833,7 +849,6 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     {game.awayRestDays != null && <Kv k={`${awayName} Rest`} v={`${game.awayRestDays}d`} />}
                     {game.neutralSite && <Kv k="Site" v="Neutral" />}
                     {game.venue && <Kv k="Venue" v={game.venue} />}
-                    {game.pred?.tv_network && <Kv k="TV" v={game.pred.tv_network} />}
                   </div>
 
                   {/* Bet Signals Panel - Full details */}
