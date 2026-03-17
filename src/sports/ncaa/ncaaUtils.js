@@ -335,8 +335,11 @@ export async function fetchNCAAGamesForDate(dateStr) {
         awayScore: status?.completed ? parseInt(away?.score) : null,
         homeRank: home?.curatedRank?.current || null,
         awayRank: away?.curatedRank?.current || null,
+        homeRecord: home?.records?.find(r => r.type === "total")?.summary || null,
+        awayRecord: away?.records?.find(r => r.type === "total")?.summary || null,
         venue: comp?.venue?.fullName,
         neutralSite: isNeutral,
+        tvNetwork: comp?.broadcasts?.[0]?.names?.[0] || comp?.geoBroadcasts?.[0]?.media?.shortName || null,
       };
     }).filter(g => {
       // Must have valid positive team IDs (ESPN returns -2 for TBD conf tourney slots)
