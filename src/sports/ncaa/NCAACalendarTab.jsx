@@ -531,9 +531,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             );
           }
 
-          const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "ncaa" });
           const homeName = game.homeAbbr || (game.homeTeamName || "").slice(0, 8);
           const awayName = game.awayAbbr || (game.awayTeamName || "").slice(0, 8);
+          const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "ncaa", homeName, awayName });
           const homeRank = game.homeStats?._kenPomRank || (game.homeRank && game.homeRank < 99 ? game.homeRank : null);
           const awayRank = game.awayStats?._kenPomRank || (game.awayRank && game.awayRank < 99 ? game.awayRank : null);
           
