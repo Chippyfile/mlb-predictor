@@ -55,17 +55,21 @@ const formatSpread = (spread) => {
   return spread > 0 ? `+${spread.toFixed(1)}` : spread.toFixed(1);
 };
 
-// Bet advantage banner for game cards
+// Bet advantage banner for game cards — ATS DISAGREEMENT BASED
 // Uses checkmark unit indicators: ✓ = 1u, ✓✓ = 2u, ✓✓✓ = 3u
+// Driven by |model_margin - market_margin| validated on 26K out-of-sample games
 const BetBanner = ({ signals, homeName, awayName }) => {
   if (!signals?.betSizing) return null;
   const sz = signals.betSizing;
-  const side = sz.side || signals.ml?.side || "";
-  const edgePct = sz.edge || signals.ml?.edgePct || "0";
-  const badgeColor = sz.units >= 2 ? "#2ea043" : "#d29922";
+  const side = sz.side || signals.spread?.side || "";
+  const badgeColor = sz.units >= 3 ? "#2ea043" : sz.units >= 2 ? "#d29922" : "#8b949e";
   const pickName = side === "HOME" ? homeName : awayName;
   const checks = "✓".repeat(sz.units);
-  const mlLine = sz.marketML > 0 ? `+${sz.marketML}` : sz.marketML;
+  // ATS pick: team + spread
+  const mktSpread = signals.spread?.diff ? parseFloat(signals.spread.diff) : null;
+  const spreadLabel = signals.spread?.side === "HOME"
+    ? (signals.spread?.diff ? `−${signals.spread.diff}` : "ATS")
+    : (signals.spread?.diff ? `+${signals.spread.diff}` : "ATS");
   
   return (
     <div style={{
@@ -84,7 +88,7 @@ const BetBanner = ({ signals, homeName, awayName }) => {
         gap: 8,
         minWidth: 320,
       }}>
-      {/* Left: unit blocks + pick + market ML */}
+      {/* Left: unit blocks + ATS pick */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ display: "flex", gap: 3 }}>
           {[1, 2, 3].map(i => (
@@ -100,13 +104,13 @@ const BetBanner = ({ signals, homeName, awayName }) => {
         </div>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>VALUE:</span>
+            <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>ATS:</span>
             <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
-              {pickName} ML {mlLine}
+              {pickName} {spreadLabel}
             </span>
           </div>
           <span style={{ fontSize: 10, color: C.muted }}>
-            +{edgePct}% edge · {sz.winPct}% model vs {(100 - parseFloat(edgePct) - parseFloat(sz.winPct)).toFixed(0)}% market
+            {sz.disagree} pts disagreement · {sz.atsHistorical} ATS historical
           </span>
         </div>
       </div>
@@ -411,22 +415,24 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
   }, [dateStr, calibrationFactor]);
 
   const getBannerInfo = (pred, odds) => {
-    if (!pred) return { color: "yellow", label: "⚠ No prediction" };
-    const dec = pred.decisiveness ?? (Math.abs(pred.homeWinPct - 0.5) * 100);
-    const favSide = pred.homeWinPct >= 0.5 ? "HOME" : "AWAY";
-    const favPct = Math.max(pred.homeWinPct, 1 - pred.homeWinPct);
-    
-    if (odds?.homeML && odds?.awayML) {
-      const market = trueImplied(odds.homeML, odds.awayML);
-      const homeEdge = pred.homeWinPct - market.home;
-      if (dec >= DECISIVENESS_GATE.ncaa && Math.abs(homeEdge) >= EDGE_THRESHOLD)
-        return { color: "green", edge: homeEdge, label: `+${(Math.abs(homeEdge) * 100).toFixed(1)}% ${homeEdge >= 0 ? "HOME" : "AWAY"} edge` };
-      if (Math.abs(homeEdge) >= EDGE_THRESHOLD)
-        return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge (lean)` };
-      return { color: "neutral", edge: homeEdge, label: `${(Math.abs(homeEdge) * 100).toFixed(1)}% edge` };
+    if (!pred) return { color: "yellow", label: "⚠ No prediction", disagree: 0 };
+    const projSpread = pred.projectedSpread;
+    const mktSpread = odds?.homeSpread ?? odds?.marketSpreadHome ?? null;
+
+    if (mktSpread !== null && mktSpread !== undefined) {
+      const disagree = Math.abs(projSpread - (-mktSpread));
+      const side = (projSpread + mktSpread) > 0 ? "HOME" : "AWAY";
+      if (disagree >= 4)
+        return { color: "green", disagree, label: `${disagree.toFixed(1)} pts disagree · 3u ATS`, side };
+      if (disagree >= 3)
+        return { color: "green", disagree, label: `${disagree.toFixed(1)} pts disagree · 2u ATS`, side };
+      if (disagree >= 2)
+        return { color: "neutral", disagree, label: `${disagree.toFixed(1)} pts disagree (lean)`, side };
+      return { color: "neutral", disagree, label: `${disagree.toFixed(1)} pts disagree`, side };
     }
-    if (dec >= DECISIVENESS_GATE.ncaa) return { color: "green", label: `${favSide} ${(favPct * 100).toFixed(0)}%` };
-    return { color: "neutral", label: "Close matchup" };
+    // No market spread — fall back to win probability
+    const favPct = Math.max(pred.homeWinPct, 1 - pred.homeWinPct);
+    return { color: "neutral", disagree: 0, label: `${(favPct * 100).toFixed(0)}% win prob` };
   };
 
   // Format time from ISO string
@@ -576,7 +582,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     {formatGameTime(game.gameDate, game.status)}
                   </div>
                   
-                  {!isBetGame && bannerInfo.edge != null && Math.abs(bannerInfo.edge) >= EDGE_THRESHOLD && (
+                  {!isBetGame && bannerInfo.disagree >= 1.5 && (
                     <div style={{
                       fontSize: 10,
                       padding: "2px 8px",
@@ -797,14 +803,27 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       {game.pred.confidence} ({game.pred.confScore})
                     </span>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ color: C.dim }}>Win%:</span>
-                    <span style={{ color: C.green, fontWeight: 700 }}>
-                      {(Math.max(game.pred.homeWinPct, 1 - game.pred.homeWinPct) * 100).toFixed(1)}%
-                    </span>
-                    <span style={{ color: C.dim }}>
-                      {game.pred.homeWinPct >= 0.5 ? homeName : awayName}
-                    </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ color: C.dim }}>Win%:</span>
+                      <span style={{ color: C.green, fontWeight: 700 }}>
+                        {(Math.max(game.pred.homeWinPct, 1 - game.pred.homeWinPct) * 100).toFixed(1)}%
+                      </span>
+                      <span style={{ color: C.dim }}>
+                        {game.pred.homeWinPct >= 0.5 ? homeName : awayName}
+                      </span>
+                    </div>
+                    {signals.betSizing && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, borderLeft: `1px solid ${C.border}`, paddingLeft: 8 }}>
+                        <span style={{ color: C.dim }}>ATS:</span>
+                        <span style={{ 
+                          color: signals.betSizing.units >= 3 ? C.green : signals.betSizing.units >= 2 ? C.yellow : C.muted, 
+                          fontWeight: 700 
+                        }}>
+                          {signals.betSizing.atsHistorical}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
                 </div>
