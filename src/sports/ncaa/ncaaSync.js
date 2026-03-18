@@ -105,29 +105,23 @@ async function ncaaBuildPredictionRow(game, dateStr) {
     injuryData = injuries;
   } catch {}
 
-  // v18 P1-CTX: Detect game context (conference tournament, NCAA tournament, etc.)
-  const gameContext = getGameContext(dateStr, game.neutralSite);
-
-  // ═══ v25: Override context with ESPN scoreboard data ═══
-  // ESPN scoreboard has conferenceCompetition boolean — use it instead of date heuristics
-  if (game.isConferenceTourney === true) {
-    gameContext.is_conference_tournament = true;
-  } else if (game.isConferenceTourney === false) {
-    gameContext.is_conference_tournament = false;
-  }
+  // v25: Pass ESPN game data to getGameContext for accurate tournament detection
+  const gameContext = getGameContext(dateStr, game.neutralSite, game);
 
   // Align importance_multiplier with training values: 0.8 / 1.0 / 1.3
   if (gameContext.is_ncaa_tournament) {
     gameContext.importance_multiplier = 1.3;
   } else if (gameContext.is_conference_tournament) {
     gameContext.importance_multiplier = 1.3;
+  } else if (gameContext.is_nit) {
+    gameContext.importance_multiplier = 1.0;
   } else if (gameContext.is_early_season) {
     gameContext.importance_multiplier = 0.8;
   } else {
     gameContext.importance_multiplier = 1.0;
   }
 
-  // is_bubble_game: training data is always false — remove date-based heuristic
+  // is_bubble_game: training data is always false — keep for future retraining
   gameContext.is_bubble_game = false;
 
   // v18 P1-SIG: Calculate dynamic sigma
@@ -256,12 +250,17 @@ async function ncaaBuildPredictionRow(game, dateStr) {
       row.ml_win_prob_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
       row.spread_home = parseFloat(mlResult.ml_margin.toFixed(1));
 
-      // v25: Capture opp shooting stats from ML response if available
+      // v25: Capture audit fields from ML response
       // (Railway backend has real values from Supabase rolling stats)
-      if (mlResult.home_opp_fgpct != null) row.home_opp_fgpct = mlResult.home_opp_fgpct;
-      if (mlResult.away_opp_fgpct != null) row.away_opp_fgpct = mlResult.away_opp_fgpct;
-      if (mlResult.home_opp_threepct != null) row.home_opp_threepct = mlResult.home_opp_threepct;
-      if (mlResult.away_opp_threepct != null) row.away_opp_threepct = mlResult.away_opp_threepct;
+      const audit = mlResult.audit_data || {};
+      if (audit.home_opp_fgpct != null) row.home_opp_fgpct = audit.home_opp_fgpct;
+      if (audit.away_opp_fgpct != null) row.away_opp_fgpct = audit.away_opp_fgpct;
+      if (audit.home_opp_threepct != null) row.home_opp_threepct = audit.home_opp_threepct;
+      if (audit.away_opp_threepct != null) row.away_opp_threepct = audit.away_opp_threepct;
+      if (audit.home_sos != null) row.home_sos = audit.home_sos;
+      if (audit.away_sos != null) row.away_sos = audit.away_sos;
+      if (audit.home_conference) row.home_conference = audit.home_conference;
+      if (audit.away_conference) row.away_conference = audit.away_conference;
     }
   } catch {
     // ML API unavailable — keep sigma-based win_pct_home as fallback

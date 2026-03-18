@@ -302,7 +302,11 @@ export async function fetchNCAATeamStats(teamId) {
       oppFGpct, oppThreePct,
       wins, losses, totalGames, formScore,
       rank: team.rank || null,
-      conferenceName: team.conference?.name,
+      conferenceName: team.conference?.name
+        || team.standingSummary?.match(/(?:in|of)\s+(.+)/i)?.[1]?.trim()
+        || null,
+      standingSummary: team.standingSummary || null,
+      conferenceId: team.groups?.isConference ? team.groups.id : null,
     };
     _ncaaStatsCache[teamId] = result;
     return result;
@@ -340,6 +344,15 @@ export async function fetchNCAAGamesForDate(dateStr) {
         venue: comp?.venue?.fullName,
         neutralSite: isNeutral,
         tvNetwork: comp?.broadcasts?.[0]?.names?.[0] || comp?.geoBroadcasts?.[0]?.media?.shortName || null,
+        // v25: Tournament detection from ESPN scoreboard
+        isConferenceTourney: comp?.conferenceCompetition ?? null,
+        seasonType: event?.season?.type ?? 2,  // 2=regular, 3=postseason
+        // ESPN notes often contain "NCAA Tournament", "NIT", etc.
+        gameNotes: (comp?.notes || event?.competitions?.[0]?.notes || [])
+          .map(n => n?.headline || n?.text || "").filter(Boolean),
+        // Conference IDs from competitors (if available)
+        homeConference: home?.team?.conferenceId || null,
+        awayConference: away?.team?.conferenceId || null,
       };
     }).filter(g => {
       // Must have valid positive team IDs (ESPN returns -2 for TBD conf tourney slots)
@@ -936,7 +949,7 @@ export function calculateInjuryImpact(injuredPlayers) {
 // P1-CTX: Tournament Context Detection
 // ─────────────────────────────────────────────────────────────
 
-export function getGameContext(gameDateStr, neutralSite = false) {
+export function getGameContext(gameDateStr, neutralSite = false, espnGame = null) {
   const date = new Date(gameDateStr + "T12:00:00");
   const month = date.getMonth() + 1;
   const day = date.getDate();
@@ -956,30 +969,72 @@ export function getGameContext(gameDateStr, neutralSite = false) {
     context.is_early_season = true;
   }
 
-  // Conference tournaments: March 4–16
-  if (month === 3 && day >= 4 && day <= 16) {
-    context.is_conference_tournament = true;
-    context.importance_multiplier = 1.15;
-  }
+  // ═══ v25: Use ESPN scoreboard data for tournament detection ═══
+  // ESPN provides conferenceCompetition boolean + season.type + game notes
+  if (espnGame) {
+    const notes = (espnGame.gameNotes || []).join(" ").toLowerCase();
+    const isPostseason = espnGame.seasonType === 3;
 
-  // NCAA tournament: March 17 – April 8, neutral site games
-  if ((month === 3 && day >= 17) || (month === 4 && day <= 8)) {
-    if (neutralSite) {
+    // Conference tournament: ESPN has a direct boolean
+    if (espnGame.isConferenceTourney === true) {
+      context.is_conference_tournament = true;
+    }
+    // Conference tournaments also sometimes show as postseason without the flag
+    // (smaller conferences), so also check date range as backup
+    else if (!isPostseason && month === 3 && day >= 1 && day <= 16) {
+      // Date heuristic fallback for conf tourneys without the ESPN flag
+      // Only set if not already postseason (NCAA/NIT)
+    }
+
+    // NCAA Tournament detection from notes or postseason + neutral site
+    if (notes.includes("ncaa") || notes.includes("march madness") ||
+        notes.includes("first four") || notes.includes("sweet 16") ||
+        notes.includes("elite eight") || notes.includes("final four") ||
+        notes.includes("championship")) {
       context.is_ncaa_tournament = true;
-      context.importance_multiplier = 1.25;
       context.override_neutral = true;
-    } else {
+    }
+    // NIT detection from notes
+    else if (notes.includes("nit ") || notes.includes("national invitation") ||
+             notes.includes("n.i.t.")) {
       context.is_nit = true;
-      context.importance_multiplier = 1.10;
+    }
+    // Postseason + neutral site without specific notes → likely NCAA tournament
+    else if (isPostseason && neutralSite && !context.is_conference_tournament) {
+      // After Selection Sunday (mid-March), neutral postseason = NCAA tournament
+      if ((month === 3 && day >= 17) || month === 4) {
+        context.is_ncaa_tournament = true;
+        context.override_neutral = true;
+      }
+    }
+    // Postseason + NOT neutral + NOT conference tourney → likely NIT (home games)
+    else if (isPostseason && !neutralSite && !context.is_conference_tournament &&
+             ((month === 3 && day >= 17) || month === 4)) {
+      context.is_nit = true;
+    }
+  } else {
+    // ── Fallback: date-based heuristics (no ESPN data available) ──
+    // Conference tournaments: March 1–16
+    if (month === 3 && day >= 1 && day <= 16) {
+      context.is_conference_tournament = true;
+    }
+
+    // NCAA tournament: March 17 – April 8, neutral site games
+    if ((month === 3 && day >= 17) || (month === 4 && day <= 8)) {
+      if (neutralSite) {
+        context.is_ncaa_tournament = true;
+        context.override_neutral = true;
+      } else {
+        context.is_nit = true;
+      }
     }
   }
 
-  // Bubble games: late February through Selection Sunday
+  // Bubble games: late February through Selection Sunday (training had all false,
+  // but keeping detection for potential future retraining)
+  // Currently forced to false in ncaaSync.js to match training data
   if ((month === 2 && day >= 20) || (month === 3 && day <= 16)) {
     context.is_bubble_game = true;
-    if (context.importance_multiplier < 1.10) {
-      context.importance_multiplier = 1.10;
-    }
   }
 
   return context;

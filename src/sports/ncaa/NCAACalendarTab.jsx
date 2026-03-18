@@ -371,7 +371,6 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       
       // Attach display fields that don't live in pred or mlResult
       if (finalPred) {
-        console.log("RECORD DEBUG:", g.homeAbbr, "homeRecord:", g.homeRecord, "awayRecord:", g.awayRecord, "homeStats w/l:", homeStats?.wins, homeStats?.losses);
         finalPred.home_record_display = homeStats?.wins > 0 || homeStats?.losses > 0
           ? `${homeStats.wins}-${homeStats.losses}`
           : g.homeRecord || null;
