@@ -108,6 +108,28 @@ async function ncaaBuildPredictionRow(game, dateStr) {
   // v18 P1-CTX: Detect game context (conference tournament, NCAA tournament, etc.)
   const gameContext = getGameContext(dateStr, game.neutralSite);
 
+  // ═══ v25: Override context with ESPN scoreboard data ═══
+  // ESPN scoreboard has conferenceCompetition boolean — use it instead of date heuristics
+  if (game.isConferenceTourney === true) {
+    gameContext.is_conference_tournament = true;
+  } else if (game.isConferenceTourney === false) {
+    gameContext.is_conference_tournament = false;
+  }
+
+  // Align importance_multiplier with training values: 0.8 / 1.0 / 1.3
+  if (gameContext.is_ncaa_tournament) {
+    gameContext.importance_multiplier = 1.3;
+  } else if (gameContext.is_conference_tournament) {
+    gameContext.importance_multiplier = 1.3;
+  } else if (gameContext.is_early_season) {
+    gameContext.importance_multiplier = 0.8;
+  } else {
+    gameContext.importance_multiplier = 1.0;
+  }
+
+  // is_bubble_game: training data is always false — remove date-based heuristic
+  gameContext.is_bubble_game = false;
+
   // v18 P1-SIG: Calculate dynamic sigma
   const dynamicSigma = calculateDynamicSigma(homeStats, awayStats, dateStr);
 
@@ -186,7 +208,13 @@ async function ncaaBuildPredictionRow(game, dateStr) {
     home_form: homeStats.formScore, away_form: awayStats.formScore,
     home_sos: homeSOSFactor, away_sos: awaySOSFactor,
     home_rank: game.homeRank, away_rank: game.awayRank,
-    home_conference: homeStats.conferenceName, away_conference: awayStats.conferenceName,
+    // v25: Conference from stats.conferenceName → standingSummary parse → scoreboard
+    home_conference: homeStats.conferenceName
+      || homeStats.standingSummary?.match(/(?:in|of)\s+(.+)/i)?.[1]
+      || game.homeConference || null,
+    away_conference: awayStats.conferenceName
+      || awayStats.standingSummary?.match(/(?:in|of)\s+(.+)/i)?.[1]
+      || game.awayConference || null,
     // R5: Rest days for ML training
     home_rest_days: homeRestDays, away_rest_days: awayRestDays,
     // ── v18 NEW COLUMNS ──
@@ -225,7 +253,15 @@ async function ncaaBuildPredictionRow(game, dateStr) {
     );
     if (mlResult && mlResult.ml_win_prob_home != null && !mlResult.error) {
       row.win_pct_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
+      row.ml_win_prob_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
       row.spread_home = parseFloat(mlResult.ml_margin.toFixed(1));
+
+      // v25: Capture opp shooting stats from ML response if available
+      // (Railway backend has real values from Supabase rolling stats)
+      if (mlResult.home_opp_fgpct != null) row.home_opp_fgpct = mlResult.home_opp_fgpct;
+      if (mlResult.away_opp_fgpct != null) row.away_opp_fgpct = mlResult.away_opp_fgpct;
+      if (mlResult.home_opp_threepct != null) row.home_opp_threepct = mlResult.home_opp_threepct;
+      if (mlResult.away_opp_threepct != null) row.away_opp_threepct = mlResult.away_opp_threepct;
     }
   } catch {
     // ML API unavailable — keep sigma-based win_pct_home as fallback
