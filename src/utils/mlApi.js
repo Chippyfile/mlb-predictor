@@ -45,8 +45,9 @@ export async function mlPredict(sport, gameData) {
     console.log(`[mlApi] /predict/${key} OK — win_prob_home: ${data.ml_win_prob_home?.toFixed(3)}, margin: ${data.ml_margin?.toFixed(1)}`);
     return data;
   } catch (e) {
-    console.error(`[mlApi] /predict/${key} exception:`, e.message);
-    markFailed(key);
+    const isTimeout = e.name === "TimeoutError" || e.message?.includes("timed out");
+    console.error(`[mlApi] /predict/${key} ${isTimeout ? "timeout" : "exception"}:`, e.message);
+    if (!isTimeout) markFailed(key);
     return null;
   }
 }
@@ -69,7 +70,7 @@ export async function mlPredictFull(homeTeamId, awayTeamId, { neutralSite = fals
         game_date: gameDate,
         game_id: gameId,
       }),
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(25000),
     });
     if (!res.ok) {
       console.error(`[mlApi] /predict/ncaa/full returned ${res.status}`);
@@ -84,8 +85,10 @@ export async function mlPredictFull(homeTeamId, awayTeamId, { neutralSite = fals
     console.log(`[mlApi] /predict/ncaa/full OK — win_prob: ${data.ml_win_prob_home?.toFixed(3)}, margin: ${data.ml_margin?.toFixed(1)}, coverage: ${data.feature_coverage}`);
     return data;
   } catch (e) {
-    console.error(`[mlApi] /predict/ncaa/full exception:`, e.message);
-    markFailed("ncaa");
+    // Don't trip circuit breaker on timeouts — backend is just slow under load
+    const isTimeout = e.name === "TimeoutError" || e.message?.includes("timed out");
+    console.error(`[mlApi] /predict/ncaa/full ${isTimeout ? "timeout" : "exception"}:`, e.message);
+    if (!isTimeout) markFailed("ncaa");
     return null;
   }
 }
