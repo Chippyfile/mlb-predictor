@@ -58,6 +58,17 @@ const LABEL_MAP = {
   net_rtg_diff: "Net Rtg Diff", home_adj_em: "Home Adj EM", away_adj_em: "Away Adj EM",
   win_pct_home: "Model Win %", espn_wp_edge: "ESPN Win Prob Edge",
   matchup_ft: "Matchup FT Edge", matchup_to: "Matchup TO Edge", matchup_efg: "Matchup eFG Edge",
+  // v25 features
+  market_wp_edge: "market wp edge", spread_movement: "Spread Movement",
+  total_movement: "Total Movement", is_early: "Early Season",
+  is_ncaa_tourney: "NCAA Tournament", player_rating_diff: "player rating diff",
+  weakest_starter_diff: "weakest starter diff", starter_balance_diff: "Starter Balance Diff",
+  starter_experience_diff: "Starter Experience Diff", lineup_changes_diff: "Lineup Changes Diff",
+  lineup_stability_diff: "Lineup Stability Diff", h2h_margin_avg: "H2H Margin Avg",
+  h2h_home_win_rate: "H2H Home Win Rate", is_revenge_game: "Revenge Game",
+  conf_strength_diff: "Conf Strength Diff", cross_conf_flag: "Cross-Conf Game",
+  recent_form_diff: "Recent Form Diff", pace_adj_ppg_diff: "Pace-Adj PPG Diff",
+  pace_adj_opp_ppg_diff: "Pace-Adj Opp PPG Diff",
 };
 
 export default function ShapPanel({ shap, homeName, awayName }) {
@@ -95,15 +106,15 @@ export default function ShapPanel({ shap, homeName, awayName }) {
         )}
       </div>
 
-      {/* Column headers */}
+      {/* Column headers — must match row grid: 1fr 120px 1fr */}
       <div style={{
-        display: "grid", gridTemplateColumns: "minmax(100px,1fr) 60px 1fr 60px",
-        gap: 0, fontSize: 8, color: "#484f58", marginBottom: 4, padding: "0 2px",
+        display: "grid", gridTemplateColumns: "1fr 120px 1fr",
+        gap: 0, fontSize: 8, color: "#8b949e", marginBottom: 4, padding: "0 2px",
+        fontWeight: 600,
       }}>
         <span style={{ textAlign: "right", paddingRight: 4 }}>← {awayName || "Away"}</span>
         <span></span>
-        <span></span>
-        <span>{homeName || "Home"} →</span>
+        <span style={{ textAlign: "left", paddingLeft: 4 }}>{homeName || "Home"} →</span>
       </div>
 
       {visible.map((s, i) => {
