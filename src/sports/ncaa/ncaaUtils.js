@@ -176,15 +176,25 @@ export async function fetchNCAATeamStats(teamId) {
     }
     
     // Method 3: Count from completed games in schedule
-    if (wins === 0 && losses === 0 && schedData?.events) {
+    // Also runs when record looks suspiciously low (< 10 games after Dec) —
+    // ESPN returns tournament-only records during March Madness (e.g., "1-0")
+    const currentMonth = new Date().getMonth(); // 0=Jan, 2=Mar
+    const recordLooksSuspicious = (wins + losses) > 0 && (wins + losses) < 10 && currentMonth >= 1; // Feb+
+    if ((wins === 0 && losses === 0 || recordLooksSuspicious) && schedData?.events) {
+      let schedWins = 0, schedLosses = 0;
       const completed = schedData.events.filter(e => e.competitions?.[0]?.status?.type?.completed);
       for (const ev of completed) {
         const comp = ev.competitions?.[0];
         const teamComp = comp?.competitors?.find(c => String(c.team?.id) === String(teamId));
         if (teamComp) {
-          if (teamComp.winner) wins++;
-          else losses++;
+          if (teamComp.winner) schedWins++;
+          else schedLosses++;
         }
+      }
+      // Use schedule record if it's more complete than the record endpoint
+      if (schedWins + schedLosses > wins + losses) {
+        wins = schedWins;
+        losses = schedLosses;
       }
     }
     

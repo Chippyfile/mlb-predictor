@@ -403,12 +403,18 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       
       // Attach display fields that don't live in pred or mlResult
       if (finalPred) {
-        finalPred.home_record_display = homeStats?.wins > 0 || homeStats?.losses > 0
-          ? `${homeStats.wins}-${homeStats.losses}`
-          : g.homeRecord || null;
-        finalPred.away_record_display = awayStats?.wins > 0 || awayStats?.losses > 0
-          ? `${awayStats.wins}-${awayStats.losses}`
-          : g.awayRecord || null;
+        // Guard against ESPN tournament-only records (e.g., "1-0" in March)
+        const bestRecord = (stats, scoreboardRecord) => {
+          const w = stats?.wins || 0, l = stats?.losses || 0;
+          if (w + l >= 10) return `${w}-${l}`;
+          if (scoreboardRecord) {
+            const p = scoreboardRecord.split("-");
+            if (p.length === 2 && parseInt(p[0]) + parseInt(p[1]) >= 10) return scoreboardRecord;
+          }
+          return w + l > 0 ? `${w}-${l}` : scoreboardRecord || null;
+        };
+        finalPred.home_record_display = bestRecord(homeStats, g.homeRecord);
+        finalPred.away_record_display = bestRecord(awayStats, g.awayRecord);
         finalPred.tv_network = g.tvNetwork || null;
       }
 
@@ -635,6 +641,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   <div style={{ fontSize: 11, fontWeight: 600, color: C.orange }}>
                     {formatGameTime(game.gameDate, game.status)}
                   </div>
+                  {game.tvNetwork && game.status !== "Final" && game.status !== "Live" && (
+                    <div style={{ fontSize: 9, color: "#8b949e", fontWeight: 500, padding: "1px 5px", background: "rgba(139,148,158,0.1)", borderRadius: 3 }}>
+                      {game.tvNetwork}
+                    </div>
+                  )}
                   
                   {!isBetGame && bannerInfo.disagree >= 1.5 && (
                     <div style={{
@@ -714,11 +725,21 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       )}
                       <span style={{ fontSize: 8, color: C.dim, marginLeft: 2 }}>AWAY</span>
                     </div>
-                    {/* Team record */}
-                    <span style={{ fontSize: 10, color: C.dim, fontStyle: (game.awayStats?.wins > 0 || game.awayStats?.losses > 0 || game.pred?.away_record_display) ? "normal" : "italic" }}>
-                      {game.awayStats?.wins > 0 || game.awayStats?.losses > 0
-                        ? `${game.awayStats.wins}-${game.awayStats.losses}`
-                        : game.pred?.away_record_display || "No record"}
+                    {/* Team record — guard against ESPN tournament-only records (e.g., "1-0" in March) */}
+                    <span style={{ fontSize: 10, color: C.dim }}>
+                      {(() => {
+                        const w = game.awayStats?.wins || 0, l = game.awayStats?.losses || 0;
+                        if (w + l >= 10) return `${w}-${l}`;
+                        // Stats record looks suspicious — try scoreboard record
+                        const sbr = game.awayRecord || game.pred?.away_record_display;
+                        if (sbr) {
+                          const parts = sbr.split("-");
+                          if (parts.length === 2 && parseInt(parts[0]) + parseInt(parts[1]) >= 10) return sbr;
+                        }
+                        // Still low but nonzero — show what we have
+                        if (w + l > 0) return `${w}-${l}`;
+                        return sbr || "No record";
+                      })()}
                     </span>                  </div>
                   
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
@@ -785,12 +806,19 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                         HOME{game.neutralSite ? " (N)" : ""}
                       </span>
                     </div>
-                    {/* Team record */}
-                    {/* Team record */}
-                    <span style={{ fontSize: 10, color: C.dim, fontStyle: (game.homeStats?.wins > 0 || game.homeStats?.losses > 0 || game.pred?.home_record_display) ? "normal" : "italic" }}>
-                      {game.homeStats?.wins > 0 || game.homeStats?.losses > 0
-                        ? `${game.homeStats.wins}-${game.homeStats.losses}`
-                        : game.pred?.home_record_display || "No record"}
+                    {/* Team record — guard against ESPN tournament-only records */}
+                    <span style={{ fontSize: 10, color: C.dim }}>
+                      {(() => {
+                        const w = game.homeStats?.wins || 0, l = game.homeStats?.losses || 0;
+                        if (w + l >= 10) return `${w}-${l}`;
+                        const sbr = game.homeRecord || game.pred?.home_record_display;
+                        if (sbr) {
+                          const parts = sbr.split("-");
+                          if (parts.length === 2 && parseInt(parts[0]) + parseInt(parts[1]) >= 10) return sbr;
+                        }
+                        if (w + l > 0) return `${w}-${l}`;
+                        return sbr || "No record";
+                      })()}
                     </span>                  </div>
                   
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#e2e8f0" }}>
