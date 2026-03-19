@@ -266,6 +266,28 @@ async function ncaaBuildPredictionRow(game, dateStr) {
     // ML API unavailable — keep sigma-based win_pct_home as fallback
   }
 
+  // ═══ v27: ATS PICK — computed from spread disagreement at prediction time ═══
+  // Validated on 26,160 true out-of-sample games:
+  //   2-3 pts: 55.9% ATS (1u)  |  3-4 pts: 60.3% ATS (2u)  |  4+ pts: 68.4% ATS (3u)
+  if (row.spread_home != null && row.market_spread_home != null) {
+    const modelMargin = row.spread_home;           // positive = home wins by X
+    const mktImplied = -row.market_spread_home;    // market implied home margin
+    const disagree = Math.abs(modelMargin - mktImplied);
+    row.ats_disagree = parseFloat(disagree.toFixed(2));
+
+    if (disagree >= 2) {
+      // Model says home wins by more → bet HOME ATS, else AWAY ATS
+      const side = modelMargin > mktImplied ? "HOME" : "AWAY";
+      row.ats_side = side;
+      row.ats_pick_spread = row.market_spread_home; // the spread we're betting against
+      row.ats_units = disagree >= 4 ? 3 : disagree >= 3 ? 2 : 1;
+    } else {
+      row.ats_side = null;
+      row.ats_units = 0;
+      row.ats_pick_spread = null;
+    }
+  }
+
   return row;
 }
 
@@ -332,10 +354,25 @@ export async function ncaaFillFinalScores(pendingRows) {
         } else if (ouLine !== null && total === ouLine) {
           ou_correct = "PUSH";
         }
-        await supabaseQuery(`/ncaa_predictions?id=eq.${matchedRow.id}`, "PATCH", {
+        // v27: Grade ATS pick if one was made
+        let ats_correct = undefined; // undefined = not included in PATCH
+        if (matchedRow.ats_units > 0 && matchedRow.ats_side && mktSpread !== null) {
+          const atsResult = actualMargin + mktSpread;
+          if (atsResult === 0) {
+            ats_correct = null; // push
+          } else {
+            const homeCovered = atsResult > 0;
+            const pickedHome = matchedRow.ats_side === "HOME";
+            ats_correct = pickedHome === homeCovered;
+          }
+        }
+
+        const patch = {
           actual_home_score: homeScore, actual_away_score: awayScore,
           result_entered: true, ml_correct, rl_correct, ou_correct,
-        });
+        };
+        if (ats_correct !== undefined) patch.ats_correct = ats_correct;
+        await supabaseQuery(`/ncaa_predictions?id=eq.${matchedRow.id}`, "PATCH", patch);
         filled++;
       }
     } catch (e) { console.warn("ncaaFillFinalScores error", dateStr, e); }
@@ -351,7 +388,7 @@ export async function ncaaRegradeAllResults(onProgress) {
   const pageSize = 1000;
   while (true) {
     const page = await supabaseQuery(
-      `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em,home_wins,home_losses,away_wins,away_losses,home_ppg,away_ppg,home_opp_ppg,home_form,home_sos&limit=${pageSize}&offset=${offset}&order=id.asc`
+      `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em,home_wins,home_losses,away_wins,away_losses,home_ppg,away_ppg,home_opp_ppg,home_form,home_sos,ats_units,ats_side&limit=${pageSize}&offset=${offset}&order=id.asc`
     );
     if (!page || !page.length) break;
     allGraded = allGraded.concat(page);
@@ -408,7 +445,20 @@ export async function ncaaRegradeAllResults(onProgress) {
     const basePts = minGames >= 3 ? 20 : 10;
     const confScore = Math.min(100, basePts + seasonPts + dataPts + extraPts);
     confidence = confScore >= 70 ? "HIGH" : confScore >= 45 ? "MEDIUM" : "LOW";
-    await supabaseQuery(`/ncaa_predictions?id=eq.${row.id}`, "PATCH", { ml_correct, rl_correct, ou_correct, confidence });
+    // v27: Grade ATS pick during regrade
+    let ats_correct = undefined;
+    if (row.ats_units > 0 && row.ats_side && mktSpread !== null) {
+      const atsResult = actualMargin + mktSpread;
+      if (atsResult === 0) { ats_correct = null; }
+      else {
+        const homeCovered = atsResult > 0;
+        const pickedHome = row.ats_side === "HOME";
+        ats_correct = pickedHome === homeCovered;
+      }
+    }
+    const regradePatch = { ml_correct, rl_correct, ou_correct, confidence };
+    if (ats_correct !== undefined) regradePatch.ats_correct = ats_correct;
+    await supabaseQuery(`/ncaa_predictions?id=eq.${row.id}`, "PATCH", regradePatch);
     fixed++;
     if (fixed % 100 === 0) onProgress?.(`⏳ Regraded ${fixed}/${allGraded.length}…`);
   }
@@ -471,7 +521,7 @@ export async function ncaaAutoSync(onProgress) {
       await supabaseQuery("/ncaa_predictions", "UPSERT", normalizedRows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score,ats_units,ats_side`
       );
       if (ns?.length) await ncaaFillFinalScores(ns);
       rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
@@ -528,7 +578,7 @@ export async function ncaaFullBackfill(onProgress, signal) {
       await supabaseQuery("/ncaa_predictions", "UPSERT", rows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score,ats_units,ats_side`
       );
       if (ns?.length) await ncaaFillFinalScores(ns);
       rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
