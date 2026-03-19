@@ -59,18 +59,26 @@ const formatSpread = (spread) => {
 // Bet advantage banner for game cards — ATS DISAGREEMENT BASED
 // Uses checkmark unit indicators: ✓ = 1u, ✓✓ = 2u, ✓✓✓ = 3u
 // Driven by |model_margin - market_margin| validated on 26K out-of-sample games
-const BetBanner = ({ signals, homeName, awayName }) => {
+const BetBanner = ({ signals, homeName, awayName, odds }) => {
   if (!signals?.betSizing) return null;
   const sz = signals.betSizing;
   const side = sz.side || signals.spread?.side || "";
   const badgeColor = sz.units >= 3 ? "#2ea043" : sz.units >= 2 ? "#d29922" : "#8b949e";
   const pickName = side === "HOME" ? homeName : awayName;
   const checks = "✓".repeat(sz.units);
-  // ATS pick: team + spread
-  const mktSpread = signals.spread?.diff ? parseFloat(signals.spread.diff) : null;
-  const spreadLabel = signals.spread?.side === "HOME"
-    ? (signals.spread?.diff ? `−${signals.spread.diff}` : "ATS")
-    : (signals.spread?.diff ? `+${signals.spread.diff}` : "ATS");
+  // ATS pick: team + actual market spread (what you'd bet at the book)
+  const mktSpread = odds?.homeSpread ?? null;
+  let spreadLabel = "ATS";
+  if (mktSpread != null) {
+    if (side === "HOME") {
+      // Home side: show home spread (e.g., NEB -13.5)
+      spreadLabel = mktSpread > 0 ? `+${mktSpread}` : `${mktSpread}`;
+    } else {
+      // Away side: show away spread (flip sign, e.g., HAW +14.5)
+      const awaySpread = -mktSpread;
+      spreadLabel = awaySpread > 0 ? `+${awaySpread}` : `${awaySpread}`;
+    }
+  }
   
   return (
     <div style={{
@@ -111,7 +119,7 @@ const BetBanner = ({ signals, homeName, awayName }) => {
             </span>
           </div>
           <span style={{ fontSize: 10, color: C.muted }}>
-            {sz.disagree} pts disagreement · {sz.atsHistorical} ATS historical
+            {parseFloat(sz.disagree) % 1 === 0 ? parseInt(sz.disagree) : sz.disagree} pts disagreement · {sz.atsHistorical} ATS historical
           </span>
         </div>
       </div>
@@ -626,7 +634,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             >
               {/* Bet advantage banner - shows unit sizing + LEAN/BET */}
               {isBetGame && (
-                <BetBanner signals={signals} homeName={homeName} awayName={awayName} />
+                <BetBanner signals={signals} homeName={homeName} awayName={awayName} odds={game.odds} />
               )}
 
               {/* Header - Game time and edge label (non-bet games) */}
