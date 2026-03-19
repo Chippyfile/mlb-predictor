@@ -592,12 +592,12 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             const modelPicksDog = (marketFavorsHome && !modelFavorsHome) || (!marketFavorsHome && modelFavorsHome);
             const modelHasStrongDogEdge = modelPicksDog && (modelFavorsHome ? modelWinHome > 0.55 : (1 - modelWinHome) > 0.55);
             if (!modelPicksDog || !modelHasStrongDogEdge) {
-              signals.ml = { ...signals.ml, signal: "SKIP", label: `Model agrees ${marketFavorsHome ? homeName : awayName} wins — no ML edge` };
+              signals.ml = { ...signals.ml, verdict: "SKIP", label: `Model agrees ${marketFavorsHome ? homeName : awayName} wins — no ML edge` };
             }
           }
           // v25: Disable O/U signals until validated
           if (signals.ou) {
-            signals.ou = { ...signals.ou, signal: "SKIP", label: "O/U model not yet validated" };
+            signals.ou = { ...signals.ou, verdict: "SKIP", label: "O/U model not yet validated" };
           }
 
           const homeRank = game.homeStats?._kenPomRank || (game.homeRank && game.homeRank < 99 ? game.homeRank : null);
