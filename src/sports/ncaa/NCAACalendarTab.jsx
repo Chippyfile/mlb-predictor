@@ -336,12 +336,15 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       let mlResult = null, mcResult = null;
       if (pred) {
         // v25: Use mlPredictFull — backend fetches all 156 features from Supabase + ESPN
-        // This replaces mlPredict which only sent ~30 frontend-computed stats.
-        // Now calendar, sync, and refresh button all use the same endpoint.
-        mlResult = await mlPredictFull(
-            g.homeTeamId, g.awayTeamId,
-            { neutralSite: effectiveNeutral, gameDate: d, gameId: g.gameId }
-        ).catch(() => null);
+        // CRITICAL: Skip for Live/Final games — ESPN data contains in-game/post-game stats
+        // which would contaminate the prediction with future information.
+        const isPreGame = g.status !== "Final" && g.status !== "Live";
+        if (isPreGame) {
+          mlResult = await mlPredictFull(
+              g.homeTeamId, g.awayTeamId,
+              { neutralSite: effectiveNeutral, gameDate: d, gameId: g.gameId }
+          ).catch(() => null);
+        }
           
         const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
         const heuristicTotal = pred.homeScore + pred.awayScore;
@@ -1183,4 +1186,3 @@ export function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalib
     </div>
   );
 }
-// v25 force rebuild Thu Mar 19 13:06:15 PDT 2026
