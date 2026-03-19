@@ -4,9 +4,10 @@ import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
-import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
+import { mlPredict, mlPredictFull, mlMonteCarlo } from "../../utils/mlApi.js";
 import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
+import { supabaseQuery } from "../../utils/supabase.js";
 import MarchMadnessPanel from "./MarchMadnessPanel.jsx";
 
 // Season start (Nov 1 of prior year) — keep in sync with ncaaSync.js
@@ -142,6 +143,80 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(null);
+  const [refreshingGame, setRefreshingGame] = useState(null);
+
+  // Per-game refresh: re-calls ML API and updates display + Supabase
+  const refreshGame = useCallback(async (game, idx) => {
+    setRefreshingGame(game.gameId);
+    try {
+      const mlResult = await mlPredictFull(
+        game.homeTeamId, game.awayTeamId,
+        { neutralSite: game.neutralSite, gameDate: dateStr, gameId: game.gameId }
+      );
+      if (!mlResult || mlResult.error) {
+        setRefreshingGame(null);
+        return;
+      }
+      // Update game in state with new ML data
+      setGames(prev => prev.map((g, i) => {
+        if (g.gameId !== game.gameId) return g;
+        const mlMargin = mlResult.ml_margin;
+        const mlWinProb = mlResult.ml_win_prob_home;
+        const pred = g.pred ? { ...g.pred } : {};
+        const heuristicMargin = pred.projectedSpread || 0;
+        const marginShift = (mlMargin - heuristicMargin) / 2;
+        pred.homeScore = parseFloat(((pred._heuristicHomeScore || pred.homeScore || 70) + marginShift).toFixed(1));
+        pred.awayScore = parseFloat(((pred._heuristicAwayScore || pred.awayScore || 70) - marginShift).toFixed(1));
+        pred.projectedSpread = parseFloat(mlMargin.toFixed(1));
+        pred.homeWinPct = Math.max(0.05, Math.min(0.95, mlWinProb));
+        pred.awayWinPct = 1 - pred.homeWinPct;
+        pred.mlEnhanced = true;
+        // Recalculate moneylines
+        const VIG = 0.0225;
+        const hp = pred.homeWinPct + VIG, ap = pred.awayWinPct + VIG;
+        pred.modelML_home = pred.homeWinPct >= 0.5
+          ? -Math.min(4000, Math.round((hp / (1 - hp)) * 100))
+          : +Math.min(4000, Math.round(((1 - hp) / hp) * 100));
+        pred.modelML_away = pred.homeWinPct < 0.5
+          ? -Math.min(4000, Math.round((ap / (1 - ap)) * 100))
+          : +Math.min(4000, Math.round(((1 - ap) / ap) * 100));
+        return {
+          ...g, pred,
+          mlShap: mlResult.shap ?? g.mlShap,
+          mlMeta: mlResult.model_meta ?? g.mlMeta,
+          mlFeatureCoverage: mlResult.feature_coverage ?? null,
+          mlDataSources: mlResult.data_sources ?? null,
+        };
+      }));
+      // Write updated prediction back to Supabase
+      const mktSpread = game.odds?.homeSpread ?? null;
+      const modelMargin = mlResult.ml_margin;
+      const patch = {
+        spread_home: parseFloat(modelMargin.toFixed(1)),
+        win_pct_home: parseFloat(mlResult.ml_win_prob_home.toFixed(4)),
+        ml_win_prob_home: parseFloat(mlResult.ml_win_prob_home.toFixed(4)),
+        rating_synced_at: new Date().toISOString(),
+      };
+      if (mktSpread != null) {
+        const mktImplied = -mktSpread;
+        const disagree = Math.abs(modelMargin - mktImplied);
+        patch.ats_disagree = parseFloat(disagree.toFixed(2));
+        if (disagree >= 2) {
+          patch.ats_side = modelMargin > mktImplied ? "HOME" : "AWAY";
+          patch.ats_pick_spread = mktSpread;
+          patch.ats_units = disagree >= 4 ? 3 : disagree >= 3 ? 2 : 1;
+        } else {
+          patch.ats_side = null;
+          patch.ats_units = 0;
+          patch.ats_pick_spread = null;
+        }
+      }
+      await supabaseQuery(`/ncaa_predictions?game_id=eq.${game.gameId}`, "PATCH", patch).catch(() => {});
+    } catch (e) {
+      console.warn("refreshGame error:", e);
+    }
+    setRefreshingGame(null);
+  }, [dateStr]);
 
   const loadGames = useCallback(async (d) => {
     setLoading(true);
@@ -252,60 +327,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       
       let mlResult = null, mcResult = null;
       if (pred) {
-        mlResult = await mlPredict("ncaa", {
-            home_team_id: g.homeTeamId, away_team_id: g.awayTeamId,
-            home_starter_ids: injuryData?.home_starter_ids || "",
-            away_starter_ids: injuryData?.away_starter_ids || "",
-            pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
-            home_adj_em: pred.homeAdjEM, away_adj_em: pred.awayAdjEM,
-            win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
-            model_ml_home: pred.modelML_home,
-            neutral_site: effectiveNeutral,
-            spread_home: pred.projectedSpread,
-            market_spread_home: gameOdds?.homeSpread ?? null,
-            market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
-            // ESPN odds — extracted from same /summary call as injuries (zero extra API calls)
-            espn_spread: injuryData?.espn_spread ?? 0,
-            espn_over_under: injuryData?.espn_over_under ?? 0,
-            espn_home_win_pct: injuryData?.espn_home_win_pct ?? 0.5,
-            espn_predictor_home_pct: injuryData?.espn_predictor_home_pct ?? 0.5,
-            home_conference: homeStats?.conferenceName || "",
-            away_conference: awayStats?.conferenceName || "",
-            game_date: d,
-            home_ppg: homeStats?.ppg, away_ppg: awayStats?.ppg,
-            home_opp_ppg: homeStats?.oppPpg, away_opp_ppg: awayStats?.oppPpg,
-            home_fgpct: homeStats?.fgPct, away_fgpct: awayStats?.fgPct,
-            home_threepct: homeStats?.threePct, away_threepct: awayStats?.threePct,
-            home_ftpct: homeStats?.ftPct, away_ftpct: awayStats?.ftPct,
-            home_assists: homeStats?.assists, away_assists: awayStats?.assists,
-            home_turnovers: homeStats?.turnovers, away_turnovers: awayStats?.turnovers,
-            home_tempo: homeStats?.tempo, away_tempo: awayStats?.tempo,
-            home_orb_pct: homeStats?.orbPct, away_orb_pct: awayStats?.orbPct,
-            home_fta_rate: homeStats?.ftaRate, away_fta_rate: awayStats?.ftaRate,
-            home_ato_ratio: homeStats?.atoRatio, away_ato_ratio: awayStats?.atoRatio,
-            home_opp_fgpct: homeStats?.oppFGpct, away_opp_fgpct: awayStats?.oppFGpct,
-            home_opp_threepct: homeStats?.oppThreePct, away_opp_threepct: awayStats?.oppThreePct,
-            home_steals: homeStats?.steals, away_steals: awayStats?.steals,
-            home_blocks: homeStats?.blocks, away_blocks: awayStats?.blocks,
-            home_wins: homeStats?.wins, away_wins: awayStats?.wins,
-            home_losses: homeStats?.losses, away_losses: awayStats?.losses,
-            home_form: homeStats?.formScore, away_form: awayStats?.formScore,
-            home_sos: null, away_sos: null,
-            home_rank: homeStats?._kenPomRank || g.homeRank || 200,
-            away_rank: awayStats?._kenPomRank || g.awayRank || 200,
-            home_injury_penalty: injuryData?.home_injury_penalty ?? 0,
-            away_injury_penalty: injuryData?.away_injury_penalty ?? 0,
-            injury_diff: injuryData?.injury_diff ?? 0,
-            home_missing_starters: injuryData?.home_missing_starters ?? 0,
-            away_missing_starters: injuryData?.away_missing_starters ?? 0,
-            is_conference_tournament: gameContext?.is_conference_tournament ?? false,
-            is_ncaa_tournament: gameContext?.is_ncaa_tournament ?? false,
-            is_bubble_game: gameContext?.is_bubble_game ?? false,
-            is_early_season: gameContext?.is_early_season ?? false,
-            importance_multiplier: gameContext?.importance_multiplier ?? 1.0,
-            home_rest_days: homeRestDays,
-            away_rest_days: awayRestDays,
-          });
+        // v25: Use mlPredictFull — backend fetches all 156 features from Supabase + ESPN
+        // This replaces mlPredict which only sent ~30 frontend-computed stats.
+        // Now calendar, sync, and refresh button all use the same endpoint.
+        mlResult = await mlPredictFull(
+            g.homeTeamId, g.awayTeamId,
+            { neutralSite: effectiveNeutral, gameDate: d, gameId: g.gameId }
+        ).catch(() => null);
           
         const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
         const heuristicTotal = pred.homeScore + pred.awayScore;
@@ -388,6 +416,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         ...g, homeStats, awayStats, pred: finalPred, loading: false,
         odds: gameOdds, mlShap: mlResult?.shap ?? null,
         mlMeta: mlResult?.model_meta ?? null, mc: mcResult,
+        mlFeatureCoverage: mlResult?.feature_coverage ?? null,
+        mlDataSources: mlResult?.data_sources ?? null,
         homeRestDays, awayRestDays
       };
     })); // end Promise.all(slice.map)
@@ -598,6 +628,15 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
                   {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
+                  {game.status !== "Final" && game.status !== "Live" && (
+                    <span
+                      onClick={(e) => { e.stopPropagation(); refreshGame(game, idx); }}
+                      style={{ cursor: "pointer", fontSize: 11, opacity: refreshingGame === game.gameId ? 0.5 : 1, padding: "2px 6px", borderRadius: 4, background: "rgba(88,166,255,0.1)", color: "#58a6ff" }}
+                      title="Refresh prediction (re-fetch refs, starters, odds)"
+                    >
+                      {refreshingGame === game.gameId ? "⏳" : "🔄"}
+                    </span>
+                  )}
                   <span style={{ color: C.dim, fontSize: 12 }}>
                     {expanded === game.gameId ? "▲" : "▼"}
                   </span>
@@ -860,6 +899,56 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     {game.neutralSite && <Kv k="Site" v="Neutral" />}
                     {game.venue && <Kv k="Venue" v={game.venue} />}
                   </div>
+
+                  {/* Feature coverage + zero features panel */}
+                  {game.mlShap && (() => {
+                    const zeroFeatures = game.mlShap.filter(s => s.value === 0 && Math.abs(s.shap) > 0.01);
+                    const allZero = game.mlShap.filter(s => s.value === 0);
+                    const coverage = game.mlFeatureCoverage || `${game.mlShap.length - allZero.length}/${game.mlShap.length}`;
+                    const ds = game.mlDataSources || {};
+                    return (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, color: "#8b949e" }}>
+                            Features: <span style={{ color: allZero.length > 30 ? "#f85149" : allZero.length > 15 ? "#d29922" : "#3fb950", fontWeight: 600 }}>{coverage}</span>
+                          </span>
+                          {ds.referee != null && (
+                            <span style={{ fontSize: 10, color: ds.referee ? "#3fb950" : "#f85149" }}>
+                              {ds.referee ? "✓" : "✗"} Refs
+                            </span>
+                          )}
+                          {ds.spread_movement != null && (
+                            <span style={{ fontSize: 10, color: ds.spread_movement ? "#3fb950" : "#f85149" }}>
+                              {ds.spread_movement ? "✓" : "✗"} Line movement
+                            </span>
+                          )}
+                          {ds.attendance != null && (
+                            <span style={{ fontSize: 10, color: ds.attendance ? "#3fb950" : "#f85149" }}>
+                              {ds.attendance ? "✓" : "✗"} Attendance
+                            </span>
+                          )}
+                        </div>
+                        {zeroFeatures.length > 0 && (
+                          <details style={{ fontSize: 11 }}>
+                            <summary style={{ cursor: "pointer", color: "#d29922" }}>
+                              {allZero.length} zero features ({zeroFeatures.length} with SHAP impact)
+                            </summary>
+                            <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                              {zeroFeatures.sort((a, b) => Math.abs(b.shap) - Math.abs(a.shap)).map(s => (
+                                <span key={s.feature} style={{
+                                  fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                                  background: Math.abs(s.shap) > 0.1 ? "rgba(248,81,73,0.15)" : "rgba(139,148,158,0.1)",
+                                  color: Math.abs(s.shap) > 0.1 ? "#f85149" : "#8b949e",
+                                }}>
+                                  {s.feature} ({s.shap > 0 ? "+" : ""}{s.shap.toFixed(2)})
+                                </span>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* Bet Signals Panel - Full details */}
                   <BetSignalsPanel
