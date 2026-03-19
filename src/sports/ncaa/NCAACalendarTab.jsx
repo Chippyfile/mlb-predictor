@@ -570,6 +570,30 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           const homeName = game.homeAbbr || (game.homeTeamName || "").slice(0, 8);
           const awayName = game.awayAbbr || (game.awayTeamName || "").slice(0, 8);
           const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "ncaa", homeName, awayName });
+
+          // v25: Override ML signal logic
+          // Only recommend ML bet when model picks the OPPOSITE team from the market favorite.
+          // Example: Duke -20000 vs Siena +3500. Model says Duke 85%. Market says 97%.
+          // The "edge" is 12% but Duke still wins — no one should bet Siena ML.
+          // ML GO only when model win% > 50% for the team the market has as underdog.
+          if (signals.ml && game.pred && game.odds) {
+            const modelWinHome = game.pred.homeWinPct ?? 0.5;
+            const mktHomeML = game.odds.homeML ?? 0;
+            const mktAwayML = game.odds.awayML ?? 0;
+            const marketFavorsHome = mktHomeML < 0 || (mktHomeML !== 0 && Math.abs(mktHomeML) < Math.abs(mktAwayML));
+            const modelFavorsHome = modelWinHome >= 0.5;
+            // Only show ML GO if model disagrees on WHO wins, or if model has strong confidence (>55%) on the dog
+            const modelPicksDog = (marketFavorsHome && !modelFavorsHome) || (!marketFavorsHome && modelFavorsHome);
+            const modelHasStrongDogEdge = modelPicksDog && (modelFavorsHome ? modelWinHome > 0.55 : (1 - modelWinHome) > 0.55);
+            if (!modelPicksDog || !modelHasStrongDogEdge) {
+              signals.ml = { ...signals.ml, signal: "SKIP", label: `Model agrees ${marketFavorsHome ? homeName : awayName} wins — no ML edge` };
+            }
+          }
+          // v25: Disable O/U signals until validated
+          if (signals.ou) {
+            signals.ou = { ...signals.ou, signal: "SKIP", label: "O/U model not yet validated" };
+          }
+
           const homeRank = game.homeStats?._kenPomRank || (game.homeRank && game.homeRank < 99 ? game.homeRank : null);
           const awayRank = game.awayStats?._kenPomRank || (game.awayRank && game.awayRank < 99 ? game.awayRank : null);
           
@@ -868,9 +892,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 </div>
               )}
 
-              {/* Expanded view */}
+              {/* Expanded view — clicks here don't close the card */}
               {expanded === game.gameId && (
-                <div style={{
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
                   borderTop: `1px solid ${borderColor}`,
                   padding: "14px 18px",
                   background: "rgba(0,0,0,0.3)"
