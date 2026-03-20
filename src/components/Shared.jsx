@@ -359,7 +359,9 @@ export function HistoryTab({ table, refreshKey }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const histCols = "id,game_date,home_team,away_team,home_team_name,away_team_name,spread_home,ou_total,win_pct_home,ml_win_prob_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
+    const histCols = isMLB
+      ? "id,game_date,home_team,away_team,spread_home,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,game_type"
+      : "id,game_date,home_team,away_team,home_team_name,away_team_name,spread_home,ou_total,win_pct_home,ml_win_prob_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
@@ -441,7 +443,7 @@ export function HistoryTab({ table, refreshKey }) {
                       <td style={{ padding: "7px 8px" }}><span style={{ color: confColor(r.confidence), fontWeight: 700, fontSize: 10 }}>{r.confidence}</span></td>
                       <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayAbbr} {awayScore} – {homeAbbr} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketSpread ? <span style={{ color: C.dim }}>—</span> : !r.result_entered ? "—" : !r.ats_units ? <span style={{ color: C.dim, fontSize: 10 }}>—</span> : r.ats_correct === null ? "🔲" : r.ats_correct ? "✅" : "❌"}</td>
+                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketSpread ? <span style={{ color: C.dim }}>—</span> : !r.result_entered ? "—" : (r.ats_units != null ? (!r.ats_units ? <span style={{ color: C.dim, fontSize: 10 }}>—</span> : r.ats_correct === null ? "🔲" : r.ats_correct ? "✅" : "❌") : (r.rl_correct === null ? <span style={{ color: C.dim, fontSize: 10 }}>—</span> : r.rl_correct ? "✅" : "❌"))}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
                         if (!hasMarketOU || !r.result_entered) return "—";
                         const ouEdge = (r.ou_total && r.market_ou_total) ? Math.abs(parseFloat(r.ou_total) - parseFloat(r.market_ou_total)) : 0;
