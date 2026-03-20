@@ -1044,7 +1044,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <span style={{ color: C.dim }}>Win%:</span>
+                      <span style={{ color: C.dim }}>O/U:</span>
                       <span style={{ color: C.green, fontWeight: 700 }}>
                         {(Math.max(game.pred.homeWinPct, 1 - game.pred.homeWinPct) * 100).toFixed(1)}%
                       </span>
