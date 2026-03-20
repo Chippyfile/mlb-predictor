@@ -442,7 +442,18 @@ export function HistoryTab({ table, refreshKey }) {
                       <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayAbbr} {awayScore} – {homeAbbr} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketSpread ? <span style={{ color: C.dim }}>—</span> : !r.result_entered ? "—" : !r.ats_units ? <span style={{ color: C.dim, fontSize: 10 }}>—</span> : r.ats_correct === null ? "🔲" : r.ats_correct ? "✅" : "❌"}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketOU ? <span style={{ color: C.dim }}>—</span> : r.result_entered ? (r.ou_correct === "PUSH" ? <span style={{ color: C.yellow, fontSize: 10 }}>🔲</span> : r.ou_correct === "OVER" || r.ou_correct === true ? "✅" : r.ou_correct === "UNDER" || r.ou_correct === false ? "❌" : <span style={{ color: C.dim, fontSize: 10 }}>—</span>) : "—"}</td>
+                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
+                        if (!hasMarketOU || !r.result_entered) return "—";
+                        const ouEdge = (r.ou_total && r.market_ou_total) ? Math.abs(parseFloat(r.ou_total) - parseFloat(r.market_ou_total)) : 0;
+                        if (ouEdge < 5) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        const modelSaysOver = parseFloat(r.ou_total) > parseFloat(r.market_ou_total);
+                        const actualOver = r.ou_correct === "OVER";
+                        const actualUnder = r.ou_correct === "UNDER";
+                        if (r.ou_correct === "PUSH") return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
+                        if ((modelSaysOver && actualOver) || (!modelSaysOver && actualUnder)) return "✅";
+                        if (actualOver || actualUnder) return "❌";
+                        return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                      })()}</td>
                       <td style={{ padding: "7px 8px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: C.dim, cursor: "pointer", fontSize: 12 }}>🗑</button></td>
                     </tr>
                   );
