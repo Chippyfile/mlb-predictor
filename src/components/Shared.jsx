@@ -359,7 +359,7 @@ export function HistoryTab({ table, refreshKey }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const histCols = "id,game_date,home_team,away_team,home_team_name,away_team_name,model_ml_home,model_ml_away,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
+    const histCols = "id,game_date,home_team,away_team,home_team_name,away_team_name,spread_home,ou_total,win_pct_home,ml_win_prob_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
@@ -435,13 +435,13 @@ export function HistoryTab({ table, refreshKey }) {
                   return (
                     <tr key={r.id} style={{ borderBottom: `1px solid #0d1117`, background: bg }}>
                       <td style={{ padding: "7px 8px", fontWeight: 700, whiteSpace: "nowrap" }}>{awayAbbr} @ {homeAbbr} {r.game_type === "S" && <span style={{ fontSize: 8, color: C.yellow, marginLeft: 4 }}>ST</span>}</td>
-                      <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}><span style={{ color: C.blue }}>H:{mlSign(r.model_ml_home)}</span><span style={{ color: C.dim, margin: "0 3px" }}>|</span><span style={{ color: C.dim }}>A:{mlSign(r.model_ml_away)}</span></td>
+                      <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.spread_home != null ? <span style={{ color: r.spread_home > 0 ? "#3fb950" : "#58a6ff", fontWeight: 600 }}>{r.spread_home > 0 ? "+" : ""}{parseFloat(r.spread_home).toFixed(1)}</span> : <span style={{ color: C.dim }}>—</span>}</td>
                       <td style={{ padding: "7px 8px", color: C.yellow }}>{r.ou_total}</td>
                       <td style={{ padding: "7px 8px", color: C.blue }}>{r.win_pct_home != null ? `${Math.round(r.win_pct_home * 100)}%` : "—"}</td>
                       <td style={{ padding: "7px 8px" }}><span style={{ color: confColor(r.confidence), fontWeight: 700, fontSize: 10 }}>{r.confidence}</span></td>
                       <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayAbbr} {awayScore} – {homeAbbr} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketSpread ? <span style={{ color: C.dim }}>—</span> : r.result_entered ? (r.rl_correct === null ? "🔲" : r.rl_correct ? "✅" : "❌") : "—"}</td>
+                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketSpread ? <span style={{ color: C.dim }}>—</span> : !r.result_entered ? "—" : !r.ats_units ? <span style={{ color: C.dim, fontSize: 10 }}>—</span> : r.ats_correct === null ? "🔲" : r.ats_correct ? "✅" : "❌"}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketOU ? <span style={{ color: C.dim }}>—</span> : r.result_entered ? (r.ou_correct === "PUSH" ? <span style={{ color: C.yellow, fontSize: 10 }}>🔲</span> : r.ou_correct === "OVER" || r.ou_correct === true ? "✅" : r.ou_correct === "UNDER" || r.ou_correct === false ? "❌" : <span style={{ color: C.dim, fontSize: 10 }}>—</span>) : "—"}</td>
                       <td style={{ padding: "7px 8px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: C.dim, cursor: "pointer", fontSize: 12 }}>🗑</button></td>
                     </tr>
