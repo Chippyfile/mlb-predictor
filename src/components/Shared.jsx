@@ -83,7 +83,7 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
     (async () => {
       setLoading(true);
       const typeFilter = (table === "mlb_predictions" && gameTypeFilter !== "ALL") ? `&game_type=eq.${gameTypeFilter}` : "";
-      const accCols = "id,game_date,ml_correct,rl_correct,ou_correct,win_pct_home,confidence,spread_home,market_spread_home,market_ou_total,game_type";
+      const accCols = "id,game_date,ml_correct,rl_correct,ou_correct,win_pct_home,confidence,spread_home,market_spread_home,market_ou_total";
       const dateFilter = daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "";
       const cacheKey = `acc_${table}_${gameTypeFilter}_${daysBack}_${refreshKey}`;
       const data = await cachedQuery(cacheKey, () =>
@@ -359,7 +359,7 @@ export function HistoryTab({ table, refreshKey }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const histCols = "id,game_date,home_team,away_team,home_team_name,away_team_name,model_ml_home,model_ml_away,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,game_type";
+    const histCols = "id,game_date,home_team,away_team,home_team_name,away_team_name,model_ml_home,model_ml_away,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
