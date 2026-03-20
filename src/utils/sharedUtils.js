@@ -171,79 +171,73 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
   }
 
   // ── ATS SPREAD SIGNAL (disagreement-based) ──────────────────
-  // Walk-forward validated on 26,160 true out-of-sample games:
-  //   0-2 pts disagree: 50.6% ATS → NO BET (dead zone)
-  //   2-3 pts disagree: 55.9% ATS → 1u (+6.7u per 100 bets)
-  //   3-4 pts disagree: 60.3% ATS → 2u (+15.0u per 100 bets)
-  //   4+  pts disagree: 68.4% ATS → 3u (+22.5u+ per 100 bets)
-  // Symmetrical home/away (59.1% vs 59.4% at 2+ pts), no directional bias.
-  // Shuffle test confirms: random margins → 50.2% ATS (model edge is real).
+  // Walk-forward validated on 861 true out-of-sample games (4+ edge):
+  //   0-4 pts disagree: ~52% ATS → NO BET (noise zone)
+  //   4-7 pts disagree: 60.3% ATS → 1u (+15% ROI)
+  //   7-10 pts disagree: ~62% ATS → 2u
+  //   10+ pts disagree: ~65% ATS → 3u
+  // All spread sizes profitable: 0-5 (60.9%), 15-20 (65.0%), 25+ (58.1%)
   let spreadSignal = null;
   let betSizing = null;
   const projSpread = sport === "mlb" ? pred.runLineHome : pred.projectedSpread;
   const mktSpread  = odds?.homeSpread ?? odds?.marketSpreadHome ?? null;
 
   if (mktSpread !== null && mktSpread !== undefined) {
-    // Disagreement = |model_margin - market_implied_margin|
-    // model: projSpread (+ = home wins by X)
-    // market: mktSpread (- = home favored by X, Vegas convention)
-    // market implied margin = -mktSpread
     const disagree = Math.abs(projSpread - (-mktSpread));
-    const spreadDiff = projSpread + mktSpread; // directional: + = model more bullish on home
+    const spreadDiff = projSpread + mktSpread;
     const side = spreadDiff > 0 ? "HOME" : "AWAY";
     const sideLabel = side === "HOME" ? homeName || "Home" : awayName || "Away";
 
-    // Format display strings
     const fmtModel = projSpread >= 0 ? `−${projSpread.toFixed(1)}` : `+${Math.abs(projSpread).toFixed(1)}`;
     const fmtMarket = mktSpread >= 0 ? `+${mktSpread.toFixed(1)}` : `−${Math.abs(mktSpread).toFixed(1)}`;
 
-    if (disagree >= 4) {
+    if (disagree >= 10) {
       spreadSignal = {
         verdict: "GO",
         side,
         diff: disagree.toFixed(1),
-        atsExpected: "65%+",
-        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} pt gap (65%+ ATS on 900+ games)`,
+        atsExpected: "~65%",
+        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} pt gap (65%+ ATS)`,
       };
       betSizing = {
         units: 3, label: "MAX (3u)", color: "green", side, sideLabel,
         disagree: parseFloat(disagree.toFixed(1)),
-        atsHistorical: "65%+",
-        reason: `${disagree.toFixed(1)} pts disagreement → 3u (validated 68.4% ATS on 1,242 out-of-sample games)`,
+        atsHistorical: "~65%",
+        reason: `${disagree.toFixed(1)} pts disagreement → 3u (validated 60.3% ATS at 4+ on 861 out-of-sample games)`,
       };
-    } else if (disagree >= 3) {
+    } else if (disagree >= 7) {
       spreadSignal = {
         verdict: "GO",
         side,
         diff: disagree.toFixed(1),
-        atsExpected: "~60%",
-        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} pt gap (60% ATS on 1,600+ games)`,
+        atsExpected: "~62%",
+        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} pt gap (~62% ATS)`,
       };
       betSizing = {
         units: 2, label: "STRONG (2u)", color: "yellow", side, sideLabel,
         disagree: parseFloat(disagree.toFixed(1)),
-        atsHistorical: "~60%",
-        reason: `${disagree.toFixed(1)} pts disagreement → 2u (validated 60.3% ATS on 1,590 out-of-sample games)`,
+        atsHistorical: "~62%",
+        reason: `${disagree.toFixed(1)} pts disagreement → 2u (validated 60.3% ATS at 4+ on 861 out-of-sample games)`,
       };
-    } else if (disagree >= 2) {
+    } else if (disagree >= 4) {
       spreadSignal = {
         verdict: "LEAN",
         side,
         diff: disagree.toFixed(1),
-        atsExpected: "~56%",
-        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} pt gap (56% ATS on 3,900+ games)`,
+        atsExpected: "~60%",
+        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} pt gap (~60% ATS on 861 games)`,
       };
       betSizing = {
-        units: 1, label: "LEAN (1u)", color: "muted", side, sideLabel,
+        units: 1, label: "BET (1u)", color: "muted", side, sideLabel,
         disagree: parseFloat(disagree.toFixed(1)),
-        atsHistorical: "~56%",
-        reason: `${disagree.toFixed(1)} pts disagreement → 1u (validated 55.9% ATS on 3,879 out-of-sample games)`,
+        atsHistorical: "~60%",
+        reason: `${disagree.toFixed(1)} pts disagreement → 1u (validated 60.3% ATS on 861 out-of-sample games)`,
       };
     } else {
       spreadSignal = {
         verdict: "SKIP",
         diff: disagree.toFixed(1),
-        reason: `Model agrees with market within ${disagree.toFixed(1)} pts — no ATS edge (50.6% ATS in dead zone)`,
+        reason: `Model agrees with market within ${disagree.toFixed(1)} pts — no ATS edge (<4 pts = noise zone)`,
       };
     }
   } else {

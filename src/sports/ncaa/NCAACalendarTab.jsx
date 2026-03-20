@@ -60,8 +60,61 @@ const formatSpread = (spread) => {
 // Uses checkmark unit indicators: ✓ = 1u, ✓✓ = 2u, ✓✓✓ = 3u
 // Driven by |model_margin - market_margin| validated on 26K out-of-sample games
 const BetBanner = ({ signals, homeName, awayName, odds }) => {
-  if (!signals?.betSizing) return null;
-  const sz = signals.betSizing;
+  const sz = signals?.betSizing;
+  const ou = signals?.ou;
+  const hasOu = ou && ou.verdict === "GO" && ou.side;
+  
+  // Need at least one signal to show banner
+  if (!sz && !hasOu) return null;
+
+  // O/U-only banner (no ATS bet)
+  if (!sz && hasOu) {
+    const ouColor = ou.side === "OVER" ? "#2ea043" : "#58a6ff";
+    const ouChecks = "✓".repeat(ou.units);
+    return (
+      <div style={{
+        padding: "8px 14px",
+        background: "linear-gradient(135deg, #0a1628, #0e1a2e)",
+        borderBottom: `1px solid ${ouColor}44`,
+        overflowX: "auto",
+        WebkitOverflowScrolling: "touch",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 320 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", gap: 3 }}>
+              {[1, 2, 3].map(i => (
+                <div key={i} style={{
+                  width: 20, height: 20, borderRadius: 4,
+                  background: i <= ou.units ? ouColor : "#1a1e24",
+                  border: `1px solid ${i <= ou.units ? ouColor : "#30363d"}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: i <= ou.units ? 12 : 9, fontWeight: 800,
+                  color: i <= ou.units ? "#fff" : "#484f58",
+                }}>{i <= ou.units ? "✓" : `${i}u`}</div>
+              ))}
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>O/U:</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: ouColor }}>
+                  {ou.side} {ou.modelTotal?.toFixed?.(0) ?? ""} {ou.side === "OVER" ? "▲" : "▼"}
+                </span>
+              </div>
+              <span style={{ fontSize: 10, color: C.muted }}>
+                {ou.edge.toFixed(1)} pts edge vs market · {ou.units}u
+              </span>
+            </div>
+          </div>
+          <div style={{ padding: "3px 10px", borderRadius: 4, background: ouColor, color: "#fff", fontSize: 11, fontWeight: 800, letterSpacing: 2, display: "flex", alignItems: "center", gap: 4 }}>
+            <span>{ouChecks}</span>
+            <span style={{ fontSize: 9, letterSpacing: 0.5 }}>{ou.units}u</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ATS banner (with optional O/U)
   const side = sz.side || signals.spread?.side || "";
   const badgeColor = sz.units >= 3 ? "#2ea043" : sz.units >= 2 ? "#d29922" : "#8b949e";
   const pickName = side === "HOME" ? homeName : awayName;
@@ -71,14 +124,15 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
   let spreadLabel = "ATS";
   if (mktSpread != null) {
     if (side === "HOME") {
-      // Home side: show home spread (e.g., NEB -13.5)
       spreadLabel = mktSpread > 0 ? `+${mktSpread}` : `${mktSpread}`;
     } else {
-      // Away side: show away spread (flip sign, e.g., HAW +14.5)
       const awaySpread = -mktSpread;
       spreadLabel = awaySpread > 0 ? `+${awaySpread}` : `${awaySpread}`;
     }
   }
+
+  // O/U signal (already declared above)
+  const ouColor = ou?.side === "OVER" ? "#2ea043" : "#58a6ff";
   
   return (
     <div style={{
@@ -97,7 +151,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
         gap: 8,
         minWidth: 320,
       }}>
-      {/* Left: unit blocks + ATS pick */}
+      {/* Left: unit blocks + ATS pick + O/U */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ display: "flex", gap: 3 }}>
           {[1, 2, 3].map(i => (
@@ -112,14 +166,24 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
           ))}
         </div>
         <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>ATS:</span>
             <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
               {pickName} {spreadLabel}
             </span>
+            {hasOu && (
+              <>
+                <span style={{ fontSize: 9, color: C.dim }}>·</span>
+                <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>O/U:</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: ouColor }}>
+                  {ou.side} {ou.units}u
+                </span>
+              </>
+            )}
           </div>
           <span style={{ fontSize: 10, color: C.muted }}>
             {parseFloat(sz.disagree) % 1 === 0 ? parseInt(sz.disagree) : sz.disagree} pts disagreement · {sz.atsHistorical} ATS historical
+            {hasOu && ` · O/U ${ou.edge.toFixed(1)} pts edge`}
           </span>
         </div>
       </div>
@@ -209,10 +273,10 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const mktImplied = -mktSpread;
         const disagree = Math.abs(modelMargin - mktImplied);
         patch.ats_disagree = parseFloat(disagree.toFixed(2));
-        if (disagree >= 2) {
+        if (disagree >= 4) {
           patch.ats_side = modelMargin > mktImplied ? "HOME" : "AWAY";
           patch.ats_pick_spread = mktSpread;
-          patch.ats_units = disagree >= 4 ? 3 : disagree >= 3 ? 2 : 1;
+          patch.ats_units = disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1;
         } else {
           patch.ats_side = null;
           patch.ats_units = 0;
@@ -519,12 +583,14 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     if (mktSpread !== null && mktSpread !== undefined) {
       const disagree = Math.abs(projSpread - (-mktSpread));
       const side = (projSpread + mktSpread) > 0 ? "HOME" : "AWAY";
-      if (disagree >= 4)
+      if (disagree >= 10)
         return { color: "green", disagree, label: `${disagree.toFixed(1)} pts disagree · 3u ATS`, side };
-      if (disagree >= 3)
+      if (disagree >= 7)
         return { color: "green", disagree, label: `${disagree.toFixed(1)} pts disagree · 2u ATS`, side };
+      if (disagree >= 4)
+        return { color: "green", disagree, label: `${disagree.toFixed(1)} pts disagree · 1u ATS`, side };
       if (disagree >= 2)
-        return { color: "neutral", disagree, label: `${disagree.toFixed(1)} pts disagree (lean)`, side };
+        return { color: "neutral", disagree, label: `${disagree.toFixed(1)} pts disagree (no bet)`, side };
       return { color: "neutral", disagree, label: `${disagree.toFixed(1)} pts disagree`, side };
     }
     // No market spread — fall back to win probability
@@ -684,11 +750,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           const awayRank = game.awayStats?._kenPomRank || (game.awayRank && game.awayRank < 99 ? game.awayRank : null);
           
           // Determine if this is a "bet game" - has a bet sizing recommendation
-          const isBetGame = !!signals.betSizing;
+          const isBetGame = !!signals.betSizing || (signals.ou?.verdict === "GO");
           const bannerInfo = getBannerInfo(game.pred, game.odds);
           
           // Border color: green for bet games, orange for strong edges, otherwise normal
-          const borderColor = isBetGame ? "#3fb950" : (bannerInfo.color === "green" ? "#f97316" : C.border);
+          const borderColor = isBetGame
+            ? (signals.betSizing ? "#3fb950" : "#58a6ff")  // green for ATS, blue for O/U-only
+            : (bannerInfo.color === "green" ? "#f97316" : C.border);
           const borderWidth = isBetGame ? "2px" : "1px";
 
           return (
