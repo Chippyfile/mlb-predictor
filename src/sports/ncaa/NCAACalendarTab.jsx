@@ -295,6 +295,24 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       rankedGames = validGames; // Fallback: never show empty if ESPN returned games
     }
 
+    // ── Fetch stored ML predictions from Supabase for this date ──
+    // Final/Live games can't call mlPredictFull (contamination risk),
+    // so we load the pre-tip predictions that were saved by the cron job.
+    let storedPredMap = new Map();
+    try {
+      const storedPreds = await supabaseQuery(
+        `/ncaa_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ats_disagree,ats_units,ats_side,ats_pick_spread,ou_total,pred_home_score,pred_away_score`
+      );
+      if (Array.isArray(storedPreds)) {
+        for (const sp of storedPreds) {
+          if (sp.game_id) storedPredMap.set(String(sp.game_id), sp);
+        }
+        console.log(`Loaded ${storedPredMap.size} stored predictions for ${d}`);
+      }
+    } catch (e) {
+      console.warn("Failed to load stored predictions:", e);
+    }
+
     // ── Batch process 8 games at a time to avoid ESPN throttling ──
     // Promise.all on 37+ games fires 150+ simultaneous ESPN requests.
     const BATCH = 8;
@@ -331,7 +349,19 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         awayML: injuryData.espn_away_ml,
         ouLine: injuryData.espn_over_under,
         source: "ESPN",
-      } : null;
+      } : (() => {
+        // v26: For Final/Live games, try stored market data from Supabase
+        const stored = storedPredMap.get(String(g.gameId));
+        if (stored?.market_spread_home != null) {
+          return {
+            homeSpread: stored.market_spread_home,
+            awaySpread: -stored.market_spread_home,
+            ouLine: stored.market_ou_total ?? null,
+            source: "stored",
+          };
+        }
+        return null;
+      })();
       
       let mlResult = null, mcResult = null;
       if (pred) {
@@ -344,6 +374,23 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
               g.homeTeamId, g.awayTeamId,
               { neutralSite: effectiveNeutral, gameDate: d, gameId: g.gameId }
           ).catch(() => null);
+        } else {
+          // v26: For Final/Live games, reconstruct mlResult from stored Supabase prediction
+          const stored = storedPredMap.get(String(g.gameId));
+          if (stored && stored.ml_win_prob_home != null) {
+            mlResult = {
+              ml_margin: stored.spread_home ?? 0,
+              ml_win_prob_home: stored.ml_win_prob_home ?? stored.win_pct_home ?? 0.5,
+              bias_correction_applied: 0,
+              feature_coverage: "stored",
+              _fromSupabase: true,
+              // O/U from stored prediction
+              ou_predicted_total: stored.ou_total ?? null,
+              ou_edge: (stored.ou_total && stored.market_ou_total) ? parseFloat((stored.ou_total - stored.market_ou_total).toFixed(1)) : null,
+              ou_pick: (stored.ou_total && stored.market_ou_total && Math.abs(stored.ou_total - stored.market_ou_total) >= 5)
+                ? (stored.ou_total > stored.market_ou_total ? "OVER" : "UNDER") : null,
+            };
+          }
         }
           
         const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
@@ -398,6 +445,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _heuristicSpread: pred.projectedSpread,
           _heuristicWinPct: pred.homeWinPct,
           _rawMlWinProb: mlResult.ml_win_prob_home,
+          _ouPredictedTotal: mlResult.ou_predicted_total ?? null,
+          _ouEdge: mlResult.ou_edge ?? null,
+          _ouPick: mlResult.ou_pick ?? null,
         };
       })() : pred;
       
@@ -606,9 +656,28 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
               signals.ml = { ...signals.ml, verdict: "SKIP", label: `Model agrees ${marketFavorsHome ? homeName : awayName} wins — no ML edge` };
             }
           }
-          // v25: Disable O/U signals until validated
-          if (signals.ou) {
-            signals.ou = { ...signals.ou, verdict: "SKIP", label: "O/U model not yet validated" };
+          // v26: O/U signals — use validated O/U model (Cat+MLP→EN, 20 features)
+          // Threshold: ≥5 edge (55.6% closing, 63.7% opening)
+          // Unit sizing: ≥5 = 1u, ≥7 = 2u, ≥10 = 3u
+          if (signals.ou && game.pred?._ouPick) {
+            const ouEdge = Math.abs(game.pred._ouEdge || 0);
+            const ouSide = game.pred._ouPick; // "OVER" or "UNDER"
+            if (ouEdge >= 5) {
+              const ouUnits = ouEdge >= 10 ? 3 : ouEdge >= 7 ? 2 : 1;
+              signals.ou = {
+                ...signals.ou,
+                verdict: "GO",
+                side: ouSide,
+                label: `${ouSide} ${ouEdge.toFixed(1)}pts edge · ${ouUnits}u`,
+                edge: ouEdge,
+                units: ouUnits,
+                modelTotal: game.pred._ouPredictedTotal,
+              };
+            } else {
+              signals.ou = { ...signals.ou, verdict: "SKIP", label: `O/U edge ${ouEdge.toFixed(1)} < 5` };
+            }
+          } else if (signals.ou) {
+            signals.ou = { ...signals.ou, verdict: "SKIP", label: "No O/U model data" };
           }
 
           const homeRank = game.homeStats?._kenPomRank || (game.homeRank && game.homeRank < 99 ? game.homeRank : null);
@@ -865,11 +934,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     gap: 2,
                   }}>
                     <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
-                      {(signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && signals.betSizing
-                        ? <SignalBadge label={signals.ou?.side === "OVER" ? "OVER" : "UNDER"} color={signals.ou?.side === "OVER" ? "#2ea043" : "#58a6ff"}>
-                            {game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
+                      {signals.ou?.verdict === "GO"
+                        ? <SignalBadge label={`${signals.ou.side} ${signals.ou.units}u`} color={signals.ou?.side === "OVER" ? "#2ea043" : "#58a6ff"}>
+                            {signals.ou.modelTotal?.toFixed?.(0) ?? game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
                           </SignalBadge>
-                        : game.pred.ouTotal
+                        : (game.pred._ouPredictedTotal ? game.pred._ouPredictedTotal.toFixed(0) : game.pred.ouTotal)
                       }
                     </div>
                     {game.odds?.ouLine && (
@@ -948,7 +1017,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   }}>
                     <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore.toFixed(1)} — ${homeName} ${game.pred.homeScore.toFixed(1)}`} />
                     <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
-                    <Kv k="O/U Total" v={game.pred.ouTotal} />
+                    <Kv k="O/U Total" v={game.pred._ouPredictedTotal
+                      ? `${game.pred._ouPredictedTotal.toFixed(1)} ML${game.pred._ouEdge ? ` (${game.pred._ouEdge > 0 ? '+' : ''}${game.pred._ouEdge.toFixed(1)} vs mkt)` : ''}`
+                      : game.pred.ouTotal} />
                     <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${homeName} -${game.pred.projectedSpread.toFixed(1)}` : `${awayName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
                     <Kv k="Possessions" v={game.pred.possessions.toFixed(1)} />
                     {game.homeStats && (
