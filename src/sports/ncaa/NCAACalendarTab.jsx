@@ -97,7 +97,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>O/U:</span>
                 <span style={{ fontSize: 12, fontWeight: 700, color: ouColor }}>
-                  {ou.side} {ou.modelTotal?.toFixed?.(0) ?? ""} {ou.side === "OVER" ? "▲" : "▼"}
+                  {ou.side} {ou.marketLine ?? ou.modelTotal?.toFixed?.(0) ?? ""} {ou.side === "OVER" ? "▲" : "▼"}
                 </span>
               </div>
               <span style={{ fontSize: 10, color: C.muted }}>
@@ -738,6 +738,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 edge: ouEdge,
                 units: ouUnits,
                 modelTotal: game.pred._ouPredictedTotal,
+                marketLine: game.odds?.ouLine ?? null,
               };
             } else {
               signals.ou = { ...signals.ou, verdict: "SKIP", label: `O/U edge ${ouEdge.toFixed(1)} < 5` };
@@ -1004,7 +1005,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
                       {signals.ou?.verdict === "GO"
                         ? <SignalBadge label={`${signals.ou.side} ${signals.ou.units}u`} color={signals.ou?.side === "OVER" ? "#2ea043" : "#58a6ff"}>
-                            {signals.ou.modelTotal?.toFixed?.(0) ?? game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
+                            {signals.ou.marketLine ?? signals.ou.modelTotal?.toFixed?.(0) ?? game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
                           </SignalBadge>
                         : (game.pred._ouPredictedTotal ? game.pred._ouPredictedTotal.toFixed(0) : game.pred.ouTotal)
                       }
@@ -1044,13 +1045,23 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                      <span style={{ color: C.dim }}>Win%:</span>
-                      <span style={{ color: C.green, fontWeight: 700 }}>
-                        {(Math.max(game.pred.homeWinPct, 1 - game.pred.homeWinPct) * 100).toFixed(1)}%
-                      </span>
-                      <span style={{ color: C.dim }}>
-                        {game.pred.homeWinPct >= 0.5 ? homeName : awayName}
-                      </span>
+                      <span style={{ color: C.dim }}>O/U:</span>
+                      {signals.ou?.verdict === "GO" ? (
+                        <>
+                          <span style={{ color: signals.ou.side === "OVER" ? C.green : "#58a6ff", fontWeight: 700 }}>
+                            {signals.ou.side} {signals.ou.marketLine ?? ""}
+                          </span>
+                          <span style={{ color: C.dim }}>
+                            ({signals.ou.edge.toFixed(1)}pt edge)
+                          </span>
+                        </>
+                      ) : game.odds?.ouLine ? (
+                        <span style={{ color: C.muted }}>
+                          {game.odds.ouLine} (no edge)
+                        </span>
+                      ) : (
+                        <span style={{ color: C.muted }}>—</span>
+                      )}
                     </div>
                     {signals.betSizing && (
                       <div style={{ display: "flex", alignItems: "center", gap: 4, borderLeft: `1px solid ${C.border}`, paddingLeft: 8 }}>
