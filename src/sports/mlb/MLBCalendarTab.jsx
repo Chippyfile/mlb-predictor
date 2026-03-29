@@ -177,7 +177,12 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         homeStatcast, awayStatcast,
         calibrationFactor,
       });
-      const gameOdds = odds?.games?.find(o => matchMLBOddsToGame(o, g)) || null;
+      const rawOdds = odds?.games?.find(o => matchMLBOddsToGame(o, g)) || null;
+      const gameOdds = rawOdds ? {
+        ...rawOdds,
+        homeSpread: rawOdds.marketSpreadHome ?? null,
+        ouLine: rawOdds.marketTotal ?? null,
+      } : null;
       const homeSPipPerStart = pred.homeSpAvgIP ?? 5.5;
       const awaySPipPerStart = pred.awaySpAvgIP ?? 5.5;
       const [mlResult, mcResult] = await Promise.all([
