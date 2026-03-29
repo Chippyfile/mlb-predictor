@@ -6,7 +6,7 @@ import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, 
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
-import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
+import { mlPredict, mlPredictNBAFull, mlMonteCarlo } from "../../utils/mlApi.js";
 import { nbaAutoSync, computeDaysRest } from "./nbaSync.js";
 import {
   fetchNBAGamesForDate,
@@ -195,34 +195,9 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       let mlResult = null, mcResult = null;
       if (pred) {
         try {
-          mlResult = await mlPredict("nba", {
-            pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
-            home_net_rtg: pred.homeNetRtg, away_net_rtg: pred.awayNetRtg,
-            win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
-            model_ml_home: pred.modelML_home,
-            market_ou_total: gameOdds?.ouLine ?? pred.ouTotal,
-            market_spread_home: gameOdds?.marketSpreadHome ?? 0,
-            home_ppg: hs?.ppg, away_ppg: as_?.ppg,
-            home_opp_ppg: hs?.oppPpg, away_opp_ppg: as_?.oppPpg,
-            home_fgpct: hs?.fgPct, away_fgpct: as_?.fgPct,
-            home_threepct: hs?.threePct, away_threepct: as_?.threePct,
-            home_ftpct: hs?.ftPct, away_ftpct: as_?.ftPct,
-            home_assists: hs?.assists, away_assists: as_?.assists,
-            home_turnovers: hs?.turnovers, away_turnovers: as_?.turnovers,
-            home_tempo: hs?.pace ?? hs?.tempo, away_tempo: as_?.pace ?? as_?.tempo,
-            home_orb_pct: hs?.orbPct, away_orb_pct: as_?.orbPct,
-            home_fta_rate: hs?.ftaRate, away_fta_rate: as_?.ftaRate,
-            home_ato_ratio: hs?.atoRatio, away_ato_ratio: as_?.atoRatio,
-            home_opp_fgpct: hs?.oppFgPct, away_opp_fgpct: as_?.oppFgPct,
-            home_opp_threepct: hs?.oppThreePct, away_opp_threepct: as_?.oppThreePct,
-            home_steals: hs?.steals, away_steals: as_?.steals,
-            home_blocks: hs?.blocks, away_blocks: as_?.blocks,
-            home_wins: hs?.wins, away_wins: as_?.wins,
-            home_losses: hs?.losses, away_losses: as_?.losses,
-            home_form: hs?.formScore ?? 0, away_form: as_?.formScore ?? 0,
-            home_days_rest: homeDaysRest, away_days_rest: awayDaysRest,
-            away_travel_dist: 0,
-          });
+          // v27: Use /predict/nba/full — backend fetches all 55 features server-side
+          // (ESPN summary, Supabase enrichment, referee profiles, rolling PBP, etc.)
+          mlResult = await mlPredictNBAFull(g.gameId, { gameDate: d });
           if (mlResult) console.log(`[NBA ML] ${g.homeAbbr}: margin=${mlResult.ml_margin}, shap=${!!mlResult.shap}, meta=${!!mlResult.model_meta}`);
         } catch (e) { console.warn("[NBA ML] predict failed:", e.message); }
         // MC with ML-adjusted means
