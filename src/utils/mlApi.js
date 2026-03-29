@@ -93,6 +93,41 @@ export async function mlPredictFull(homeTeamId, awayTeamId, { neutralSite = fals
   }
 }
 
+// Hits /predict/nba/full — backend fetches all 55 features server-side
+// (ESPN summary, Supabase enrichment, referee profiles, rolling PBP, etc.)
+// Much more accurate than /predict/nba which requires frontend to send ~30 fields.
+export async function mlPredictNBAFull(gameId, { gameDate = null } = {}) {
+  if (!isAvailable("nba")) {
+    console.warn(`[mlApi] nba circuit breaker open — skipping mlPredictNBAFull`);
+    return null;
+  }
+  try {
+    const res = await fetch(`${ML_API}/predict/nba/full`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ game_id: String(gameId), game_date: gameDate }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!res.ok) {
+      console.error(`[mlApi] /predict/nba/full returned ${res.status}`);
+      markFailed("nba");
+      return null;
+    }
+    const data = await res.json();
+    if (data?.error) {
+      console.error(`[mlApi] /predict/nba/full error:`, data.error);
+      return null;
+    }
+    console.log(`[mlApi] /predict/nba/full OK — margin: ${data.ml_margin?.toFixed(1)}, wp: ${data.ml_win_prob_home?.toFixed(3)}, coverage: ${data.feature_coverage}`);
+    return data;
+  } catch (e) {
+    const isTimeout = e.name === "TimeoutError" || e.message?.includes("timed out");
+    console.error(`[mlApi] /predict/nba/full ${isTimeout ? "timeout" : "exception"}:`, e.message);
+    if (!isTimeout) markFailed("nba");
+    return null;
+  }
+}
+
 export async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000, ouLine = null, gameId = null) {
   if (!isAvailable("monte-carlo")) return null;
   try {
