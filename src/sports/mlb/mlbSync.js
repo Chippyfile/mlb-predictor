@@ -3,6 +3,7 @@
 import { supabaseQuery } from "../../utils/supabase.js";
 import { getMLBGameType, MLB_SEASON_START, fetchOdds } from "../../utils/sharedUtils.js";
 import { calcCLV } from "../../utils/betUtils.js";
+import { mlPredict } from "../../utils/mlApi.js";
 import {
   MLB_TEAMS,
   mlbTeamById,
@@ -138,7 +139,7 @@ async function mlbBuildPredictionRow(game, dateStr, oddsData) {
   const gameOdds = oddsData?.games?.find(o => matchMLBOddsToGame(o, game)) || null;
   const openingFields = extractOpeningOdds(gameOdds);
 
-  return {
+  const row = {
     // ── Existing fields ──
     game_date: dateStr,
     home_team: game.homeAbbr || (home?.abbr || String(game.homeTeamId)).replace(/\d+$/, ""),
@@ -161,6 +162,47 @@ async function mlbBuildPredictionRow(game, dateStr, oddsData) {
     // ── Step 6: Opening market odds ──
     ...openingFields,
   };
+
+  // ═══ ML Override: CatBoost v5 (29 features, MAE 3.41) ═══
+  // Calls /predict/mlb with raw features — backend computes differentials
+  try {
+    const mlResult = await mlPredict("mlb", {
+      pred_home_runs: row.pred_home_runs,
+      pred_away_runs: row.pred_away_runs,
+      win_pct_home: row.win_pct_home,
+      ou_total: row.ou_total,
+      model_ml_home: row.model_ml_home,
+      home_woba: raw.home_woba,
+      away_woba: raw.away_woba,
+      home_fip: raw.home_sp_fip,
+      away_fip: raw.away_sp_fip,
+      home_sp_fip: raw.home_sp_fip,
+      away_sp_fip: raw.away_sp_fip,
+      home_bullpen_era: raw.home_bullpen_era,
+      away_bullpen_era: raw.away_bullpen_era,
+      park_factor: raw.park_factor,
+      temp_f: raw.temp_f ?? 70,
+      wind_mph: raw.wind_mph ?? 5,
+      wind_out_flag: raw.wind_out_flag ?? 0,
+      home_sp_ip: raw.home_sp_ip ?? 5.5,
+      away_sp_ip: raw.away_sp_ip ?? 5.5,
+      home_rest_days: 4,
+      away_rest_days: 4,
+    });
+    if (mlResult && mlResult.ml_win_prob_home != null && !mlResult.error) {
+      row.win_pct_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
+      row.ml_win_prob_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
+      if (mlResult.ml_margin != null) {
+        row.pred_home_runs = parseFloat(((row.pred_home_runs + row.pred_away_runs) / 2 + mlResult.ml_margin / 2).toFixed(2));
+        row.pred_away_runs = parseFloat(((row.pred_home_runs + row.pred_away_runs) / 2 - mlResult.ml_margin / 2).toFixed(2));
+      }
+      console.log(`[MLB ML] ${row.home_team} vs ${row.away_team}: wp=${mlResult.ml_win_prob_home?.toFixed(3)}, margin=${mlResult.ml_margin?.toFixed(1)}`);
+    }
+  } catch (e) {
+    console.warn(`[MLB ML] predict failed for ${row.home_team} vs ${row.away_team}:`, e.message);
+  }
+
+  return row;
 }
 
 // ─────────────────────────────────────────────────────────────
