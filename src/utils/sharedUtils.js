@@ -6,10 +6,10 @@
 // ─────────────────────────────────────────────────────────────
 export const SEASON = new Date().getFullYear();
 const _now = new Date();
-export const STAT_SEASON = (_now.getMonth() < 3) ? SEASON - 1 : SEASON;
-export const FULL_SEASON_THRESHOLD = 100;
 export const MLB_SEASON_START = `${SEASON}-02-01`;
 export const MLB_REG_SEASON_START = `${SEASON}-03-27`;
+export const STAT_SEASON = (new Date() < new Date(MLB_REG_SEASON_START)) ? SEASON - 1 : SEASON;
+export const FULL_SEASON_THRESHOLD = 100;
 
 // ─────────────────────────────────────────────────────────────
 // MLB SEASON-AWARE CONSTANTS (FanGraphs Guts! — mirrors Python SEASON_CONSTANTS)
