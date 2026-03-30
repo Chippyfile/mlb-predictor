@@ -97,7 +97,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>O/U:</span>
                 <span style={{ fontSize: 12, fontWeight: 700, color: ouColor }}>
-                  {ou.side} {ou.marketLine ?? ou.modelTotal?.toFixed?.(0) ?? ""} {ou.side === "OVER" ? "▲" : "▼"}
+                  {ou.side} {ou.modelTotal?.toFixed?.(0) ?? ou.marketLine ?? ""} {ou.side === "OVER" ? "▲" : "▼"}
                 </span>
               </div>
               <span style={{ fontSize: 10, color: C.muted }}>
@@ -153,6 +153,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
       }}>
       {/* Left: unit blocks + ATS pick + O/U */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {/* ATS unit blocks */}
         <div style={{ display: "flex", gap: 3 }}>
           {[1, 2, 3].map(i => (
             <div key={i} style={{
@@ -165,6 +166,24 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
             }}>{i <= sz.units ? "✓" : `${i}u`}</div>
           ))}
         </div>
+        {/* O/U unit blocks (when both signals fire) */}
+        {hasOu && (
+          <>
+            <div style={{ width: 1, height: 18, background: "#30363d" }} />
+            <div style={{ display: "flex", gap: 3 }}>
+              {[1, 2, 3].map(i => (
+                <div key={`ou-${i}`} style={{
+                  width: 20, height: 20, borderRadius: 4,
+                  background: i <= ou.units ? ouColor : "#1a1e24",
+                  border: `1px solid ${i <= ou.units ? ouColor : "#30363d"}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: i <= ou.units ? 12 : 9, fontWeight: 800,
+                  color: i <= ou.units ? "#fff" : "#484f58",
+                }}>{i <= ou.units ? "✓" : `${i}u`}</div>
+              ))}
+            </div>
+          </>
+        )}
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>ATS:</span>
@@ -188,21 +207,40 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
         </div>
       </div>
       
-      {/* Right: unit badge with checkmarks */}
-      <div style={{
-        padding: "3px 10px",
-        borderRadius: 4,
-        background: badgeColor,
-        color: "#fff",
-        fontSize: 11,
-        fontWeight: 800,
-        letterSpacing: 2,
-        display: "flex",
-        alignItems: "center",
-        gap: 4,
-      }}>
-        <span>{checks}</span>
-        <span style={{ fontSize: 9, letterSpacing: 0.5 }}>{sz.units}u</span>
+      {/* Right: unit badges */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div style={{
+          padding: "3px 10px",
+          borderRadius: 4,
+          background: badgeColor,
+          color: "#fff",
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: 2,
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+        }}>
+          <span>{checks}</span>
+          <span style={{ fontSize: 9, letterSpacing: 0.5 }}>ATS</span>
+        </div>
+        {hasOu && (
+          <div style={{
+            padding: "3px 10px",
+            borderRadius: 4,
+            background: ouColor,
+            color: "#fff",
+            fontSize: 11,
+            fontWeight: 800,
+            letterSpacing: 2,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+          }}>
+            <span>{"✓".repeat(ou.units)}</span>
+            <span style={{ fontSize: 9, letterSpacing: 0.5 }}>O/U</span>
+          </div>
+        )}
       </div>
       </div>
     </div>
@@ -1005,7 +1043,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
                       {signals.ou?.verdict === "GO"
                         ? <SignalBadge label={`${signals.ou.side} ${signals.ou.units}u`} color={signals.ou?.side === "OVER" ? "#2ea043" : "#58a6ff"}>
-                            {signals.ou.marketLine ?? signals.ou.modelTotal?.toFixed?.(0) ?? game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
+                            {signals.ou.modelTotal?.toFixed?.(0) ?? game.pred._ouPredictedTotal?.toFixed(0) ?? game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
                           </SignalBadge>
                         : (game.pred._ouPredictedTotal ? game.pred._ouPredictedTotal.toFixed(0) : game.pred.ouTotal)
                       }
@@ -1049,7 +1087,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       {signals.ou?.verdict === "GO" ? (
                         <>
                           <span style={{ color: signals.ou.side === "OVER" ? C.green : "#58a6ff", fontWeight: 700 }}>
-                            {signals.ou.side} {signals.ou.marketLine ?? ""}
+                            {signals.ou.side} {signals.ou.modelTotal?.toFixed?.(0) ?? signals.ou.marketLine ?? ""}
                           </span>
                           <span style={{ color: C.dim }}>
                             ({signals.ou.edge.toFixed(1)}pt edge)

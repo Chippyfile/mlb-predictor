@@ -55,15 +55,75 @@ const formatSpread = (spread) => {
 };
 
 // Bet advantage banner for game cards
-const BetBanner = ({ signals, homeName, awayName }) => {
-  if (!signals?.betSizing) return null;
-  const sz = signals.betSizing;
-  const side = sz.side || signals.ml?.side || "";
-  const edgePct = sz.edge || signals.ml?.edgePct || "0";
-  const badgeColor = sz.units >= 2 ? "#2ea043" : "#d29922";
+const BetBanner = ({ signals, homeName, awayName, odds }) => {
+  const sz = signals?.betSizing;
+  const ou = signals?.ou;
+  const hasOu = ou && (ou.verdict === "GO" || ou.verdict === "LEAN") && ou.side && ou.units;
+  
+  if (!sz && !hasOu) return null;
+
+  // O/U-only banner
+  if (!sz && hasOu) {
+    const ouColor = ou.side === "OVER" ? "#2ea043" : "#58a6ff";
+    return (
+      <div style={{
+        padding: "8px 14px",
+        background: "linear-gradient(135deg, #0a1628, #0e1a2e)",
+        borderBottom: `1px solid ${ouColor}44`,
+        overflowX: "auto",
+        WebkitOverflowScrolling: "touch",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 320 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", gap: 3 }}>
+              {[1, 2, 3].map(i => (
+                <div key={i} style={{
+                  width: 20, height: 20, borderRadius: 4,
+                  background: i <= ou.units ? ouColor : "#1a1e24",
+                  border: `1px solid ${i <= ou.units ? ouColor : "#30363d"}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: i <= ou.units ? 12 : 9, fontWeight: 800,
+                  color: i <= ou.units ? "#fff" : "#484f58",
+                }}>{i <= ou.units ? "✓" : `${i}u`}</div>
+              ))}
+            </div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>O/U:</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: ouColor }}>
+                  {ou.side} {ou.modelTotal?.toFixed?.(1) ?? ""} {ou.side === "OVER" ? "▲" : "▼"}
+                </span>
+              </div>
+              <span style={{ fontSize: 10, color: C.muted }}>
+                {parseFloat(ou.diff).toFixed(1)} runs edge vs market · {ou.units}u
+              </span>
+            </div>
+          </div>
+          <div style={{ padding: "3px 10px", borderRadius: 4, background: ouColor, color: "#fff", fontSize: 11, fontWeight: 800, letterSpacing: 2, display: "flex", alignItems: "center", gap: 4 }}>
+            <span>{"✓".repeat(ou.units)}</span>
+            <span style={{ fontSize: 9, letterSpacing: 0.5 }}>O/U</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ATS/RL banner (with optional O/U)
+  const side = sz.side || signals.spread?.side || "";
+  const badgeColor = sz.units >= 3 ? "#2ea043" : sz.units >= 2 ? "#d29922" : "#8b949e";
   const pickName = side === "HOME" ? homeName : awayName;
   const checks = "✓".repeat(sz.units);
-  const mlLine = sz.marketML > 0 ? `+${sz.marketML}` : sz.marketML;
+  const mktSpread = odds?.homeSpread ?? null;
+  let spreadLabel = "RL";
+  if (mktSpread != null) {
+    if (side === "HOME") {
+      spreadLabel = mktSpread > 0 ? `+${mktSpread}` : `${mktSpread}`;
+    } else {
+      const awaySpread = -mktSpread;
+      spreadLabel = awaySpread > 0 ? `+${awaySpread}` : `${awaySpread}`;
+    }
+  }
+  const ouColor = hasOu ? (ou.side === "OVER" ? "#2ea043" : "#58a6ff") : null;
 
   return (
     <div style={{
@@ -72,54 +132,82 @@ const BetBanner = ({ signals, homeName, awayName }) => {
         ? "linear-gradient(135deg, #0b2012, #0e2818)"
         : "linear-gradient(135deg, #1a1500, #1e1a08)",
       borderBottom: `1px solid ${sz.units >= 2 ? "#2ea04355" : "#d2992244"}`,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      flexWrap: "wrap",
-      gap: 8,
+      overflowX: "auto",
+      WebkitOverflowScrolling: "touch",
     }}>
-      {/* Left: unit blocks + pick */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ display: "flex", gap: 3 }}>
-          {[1, 2, 3].map(i => (
-            <div key={i} style={{
-              width: 20, height: 20, borderRadius: 4,
-              background: i <= sz.units ? badgeColor : "#1a1e24",
-              border: `1px solid ${i <= sz.units ? badgeColor : "#30363d"}`,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: i <= sz.units ? 12 : 9, fontWeight: 800,
-              color: i <= sz.units ? "#fff" : "#484f58",
-            }}>{i <= sz.units ? "✓" : `${i}u`}</div>
-          ))}
-        </div>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>VALUE:</span>
-            <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
-              {pickName} ML {mlLine}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 320 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", gap: 3 }}>
+            {[1, 2, 3].map(i => (
+              <div key={i} style={{
+                width: 20, height: 20, borderRadius: 4,
+                background: i <= sz.units ? badgeColor : "#1a1e24",
+                border: `1px solid ${i <= sz.units ? badgeColor : "#30363d"}`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: i <= sz.units ? 12 : 9, fontWeight: 800,
+                color: i <= sz.units ? "#fff" : "#484f58",
+              }}>{i <= sz.units ? "✓" : `${i}u`}</div>
+            ))}
+          </div>
+          {hasOu && (
+            <>
+              <div style={{ width: 1, height: 18, background: "#30363d" }} />
+              <div style={{ display: "flex", gap: 3 }}>
+                {[1, 2, 3].map(i => (
+                  <div key={`ou-${i}`} style={{
+                    width: 20, height: 20, borderRadius: 4,
+                    background: i <= ou.units ? ouColor : "#1a1e24",
+                    border: `1px solid ${i <= ou.units ? ouColor : "#30363d"}`,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: i <= ou.units ? 12 : 9, fontWeight: 800,
+                    color: i <= ou.units ? "#fff" : "#484f58",
+                  }}>{i <= ou.units ? "✓" : `${i}u`}</div>
+                ))}
+              </div>
+            </>
+          )}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>RL:</span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: badgeColor }}>
+                {pickName} {spreadLabel}
+              </span>
+              {hasOu && (
+                <>
+                  <span style={{ fontSize: 9, color: C.dim }}>·</span>
+                  <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>O/U:</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: ouColor }}>
+                    {ou.side} {ou.units}u
+                  </span>
+                </>
+              )}
+            </div>
+            <span style={{ fontSize: 10, color: C.muted }}>
+              {parseFloat(sz.disagree) % 1 === 0 ? parseInt(sz.disagree) : sz.disagree} runs disagreement · {sz.atsHistorical} RL
+              {hasOu && ` · O/U ${parseFloat(ou.diff).toFixed(1)} runs edge`}
             </span>
           </div>
-          <span style={{ fontSize: 10, color: C.muted }}>
-            +{edgePct}% edge · {sz.winPct}% model vs {(100 - parseFloat(edgePct) - parseFloat(sz.winPct)).toFixed(0)}% market
-          </span>
         </div>
-      </div>
-
-      {/* Right: unit badge with checkmarks */}
-      <div style={{
-        padding: "3px 10px",
-        borderRadius: 4,
-        background: badgeColor,
-        color: "#fff",
-        fontSize: 11,
-        fontWeight: 800,
-        letterSpacing: 2,
-        display: "flex",
-        alignItems: "center",
-        gap: 4,
-      }}>
-        <span>{checks}</span>
-        <span style={{ fontSize: 9, letterSpacing: 0.5 }}>{sz.units}u</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{
+            padding: "3px 10px", borderRadius: 4, background: badgeColor, color: "#fff",
+            fontSize: 11, fontWeight: 800, letterSpacing: 2,
+            display: "flex", alignItems: "center", gap: 4,
+          }}>
+            <span>{checks}</span>
+            <span style={{ fontSize: 9, letterSpacing: 0.5 }}>RL</span>
+          </div>
+          {hasOu && (
+            <div style={{
+              padding: "3px 10px", borderRadius: 4, background: ouColor, color: "#fff",
+              fontSize: 11, fontWeight: 800, letterSpacing: 2,
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              <span>{"✓".repeat(ou.units)}</span>
+              <span style={{ fontSize: 9, letterSpacing: 0.5 }}>O/U</span>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -380,10 +468,12 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           }
 
           const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "mlb" });
-          const isBetGame = !!signals.betSizing;
+          const isBetGame = !!signals.betSizing || (signals.ou?.verdict === "GO" && !!signals.ou?.units);
           const bannerInfo = getBannerInfo(game.pred, game.odds, game.homeStarter && game.awayStarter);
 
-          const borderColor = isBetGame ? "#3fb950" : (bannerInfo.color === "green" ? "#f97316" : C.border);
+          const borderColor = isBetGame
+            ? (signals.betSizing ? "#3fb950" : "#58a6ff")
+            : (bannerInfo.color === "green" ? "#f97316" : C.border);
           const borderWidth = isBetGame ? "2px" : "1px";
           const mlbDecGate = DECISIVENESS_GATE?.mlb ?? 10;
 
@@ -402,7 +492,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
             >
               {/* Bet advantage banner */}
               {isBetGame && (
-                <BetBanner signals={signals} homeName={homeName} awayName={awayName} />
+                <BetBanner signals={signals} homeName={homeName} awayName={awayName} odds={game.odds} />
               )}
 
               {/* Header - Game time and edge label */}
@@ -579,9 +669,9 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                   }}>
 
                     <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
-                      {(signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") && signals.betSizing
-                        ? <SignalBadge label={signals.ou?.side === "OVER" ? "OVER" : "UNDER"} color={signals.ou?.side === "OVER" ? "#2ea043" : "#58a6ff"}>
-                            {game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
+                      {(signals.ou?.verdict === "GO") && signals.ou?.units
+                        ? <SignalBadge label={`${signals.ou.side} ${signals.ou.units}u`} color={signals.ou?.side === "OVER" ? "#2ea043" : "#58a6ff"}>
+                            {signals.ou.modelTotal?.toFixed?.(1) ?? game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
                           </SignalBadge>
                         : game.pred.ouTotal
                       }
@@ -599,10 +689,15 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                   padding: "5px 18px",
                   background: "rgba(0,0,0,0.25)",
                   borderTop: `1px solid ${borderColor}22`,
+                  overflowX: "auto",
+                  WebkitOverflowScrolling: "touch",
+                }}>
+                <div style={{
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
                   fontSize: 10,
+                  minWidth: 320,
                 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ color: C.dim }}>Confidence:</span>
@@ -613,15 +708,39 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                       {game.pred.confidence} ({game.pred.confScore})
                     </span>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ color: C.dim }}>Win%:</span>
-                    <span style={{ color: C.green, fontWeight: 700 }}>
-                      {(Math.max(game.pred.homeWinPct, 1 - game.pred.homeWinPct) * 100).toFixed(1)}%
-                    </span>
-                    <span style={{ color: C.dim }}>
-                      {game.pred.homeWinPct >= 0.5 ? homeName : awayName}
-                    </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ color: C.dim }}>O/U:</span>
+                      {signals.ou?.verdict === "GO" ? (
+                        <>
+                          <span style={{ color: signals.ou.side === "OVER" ? C.green : "#58a6ff", fontWeight: 700 }}>
+                            {signals.ou.side} {signals.ou.modelTotal?.toFixed?.(1) ?? ""}
+                          </span>
+                          <span style={{ color: C.dim }}>
+                            ({parseFloat(signals.ou.diff).toFixed(1)} edge)
+                          </span>
+                        </>
+                      ) : game.odds?.ouLine ? (
+                        <span style={{ color: C.muted }}>
+                          {game.odds.ouLine} (no edge)
+                        </span>
+                      ) : (
+                        <span style={{ color: C.muted }}>—</span>
+                      )}
+                    </div>
+                    {signals.betSizing && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, borderLeft: `1px solid ${C.border}`, paddingLeft: 8 }}>
+                        <span style={{ color: C.dim }}>RL:</span>
+                        <span style={{ 
+                          color: signals.betSizing.units >= 3 ? C.green : signals.betSizing.units >= 2 ? C.yellow : C.muted, 
+                          fontWeight: 700 
+                        }}>
+                          {signals.betSizing.atsHistorical}
+                        </span>
+                      </div>
+                    )}
                   </div>
+                </div>
                 </div>
               )}
 

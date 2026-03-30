@@ -683,6 +683,45 @@ export function BetSignalsPanel({ signals, pred, odds, sport, homeName, awayName
         );
       })()}
 
+      {/* ── O/U BET SIZING ──────────────────────────────── */}
+      {signals.ou?.units && signals.ou?.verdict === "GO" && (() => {
+        const ouSig = signals.ou;
+        const ouSzColor = ouSig.side === "OVER" ? "#2ea043" : "#58a6ff";
+        return (
+          <div style={{
+            padding: "10px 12px",
+            background: ouSig.side === "OVER" ? "linear-gradient(135deg, #0a1a0d, #0d1a12)" : "linear-gradient(135deg, #0a0d1a, #0d121a)",
+            border: `1px solid ${ouSzColor}44`,
+            borderRadius: 7,
+            marginTop: 2,
+            marginBottom: 6,
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 10, color: C.dim, letterSpacing: 2 }}>📊 O/U BET SIZE</span>
+              <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: 1, color: ouSzColor }}>
+                {ouSig.units >= 3 ? "MAX (3u)" : ouSig.units >= 2 ? "STRONG (2u)" : "BET (1u)"}
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 3, marginBottom: 8 }}>
+              {[1, 2, 3].map(i => (
+                <div key={i} style={{
+                  width: 18, height: 18, borderRadius: 4,
+                  background: i <= ouSig.units ? ouSzColor : "#1a1e24",
+                  border: `1px solid ${i <= ouSig.units ? ouSzColor : C.border}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 9, fontWeight: 800, color: i <= ouSig.units ? "#0d1117" : C.dim,
+                }}>{i}</div>
+              ))}
+            </div>
+            <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.6 }}>
+              <span style={{ color: ouSzColor, fontWeight: 700 }}>{ouSig.side}</span> — Model: <span style={{ color: ouSzColor, fontWeight: 700 }}>{ouSig.modelTotal?.toFixed?.(1) ?? "?"}</span> vs Market: {ouSig.marketLine ?? "?"}
+              <br />
+              <span style={{ color: ouSzColor, fontWeight: 700 }}>{parseFloat(ouSig.diff).toFixed(1)} pts</span> edge
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Edge Analysis */}
       {odds?.homeML && odds?.awayML && (() => {
         const market = trueImplied(odds.homeML, odds.awayML);

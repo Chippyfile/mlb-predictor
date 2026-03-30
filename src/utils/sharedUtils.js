@@ -154,11 +154,17 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     const diff    = projTotal - mktTotal;
     const diffPct = Math.abs(diff) / mktTotal;
     if (diffPct >= OU_EDGE_THRESHOLD) {
+      const absDiff = Math.abs(diff);
+      const ouUnits = diffPct >= 0.12 ? 3 : diffPct >= 0.08 ? 2 : 1;
       ouSignal = {
         verdict: diffPct >= 0.08 ? "GO" : "LEAN",
         side:    diff > 0 ? "OVER" : "UNDER",
-        diff:    Math.abs(diff).toFixed(1),
-        reason:  `Model projects ${projTotal.toFixed(1)} vs market ${mktTotal} — ${Math.abs(diff).toFixed(1)} pt gap`,
+        diff:    absDiff.toFixed(1),
+        edge:    absDiff,
+        units:   ouUnits,
+        modelTotal: projTotal,
+        marketLine: mktTotal,
+        reason:  `Model projects ${projTotal.toFixed(1)} vs market ${mktTotal} — ${absDiff.toFixed(1)} pt gap`,
       };
     } else {
       ouSignal = {
