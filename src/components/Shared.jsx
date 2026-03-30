@@ -360,7 +360,7 @@ export function HistoryTab({ table, refreshKey }) {
   const load = useCallback(async () => {
     setLoading(true);
     const histCols = isMLB
-      ? "id,game_date,home_team,away_team,spread_home,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,game_type"
+      ? "id,game_date,home_team,away_team,spread_home,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs"
       : "id,game_date,home_team,away_team,home_team_name,away_team_name,spread_home,ou_total,win_pct_home,ml_win_prob_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
@@ -437,7 +437,10 @@ export function HistoryTab({ table, refreshKey }) {
                   return (
                     <tr key={r.id} style={{ borderBottom: `1px solid #0d1117`, background: bg }}>
                       <td style={{ padding: "7px 8px", fontWeight: 700, whiteSpace: "nowrap" }}>{awayAbbr} @ {homeAbbr} {r.game_type === "S" && <span style={{ fontSize: 8, color: C.yellow, marginLeft: 4 }}>ST</span>}</td>
-                      <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.spread_home != null ? <span style={{ color: r.spread_home > 0 ? "#3fb950" : "#58a6ff", fontWeight: 600 }}>{r.spread_home > 0 ? "+" : ""}{parseFloat(r.spread_home).toFixed(1)}</span> : <span style={{ color: C.dim }}>—</span>}</td>
+                      <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{(() => {
+                        const margin = r.spread_home ?? (r.pred_home_runs != null && r.pred_away_runs != null ? parseFloat((r.pred_home_runs - r.pred_away_runs).toFixed(1)) : null);
+                        return margin != null ? <span style={{ color: margin > 0 ? "#3fb950" : "#58a6ff", fontWeight: 600 }}>{margin > 0 ? "+" : ""}{parseFloat(margin).toFixed(1)}</span> : <span style={{ color: C.dim }}>—</span>;
+                      })()}</td>
                       <td style={{ padding: "7px 8px", color: C.yellow }}>{r.ou_total}</td>
                       <td style={{ padding: "7px 8px", color: C.blue }}>{r.win_pct_home != null ? `${Math.round(r.win_pct_home * 100)}%` : "—"}</td>
                       <td style={{ padding: "7px 8px" }}><span style={{ color: confColor(r.confidence), fontWeight: 700, fontSize: 10 }}>{r.confidence}</span></td>
