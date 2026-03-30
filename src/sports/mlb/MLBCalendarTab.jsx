@@ -293,15 +293,15 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           home_sp_ip: homeSPipPerStart,
           away_sp_ip: awaySPipPerStart,
           // Market data — was missing, causing market_spread/has_market/spread_vs_market = 0
-          market_spread_home: gameOdds?.homeSpread ?? null,
-          market_ou_total: gameOdds?.ouLine ?? null,
-          home_moneyline: gameOdds?.homeML ?? null,
-          away_moneyline: gameOdds?.awayML ?? null,
+          market_spread_home: gameOdds?.homeSpread ?? 0,
+          market_ou_total: gameOdds?.ouLine ?? 0,
+          home_moneyline: gameOdds?.homeML ?? 0,
+          away_moneyline: gameOdds?.awayML ?? 0,
           // K-BB data — was missing, causing k_bb_diff = 0
-          home_k9: homeStarter?.k9 ?? null,
-          home_bb9: homeStarter?.bb9 ?? null,
-          away_k9: awayStarter?.k9 ?? null,
-          away_bb9: awayStarter?.bb9 ?? null,
+          home_k9: homeStarter?.k9 ?? 0,
+          home_bb9: homeStarter?.bb9 ?? 0,
+          away_k9: awayStarter?.k9 ?? 0,
+          away_bb9: awayStarter?.bb9 ?? 0,
           home_rest_days: (() => {
             if (!homeForm?.lastGameDate) return 4;
             const daysSince = Math.floor((Date.now() - new Date(homeForm.lastGameDate).getTime()) / 86400000);
