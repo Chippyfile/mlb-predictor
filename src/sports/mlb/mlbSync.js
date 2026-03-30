@@ -527,7 +527,15 @@ export async function mlbAutoSync(onProgress) {
       if (row) rows.push(row);
     }
     if (rows.length) {
-      await supabaseQuery("/mlb_predictions", "POST", rows);
+      // Normalize keys across all rows (Supabase batch POST requires identical keys)
+      const allKeys = new Set();
+      rows.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
+      const normalizedRows = rows.map(r => {
+        const normalized = {};
+        for (const k of allKeys) normalized[k] = r[k] !== undefined ? r[k] : null;
+        return normalized;
+      });
+      await supabaseQuery("/mlb_predictions", "POST", normalizedRows);
       newPred += rows.length;
       const ns = await supabaseQuery(
         `/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`
