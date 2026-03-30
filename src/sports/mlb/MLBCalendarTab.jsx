@@ -16,8 +16,8 @@ import {
 } from "./mlb.js";
 import { mlbAutoSync } from "./mlbSync.js";
 
-// ML moneyline cap
-const ML_CAP = 4000;
+// ML moneyline cap — MLB lines rarely exceed ±500 even in extreme mismatches
+const ML_CAP = 500;
 
 // Unit badge for spread/ML/OU cells
 const SignalBadge = ({ label, color, children }) => {
@@ -305,24 +305,31 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         }),
         mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
       ]);
-      // Safety clamp: cap heuristic moneylines/win probs when ML API unavailable
+      // Safety clamp: MLB win probs should be [0.25, 0.75] — baseball has high parity
+      // Even worst-vs-best matchups rarely exceed 70% pre-game probability
       if (pred) {
-        pred.homeWinPct = Math.max(0.05, Math.min(0.95, pred.homeWinPct ?? 0.5));
+        pred.homeWinPct = Math.max(0.25, Math.min(0.75, pred.homeWinPct ?? 0.5));
         pred.awayWinPct = 1 - pred.homeWinPct;
-        if (Math.abs(pred.modelML_home) > ML_CAP) {
-          const VIG = 0.0225;
-          const hp = pred.homeWinPct + VIG, ap = pred.awayWinPct + VIG;
-          pred.modelML_home = pred.homeWinPct >= 0.5
-            ? -Math.min(ML_CAP, Math.round((hp / (1 - hp)) * 100))
-            : +Math.min(ML_CAP, Math.round(((1 - hp) / hp) * 100));
-          pred.modelML_away = pred.homeWinPct < 0.5
-            ? -Math.min(ML_CAP, Math.round((ap / (1 - ap)) * 100))
-            : +Math.min(ML_CAP, Math.round(((1 - ap) / ap) * 100));
-        }
+        const VIG = 0.0225;
+        const hp = pred.homeWinPct + VIG, ap = pred.awayWinPct + VIG;
+        pred.modelML_home = pred.homeWinPct >= 0.5
+          ? -Math.min(ML_CAP, Math.round((hp / (1 - hp)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - hp) / hp) * 100));
+        pred.modelML_away = pred.homeWinPct < 0.5
+          ? -Math.min(ML_CAP, Math.round((ap / (1 - ap)) * 100))
+          : +Math.min(ML_CAP, Math.round(((1 - ap) / ap) * 100));
       }
       // Recalculate modelML from ML win probability with vig for display consistency
       const finalPred = pred && mlResult ? (() => {
-        const mlWinHome = mlResult.ml_win_prob_home;
+        let mlWinHome = mlResult.ml_win_prob_home;
+        // FIX: Isotonic calibrator returns 0.98/0.02 for most games (broken).
+        // When probability is extreme but margin is small, derive from margin instead.
+        // MLB σ ≈ 4.0 runs (typical game standard deviation).
+        if ((mlWinHome > 0.85 || mlWinHome < 0.15) && Math.abs(mlResult.ml_margin) < 3) {
+          const mlbSigma = 4.0;
+          mlWinHome = 1 / (1 + Math.pow(10, -mlResult.ml_margin / mlbSigma));
+          mlWinHome = Math.max(0.25, Math.min(0.75, mlWinHome));
+        }
         const VIG = 0.0225;
         const hProb = mlWinHome + VIG;
         const aProb = (1 - mlWinHome) + VIG;
