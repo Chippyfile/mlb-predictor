@@ -769,7 +769,9 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
 
               {/* Expanded view */}
               {expanded === game.gamePk && (
-                <div style={{
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
                   borderTop: `1px solid ${borderColor}`,
                   padding: "14px 18px",
                   background: "rgba(0,0,0,0.3)"

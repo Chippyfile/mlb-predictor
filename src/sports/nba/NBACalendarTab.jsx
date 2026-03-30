@@ -229,6 +229,51 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [oddsInfo, setOddsInfo] = useState(null);
+  const [refreshingGame, setRefreshingGame] = useState(null);
+
+  // Per-game refresh: re-calls ML API with latest data
+  const refreshGame = useCallback(async (game) => {
+    setRefreshingGame(game.gameId);
+    try {
+      const mlResult = await mlPredictNBAFull(game.gameId, { gameDate: dateStr });
+      if (!mlResult || mlResult.error) { setRefreshingGame(null); return; }
+      setGames(prev => prev.map(g => {
+        if (g.gameId !== game.gameId) return g;
+        const pred = g.pred ? { ...g.pred } : {};
+        const mlMargin = mlResult.ml_margin;
+        const heuristicMargin = pred.projectedSpread || 0;
+        const marginShift = (mlMargin - heuristicMargin) / 2;
+        pred.homeScore = parseFloat((pred._heuristicHomeScore || pred.homeScore || 112) + marginShift).toFixed(1);
+        pred.awayScore = parseFloat((pred._heuristicAwayScore || pred.awayScore || 112) - marginShift).toFixed(1);
+        pred.projectedSpread = parseFloat(mlMargin.toFixed(1));
+        pred.homeWinPct = Math.max(0.05, Math.min(0.95, mlResult.ml_win_prob_home));
+        pred.awayWinPct = 1 - pred.homeWinPct;
+        pred.mlEnhanced = true;
+        // O/U from ML model
+        if (mlResult.ou_predicted_total) {
+          pred.ouTotal = mlResult.ou_predicted_total;
+          pred._ouPredictedTotal = mlResult.ou_predicted_total;
+          pred._ouEdge = mlResult.ou_edge;
+          pred._ouPick = mlResult.ou_pick;
+        }
+        // Recalc moneylines
+        const VIG = 0.0225;
+        const hp = pred.homeWinPct + VIG, ap = pred.awayWinPct + VIG;
+        pred.modelML_home = pred.homeWinPct >= 0.5
+          ? -Math.min(4000, Math.round((hp / (1 - hp)) * 100))
+          : +Math.min(4000, Math.round(((1 - hp) / hp) * 100));
+        pred.modelML_away = pred.homeWinPct < 0.5
+          ? -Math.min(4000, Math.round((ap / (1 - ap)) * 100))
+          : +Math.min(4000, Math.round(((1 - ap) / ap) * 100));
+        return {
+          ...g, pred,
+          mlShap: mlResult.shap ?? g.mlShap,
+          mlMeta: mlResult.model_meta ?? g.mlMeta,
+        };
+      }));
+    } catch (e) { console.warn("NBA refreshGame error:", e); }
+    setRefreshingGame(null);
+  }, [dateStr]);
 
   const load = useCallback(async (d) => {
     setLoading(true); setGames([]);
@@ -551,6 +596,15 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}–{game.homeScore}</span>}
                   {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
+                  {game.status !== "Final" && game.status !== "Live" && (
+                    <span
+                      onClick={(e) => { e.stopPropagation(); refreshGame(game); }}
+                      style={{ cursor: "pointer", fontSize: 11, opacity: refreshingGame === game.gameId ? 0.5 : 1, padding: "2px 6px", borderRadius: 4, background: "rgba(88,166,255,0.1)", color: "#58a6ff" }}
+                      title="Refresh prediction (re-fetch latest data)"
+                    >
+                      {refreshingGame === game.gameId ? "⏳" : "🔄"}
+                    </span>
+                  )}
                   <span style={{ color: C.dim, fontSize: 12 }}>
                     {expanded === game.gameId ? "▲" : "▼"}
                   </span>
@@ -775,7 +829,9 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
 
               {/* Expanded view */}
               {expanded === game.gameId && (
-                <div style={{
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
                   borderTop: `1px solid ${borderColor}`,
                   padding: "14px 18px",
                   background: "rgba(0,0,0,0.3)"
