@@ -226,6 +226,22 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
     setLoading(true); setGames([]);
     const [raw, odds] = await Promise.all([fetchMLBScheduleForDate(d), fetchOdds("baseball_mlb")]);
     setOddsData(odds);
+
+    // ── Fetch stored predictions from Supabase for this date ──
+    // Final/Live games can't call ML API (stale data), so load pre-game predictions.
+    let storedPredMap = new Map();
+    try {
+      const storedPreds = await supabaseQuery(
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ou_total,pred_home_runs,pred_away_runs,confidence,market_spread_home,market_ou_total,opening_home_ml,opening_away_ml,ml_win_prob_home`
+      );
+      if (Array.isArray(storedPreds)) {
+        for (const sp of storedPreds) {
+          const key = sp.game_pk ? String(sp.game_pk) : `${sp.home_team}|${sp.away_team}`;
+          storedPredMap.set(key, sp);
+        }
+      }
+    } catch (e) { console.warn("Failed to load stored MLB predictions:", e); }
+
     setGames(raw.map(g => ({ ...g, pred: null, loading: true })));
     const enriched = await Promise.all(raw.map(async (g) => {
       const homeStatId = resolveStatTeamId(g.homeTeamId, g.homeAbbr);
@@ -271,50 +287,81 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         ...rawOdds,
         homeSpread: rawOdds.marketSpreadHome ?? null,
         ouLine: rawOdds.marketTotal ?? null,
-      } : null;
+      } : (() => {
+        // Fallback: use stored market data from Supabase for Final/Live games
+        const stored = storedPredMap.get(String(g.gamePk));
+        if (stored?.market_spread_home != null) {
+          return {
+            homeSpread: stored.market_spread_home,
+            awaySpread: -stored.market_spread_home,
+            homeML: stored.opening_home_ml ?? null,
+            awayML: stored.opening_away_ml ?? null,
+            ouLine: stored.market_ou_total ?? null,
+            source: "stored",
+          };
+        }
+        return null;
+      })();
       const homeSPipPerStart = pred.homeSpAvgIP ?? 5.5;
       const awaySPipPerStart = pred.awaySpAvgIP ?? 5.5;
-      const [mlResult, mcResult] = await Promise.all([
-        mlPredict("mlb", {
-          pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
-          win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
-          model_ml_home: pred.modelML_home,
-          home_woba: pred.homeWOBA, away_woba: pred.awayWOBA,
-          home_fip: pred.hFIP, away_fip: pred.aFIP,
-          home_sp_fip: pred.hFIP, away_sp_fip: pred.aFIP,
-          home_bullpen_era: homeBullpen?.era || 4.10,
-          away_bullpen_era: awayBullpen?.era || 4.10,
-          park_factor: pred.parkFactor,
-          temp_f: parkWeather?.tempF ?? 70,
-          wind_mph: parkWeather?.windMph ?? 5,
-          wind_out_flag: parkWeather
-            ? ((parkWeather.windDir >= 145 && parkWeather.windDir <= 255) ? 1 : 0)
-            : 0,
-          home_sp_ip: homeSPipPerStart,
-          away_sp_ip: awaySPipPerStart,
-          // Market data — was missing, causing market_spread/has_market/spread_vs_market = 0
-          market_spread_home: gameOdds?.homeSpread ?? 0,
-          market_ou_total: gameOdds?.ouLine ?? 0,
-          home_moneyline: gameOdds?.homeML ?? 0,
-          away_moneyline: gameOdds?.awayML ?? 0,
-          // K-BB data — was missing, causing k_bb_diff = 0
-          home_k9: homeStarter?.k9 ?? 0,
-          home_bb9: homeStarter?.bb9 ?? 0,
-          away_k9: awayStarter?.k9 ?? 0,
-          away_bb9: awayStarter?.bb9 ?? 0,
-          home_rest_days: (() => {
-            if (!homeForm?.lastGameDate) return 4;
-            const daysSince = Math.floor((Date.now() - new Date(homeForm.lastGameDate).getTime()) / 86400000);
-            return Math.max(0, Math.min(7, daysSince));
-          })(),
-          away_rest_days: (() => {
-            if (!awayForm?.lastGameDate) return 4;
-            const daysSince = Math.floor((Date.now() - new Date(awayForm.lastGameDate).getTime()) / 86400000);
-            return Math.max(0, Math.min(7, daysSince));
-          })(),
-        }),
-        mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
-      ]);
+      const isPreGame = g.status !== "Final" && g.status !== "Live";
+
+      let mlResult = null, mcResult = null;
+      if (isPreGame) {
+        [mlResult, mcResult] = await Promise.all([
+          mlPredict("mlb", {
+            pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
+            win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
+            model_ml_home: pred.modelML_home,
+            home_woba: pred.homeWOBA, away_woba: pred.awayWOBA,
+            home_fip: pred.hFIP, away_fip: pred.aFIP,
+            home_sp_fip: pred.hFIP, away_sp_fip: pred.aFIP,
+            home_bullpen_era: homeBullpen?.era || 4.10,
+            away_bullpen_era: awayBullpen?.era || 4.10,
+            park_factor: pred.parkFactor,
+            temp_f: parkWeather?.tempF ?? 70,
+            wind_mph: parkWeather?.windMph ?? 5,
+            wind_out_flag: parkWeather
+              ? ((parkWeather.windDir >= 145 && parkWeather.windDir <= 255) ? 1 : 0)
+              : 0,
+            home_sp_ip: homeSPipPerStart,
+            away_sp_ip: awaySPipPerStart,
+            // Market data
+            market_spread_home: gameOdds?.homeSpread ?? 0,
+            market_ou_total: gameOdds?.ouLine ?? 0,
+            home_moneyline: gameOdds?.homeML ?? 0,
+            away_moneyline: gameOdds?.awayML ?? 0,
+            // K-BB data
+            home_k9: homeStarter?.k9 ?? 0,
+            home_bb9: homeStarter?.bb9 ?? 0,
+            away_k9: awayStarter?.k9 ?? 0,
+            away_bb9: awayStarter?.bb9 ?? 0,
+            home_rest_days: (() => {
+              if (!homeForm?.lastGameDate) return 4;
+              const daysSince = Math.floor((Date.now() - new Date(homeForm.lastGameDate).getTime()) / 86400000);
+              return Math.max(0, Math.min(7, daysSince));
+            })(),
+            away_rest_days: (() => {
+              if (!awayForm?.lastGameDate) return 4;
+              const daysSince = Math.floor((Date.now() - new Date(awayForm.lastGameDate).getTime()) / 86400000);
+              return Math.max(0, Math.min(7, daysSince));
+            })(),
+          }),
+          mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
+        ]);
+      } else {
+        // Final/Live: reconstruct mlResult from stored Supabase prediction
+        const stored = storedPredMap.get(String(g.gamePk));
+        if (stored && stored.ml_win_prob_home != null) {
+          mlResult = {
+            ml_win_prob_home: stored.ml_win_prob_home,
+            ml_win_prob_away: 1 - stored.ml_win_prob_home,
+            ml_margin: stored.pred_home_runs && stored.pred_away_runs
+              ? stored.pred_home_runs - stored.pred_away_runs : 0,
+            _fromSupabase: true,
+          };
+        }
+      }
       // Safety clamp: MLB win probs should be [0.25, 0.75] — baseball has high parity
       // Even worst-vs-best matchups rarely exceed 70% pre-game probability
       if (pred) {
