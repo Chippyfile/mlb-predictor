@@ -42,10 +42,11 @@ const SignalBadge = ({ label, color, children }) => {
   );
 };
 
-// Format moneyline for display
+// Format moneyline for display — cap at ±ML_CAP to prevent absurd heuristic values
 const formatML = (ml) => {
   if (!ml) return "-";
-  return ml > 0 ? `+${ml}` : ml.toString();
+  const capped = Math.sign(ml) * Math.min(ML_CAP, Math.abs(ml));
+  return capped > 0 ? `+${capped}` : capped.toString();
 };
 
 // Format spread for display (positive = underdog, negative = favorite)
@@ -304,6 +305,21 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         }),
         mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
       ]);
+      // Safety clamp: cap heuristic moneylines/win probs when ML API unavailable
+      if (pred) {
+        pred.homeWinPct = Math.max(0.05, Math.min(0.95, pred.homeWinPct ?? 0.5));
+        pred.awayWinPct = 1 - pred.homeWinPct;
+        if (Math.abs(pred.modelML_home) > ML_CAP) {
+          const VIG = 0.0225;
+          const hp = pred.homeWinPct + VIG, ap = pred.awayWinPct + VIG;
+          pred.modelML_home = pred.homeWinPct >= 0.5
+            ? -Math.min(ML_CAP, Math.round((hp / (1 - hp)) * 100))
+            : +Math.min(ML_CAP, Math.round(((1 - hp) / hp) * 100));
+          pred.modelML_away = pred.homeWinPct < 0.5
+            ? -Math.min(ML_CAP, Math.round((ap / (1 - ap)) * 100))
+            : +Math.min(ML_CAP, Math.round(((1 - ap) / ap) * 100));
+        }
+      }
       // Recalculate modelML from ML win probability with vig for display consistency
       const finalPred = pred && mlResult ? (() => {
         const mlWinHome = mlResult.ml_win_prob_home;
