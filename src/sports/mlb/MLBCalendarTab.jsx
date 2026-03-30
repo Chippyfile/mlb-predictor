@@ -6,6 +6,7 @@ import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
 import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
+import { supabaseQuery } from "../../utils/supabase.js";
 import {
   mlbTeamById, resolveStatTeamId,
   fetchMLBScheduleForDate, matchMLBOddsToGame,
