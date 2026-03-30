@@ -153,18 +153,34 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
   if (mktTotal) {
     const diff    = projTotal - mktTotal;
     const diffPct = Math.abs(diff) / mktTotal;
-    if (diffPct >= OU_EDGE_THRESHOLD) {
-      const absDiff = Math.abs(diff);
-      const ouUnits = diffPct >= 0.12 ? 3 : diffPct >= 0.08 ? 2 : 1;
+    const absDiff = Math.abs(diff);
+
+    // Sport-specific O/U thresholds:
+    // MLB totals ~8-10: percentage thresholds are too aggressive, use absolute runs
+    // NCAA/NBA totals ~150-230: percentage thresholds work well
+    let ouEntry, ouGo, ouUnits;
+    if (sport === "mlb") {
+      // MLB: 0.5 run entry, 1.0 GO, unit sizing by absolute runs
+      ouEntry = absDiff >= 0.5;
+      ouGo    = absDiff >= 1.0;
+      ouUnits = absDiff >= 2.0 ? 3 : absDiff >= 1.5 ? 2 : 1;
+    } else {
+      // NCAA/NBA: percentage-based (4% entry, 8% GO, 12% 3u)
+      ouEntry = diffPct >= OU_EDGE_THRESHOLD;
+      ouGo    = diffPct >= 0.08;
+      ouUnits = diffPct >= 0.12 ? 3 : diffPct >= 0.08 ? 2 : 1;
+    }
+
+    if (ouEntry) {
       ouSignal = {
-        verdict: diffPct >= 0.08 ? "GO" : "LEAN",
+        verdict: ouGo ? "GO" : "LEAN",
         side:    diff > 0 ? "OVER" : "UNDER",
         diff:    absDiff.toFixed(1),
         edge:    absDiff,
         units:   ouUnits,
         modelTotal: projTotal,
         marketLine: mktTotal,
-        reason:  `Model projects ${projTotal.toFixed(1)} vs market ${mktTotal} — ${absDiff.toFixed(1)} pt gap`,
+        reason:  `Model projects ${projTotal.toFixed(1)} vs market ${mktTotal} — ${absDiff.toFixed(1)} ${sport === "mlb" ? "run" : "pt"} gap`,
       };
     } else {
       ouSignal = {

@@ -333,10 +333,13 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           homeWinPct: blendedWinHome,
           awayWinPct: blendedWinAway,
           projectedSpread: parseFloat(mlMargin.toFixed(1)),
-          ouTotal: pred.ouTotal,
+          ouTotal: mlResult.ou_predicted_total ?? pred.ouTotal,
           modelML_home: newModelML_home,
           modelML_away: newModelML_away,
           mlEnhanced: true,
+          _ouPredictedTotal: mlResult.ou_predicted_total ?? null,
+          _ouEdge: mlResult.ou_edge ?? null,
+          _ouPick: mlResult.ou_pick ?? null,
           _heuristicHomeScore: pred.homeScore,
           _heuristicAwayScore: pred.awayScore,
           _heuristicSpread: pred.projectedSpread,
@@ -461,6 +464,28 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           }
 
           const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" });
+
+          // v27: Override O/U signal with ML O/U model when available
+          if (signals.ou && game.pred?._ouPick) {
+            const ouEdge = Math.abs(game.pred._ouEdge || 0);
+            const ouSide = game.pred._ouPick;
+            if (ouEdge >= 4) {
+              const ouUnits = ouEdge >= 10 ? 3 : ouEdge >= 7 ? 2 : 1;
+              signals.ou = {
+                ...signals.ou,
+                verdict: "GO",
+                side: ouSide,
+                label: `${ouSide} ${ouEdge.toFixed(1)}pts edge · ${ouUnits}u`,
+                edge: ouEdge,
+                units: ouUnits,
+                modelTotal: game.pred._ouPredictedTotal,
+                marketLine: game.odds?.ouLine ?? null,
+              };
+            } else {
+              signals.ou = { ...signals.ou, verdict: "SKIP", label: `O/U edge ${ouEdge.toFixed(1)} < 4` };
+            }
+          }
+
           const isBetGame = !!signals.betSizing || (signals.ou?.verdict === "GO" && !!signals.ou?.units);
           const bannerInfo = getBannerInfo(game.pred, game.odds);
 
@@ -764,7 +789,9 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore.toFixed(0)} — ${homeName} ${game.pred.homeScore.toFixed(0)}`} />
                     <Kv k="Win %" v={`${homeName} ${(game.pred.homeWinPct*100).toFixed(1)}% / ${awayName} ${((game.pred.awayWinPct ?? (1-game.pred.homeWinPct))*100).toFixed(1)}%`} />
                     <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${homeName} -${game.pred.projectedSpread.toFixed(1)}` : `${awayName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
-                    <Kv k="O/U Total" v={game.pred.ouTotal} />
+                    <Kv k="O/U Total" v={game.pred._ouPredictedTotal
+                      ? `${game.pred._ouPredictedTotal.toFixed(1)} ML${game.pred._ouEdge ? ` (${game.pred._ouEdge > 0 ? '+' : ''}${game.pred._ouEdge.toFixed(1)} vs mkt)` : ''}`
+                      : game.pred.ouTotal} />
                     <Kv k="Possessions" v={game.pred.possessions} />
                     <Kv k={`${homeName} Net Rtg`} v={game.pred.homeNetRtg} />
                     <Kv k={`${awayName} Net Rtg`} v={game.pred.awayNetRtg} />
