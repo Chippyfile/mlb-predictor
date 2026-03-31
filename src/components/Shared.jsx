@@ -360,7 +360,7 @@ export function HistoryTab({ table, refreshKey }) {
   const load = useCallback(async () => {
     setLoading(true);
     const histCols = isMLB
-      ? "id,game_date,home_team,away_team,spread_home,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs"
+      ? "id,game_date,home_team,away_team,spread_home,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs"
       : "id,game_date,home_team,away_team,home_team_name,away_team_name,spread_home,ou_total,win_pct_home,ml_win_prob_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
@@ -450,14 +450,19 @@ export function HistoryTab({ table, refreshKey }) {
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
                         if (!hasMarketOU || !r.result_entered) return "—";
                         const ouEdge = (r.ou_total && r.market_ou_total) ? Math.abs(parseFloat(r.ou_total) - parseFloat(r.market_ou_total)) : 0;
-                        if (ouEdge < 5) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        const modelSaysOver = parseFloat(r.ou_total) > parseFloat(r.market_ou_total);
-                        const actualOver = r.ou_correct === "OVER";
-                        const actualUnder = r.ou_correct === "UNDER";
-                        if (r.ou_correct === "PUSH") return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
-                        if ((modelSaysOver && actualOver) || (!modelSaysOver && actualUnder)) return "✅";
-                        if (actualOver || actualUnder) return "❌";
-                        return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        const ouMinEdge = isMLB ? 0.5 : 4;
+                        if (ouEdge < ouMinEdge) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        // Compute O/U correctness directly from scores (avoids inconsistent ou_correct field)
+                        const modelTotal = parseFloat(r.ou_total || 0);
+                        const mktTotal = parseFloat(r.market_ou_total || 0);
+                        const hs = parseFloat(r.actual_home_runs ?? r.actual_home_score ?? 0);
+                        const as_ = parseFloat(r.actual_away_runs ?? r.actual_away_score ?? 0);
+                        const actualTotal = hs + as_;
+                        if (!mktTotal || !actualTotal || !modelTotal) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        if (actualTotal === mktTotal) return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
+                        const modelSaysOver = modelTotal > mktTotal;
+                        const actualOver = actualTotal > mktTotal;
+                        return modelSaysOver === actualOver ? "✅" : "❌";
                       })()}</td>
                       <td style={{ padding: "7px 8px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: C.dim, cursor: "pointer", fontSize: 12 }}>🗑</button></td>
                     </tr>
