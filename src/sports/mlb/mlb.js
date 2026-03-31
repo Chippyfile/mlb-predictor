@@ -962,7 +962,7 @@ export function mlbPredictGame({
     homeRuns: hr, awayRuns: ar, homeWinPct: hwp, awayWinPct: 1 - hwp,
     confidence, confScore, decisiveness, decisivenessLabel,
     modelML_home, modelML_away,
-    ouTotal: parseFloat((hr + ar).toFixed(1)), runLineHome: -1.5,
+    ouTotal: parseFloat((hr + ar).toFixed(1)), runLineHome: parseFloat((hr - ar).toFixed(2)),
     hFIP, aFIP, umpire: ump, homeWOBA, awayWOBA,
     homePlatoonDelta, awayPlatoonDelta,
     parkFactor: parseFloat(effectiveParkFactor.toFixed(4)),
