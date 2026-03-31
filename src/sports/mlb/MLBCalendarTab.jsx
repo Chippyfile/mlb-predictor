@@ -411,6 +411,9 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           modelML_home: newModelML_home,
           modelML_away: newModelML_away,
           mlEnhanced: true,
+          // Update predicted runs to reflect ML margin (keeps total for O/U, adjusts who wins)
+          homeRuns: parseFloat(((pred.homeRuns + pred.awayRuns) / 2 + mlResult.ml_margin / 2).toFixed(1)),
+          awayRuns: parseFloat(((pred.homeRuns + pred.awayRuns) / 2 - mlResult.ml_margin / 2).toFixed(1)),
         };
       })() : pred;
       return { ...g, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
