@@ -225,9 +225,9 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
 
     // Sport-specific thresholds
     const isMLB = sport === "mlb";
-    const t3 = isMLB ? 1.5 : 10;  // 3u threshold
-    const t2 = isMLB ? 1.0 : 7;   // 2u threshold
-    const t1 = isMLB ? 0.5 : 4;   // 1u threshold
+    const t3 = isMLB ? 1.5 : 10;  // 3u edge threshold
+    const t2 = isMLB ? 1.0 : 7;   // 2u edge threshold
+    const t1 = isMLB ? 0.5 : 4;   // 1u edge threshold
     const unitLabel = isMLB ? "run" : "pt";
 
     // Validated accuracy labels
@@ -239,47 +239,51 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     const roi1 = isMLB ? "+16%" : "+15%";
     const sampleSize = isMLB ? "7,943" : "861";
 
-    if (disagree >= t3) {
+    // MLB confidence gate: edge alone isn't enough with fixed ±1.5 run line
+    // Model win probability must support the bet size
+    //   3u MAX: edge ≥ 1.5 AND model ≥ 65% confident
+    //   2u GO:  edge ≥ 1.0 AND model ≥ 60% confident
+    //   1u LEAN: edge ≥ 0.5 (any confidence)
+    const modelConf = Math.max(homeWin, awayWin);
+    const confGate3 = isMLB ? modelConf >= 0.65 : true;  // basketball spreads are variable, no gate needed
+    const confGate2 = isMLB ? modelConf >= 0.60 : true;
+
+    // Determine raw edge tier
+    let edgeTier = 0; // 0=skip, 1=lean, 2=go, 3=max
+    if (disagree >= t3) edgeTier = 3;
+    else if (disagree >= t2) edgeTier = 2;
+    else if (disagree >= t1) edgeTier = 1;
+
+    // Apply confidence gate (MLB only — caps units when model isn't confident)
+    let finalTier = edgeTier;
+    if (isMLB) {
+      if (finalTier >= 3 && !confGate3) finalTier = confGate2 ? 2 : 1;
+      if (finalTier >= 2 && !confGate2) finalTier = 1;
+    }
+
+    const tierLabels = {
+      3: { label: "MAX (3u)", color: "green", verdict: "GO", acc: a3, roi: roi3 },
+      2: { label: "STRONG (2u)", color: "yellow", verdict: "GO", acc: a2, roi: roi2 },
+      1: { label: "BET (1u)", color: "muted", verdict: "LEAN", acc: a1, roi: roi1 },
+    };
+
+    if (finalTier >= 1) {
+      const tl = tierLabels[finalTier];
+      const confNote = isMLB && finalTier < edgeTier
+        ? ` (capped from ${edgeTier}u — model only ${(modelConf * 100).toFixed(0)}% confident)`
+        : "";
       spreadSignal = {
-        verdict: "GO",
+        verdict: tl.verdict,
         side,
         diff: disagree.toFixed(1),
-        atsExpected: a3,
-        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} ${unitLabel} gap (${a3} ${isMLB ? "RL" : "ATS"})`,
+        atsExpected: tl.acc,
+        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} ${unitLabel} gap (${tl.acc} ${isMLB ? "RL" : "ATS"})${confNote}`,
       };
       betSizing = {
-        units: 3, label: "MAX (3u)", color: "green", side, sideLabel,
+        units: finalTier, label: tl.label, color: tl.color, side, sideLabel,
         disagree: parseFloat(disagree.toFixed(1)),
-        atsHistorical: a3,
-        reason: `${disagree.toFixed(1)} ${unitLabel}s disagreement → 3u (validated ${a3} on ${sampleSize} games, ${roi3} ROI)`,
-      };
-    } else if (disagree >= t2) {
-      spreadSignal = {
-        verdict: "GO",
-        side,
-        diff: disagree.toFixed(1),
-        atsExpected: a2,
-        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} ${unitLabel} gap (${a2} ${isMLB ? "RL" : "ATS"})`,
-      };
-      betSizing = {
-        units: 2, label: "STRONG (2u)", color: "yellow", side, sideLabel,
-        disagree: parseFloat(disagree.toFixed(1)),
-        atsHistorical: a2,
-        reason: `${disagree.toFixed(1)} ${unitLabel}s disagreement → 2u (validated ${a2} on ${sampleSize} games, ${roi2} ROI)`,
-      };
-    } else if (disagree >= t1) {
-      spreadSignal = {
-        verdict: "LEAN",
-        side,
-        diff: disagree.toFixed(1),
-        atsExpected: a1,
-        reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} ${unitLabel} gap (${a1} ${isMLB ? "RL" : "ATS"})`,
-      };
-      betSizing = {
-        units: 1, label: "BET (1u)", color: "muted", side, sideLabel,
-        disagree: parseFloat(disagree.toFixed(1)),
-        atsHistorical: a1,
-        reason: `${disagree.toFixed(1)} ${unitLabel}s disagreement → 1u (validated ${a1} on ${sampleSize} games, ${roi1} ROI)`,
+        atsHistorical: tl.acc,
+        reason: `${disagree.toFixed(1)} ${unitLabel}s disagreement → ${finalTier}u (validated ${tl.acc} on ${sampleSize} games, ${tl.roi} ROI)${confNote}`,
       };
     } else {
       spreadSignal = {
