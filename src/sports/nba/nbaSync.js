@@ -280,7 +280,7 @@ export async function nbaAutoSync(onProgress) {
         for (const k of allKeys) normalized[k] = r[k] !== undefined ? r[k] : null;
         return normalized;
       });
-      await supabaseQuery("/nba_predictions", "POST", normalizedRows);
+      await supabaseQuery("/nba_predictions", "UPSERT", normalizedRows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
         `/nba_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team,away_team,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score`
