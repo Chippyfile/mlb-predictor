@@ -311,6 +311,8 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (isPreGame) {
         [mlResult, mcResult] = await Promise.all([
           mlPredict("mlb", {
+            home_team: g.homeAbbr || g.home?.abbreviation,
+            away_team: g.awayAbbr || g.away?.abbreviation,
             pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
             win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
             model_ml_home: pred.modelML_home,
@@ -337,6 +339,11 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
             home_bb9: homeStarter?.bb9 ?? 0,
             away_k9: awayStarter?.k9 ?? 0,
             away_bb9: awayStarter?.bb9 ?? 0,
+            // Platoon — was missing, causing platoon_diff = 0
+            home_platoon_delta: pred.homePlatoonDelta ?? 0,
+            away_platoon_delta: pred.awayPlatoonDelta ?? 0,
+            // Umpire name for ump profile lookup
+            ump_name: g.umpire?.name || null,
             home_rest_days: (() => {
               if (!homeForm?.lastGameDate) return 4;
               const daysSince = Math.floor((Date.now() - new Date(homeForm.lastGameDate).getTime()) / 86400000);
