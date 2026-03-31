@@ -209,7 +209,9 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
   //
   let spreadSignal = null;
   let betSizing = null;
-  const projSpread = sport === "mlb" ? pred.runLineHome : pred.projectedSpread;
+  const projSpread = sport === "mlb"
+    ? (pred.homeRuns - pred.awayRuns)  // model predicted margin (NOT the -1.5 run line)
+    : pred.projectedSpread;
   const mktSpread  = odds?.homeSpread ?? odds?.marketSpreadHome ?? null;
 
   if (mktSpread !== null && mktSpread !== undefined) {
