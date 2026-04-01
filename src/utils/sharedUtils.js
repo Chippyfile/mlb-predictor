@@ -144,10 +144,9 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
 
   // ── O/U SIGNAL ─────────────────────────────────────────────
   let ouSignal = null;
-  // BUGFIX: Use pred.ouTotal (PPG-based, ~164 for NCAAB) NOT homeScore+awayScore
-  // (spread-optimized scores inflate totals by ~13 pts, causing false OVER signals)
+  // Use ML O/U model prediction when available, fall back to heuristic total
   const projTotal = sport === "mlb"
-    ? (pred.homeRuns + pred.awayRuns)
+    ? (pred.mlOuTotal ?? (pred.homeRuns + pred.awayRuns))
     : (pred.ouTotal ?? (pred.homeScore + pred.awayScore));
   const mktTotal = odds?.ouLine ?? odds?.marketTotal ?? null;
   if (mktTotal) {
@@ -160,10 +159,20 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     // NCAA/NBA totals ~150-230: percentage thresholds work well
     let ouEntry, ouGo, ouUnits;
     if (sport === "mlb") {
-      // MLB: 1.0 run entry, 1.5 GO, unit sizing by absolute runs
-      ouEntry = absDiff >= 1.0;
-      ouGo    = absDiff >= 1.5;
-      ouUnits = absDiff >= 2.0 ? 3 : absDiff >= 1.5 ? 2 : 1;
+      // MLB O/U v1: asymmetric thresholds from walk-forward validation
+      // UNDER: 60.2% at 1.0+, 61.3% at 1.5+, 70.3% at 2.0+ (very strong)
+      // OVER:  54.0% at 2.0+ only (weak below that)
+      const isUnder = diff < 0;
+      if (isUnder) {
+        ouEntry = absDiff >= 1.0;
+        ouGo    = absDiff >= 1.5;
+        ouUnits = absDiff >= 2.0 ? 3 : absDiff >= 1.5 ? 2 : 1;
+      } else {
+        // OVER: only fire at 2.0+ runs edge
+        ouEntry = absDiff >= 2.0;
+        ouGo    = absDiff >= 2.0;
+        ouUnits = 1;  // max 1u for OVER
+      }
     } else {
       // NCAA/NBA: percentage-based (4% entry, 8% GO, 12% 3u)
       ouEntry = diffPct >= OU_EDGE_THRESHOLD;

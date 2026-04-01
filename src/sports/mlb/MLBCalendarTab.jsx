@@ -307,10 +307,9 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       const awaySPipPerStart = pred.awaySpAvgIP ?? 5.5;
       const isPreGame = g.status !== "Final" && g.status !== "Live";
 
-      let mlResult = null, mcResult = null;
+      let mlResult = null, mcResult = null, ouResult = null;
       if (isPreGame) {
-        [mlResult, mcResult] = await Promise.all([
-          mlPredict("mlb", {
+        const mlPayload = {
             home_team: g.homeAbbr || g.home?.abbreviation,
             away_team: g.awayAbbr || g.away?.abbreviation,
             pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
@@ -356,8 +355,11 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
               const daysSince = Math.floor((Date.now() - new Date(awayForm.lastGameDate).getTime()) / 86400000);
               return Math.max(0, Math.min(7, daysSince));
             })(),
-          }),
+        };
+        [mlResult, mcResult, ouResult] = await Promise.all([
+          mlPredict("mlb", mlPayload),
           mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
+          mlPredict("mlb/ou", mlPayload),
         ]);
       } else {
         // Final/Live: reconstruct mlResult from stored Supabase prediction
@@ -407,12 +409,18 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           modelML_home: newModelML_home,
           modelML_away: newModelML_away,
           mlEnhanced: true,
+          // ML O/U model's predicted total (used by getBetSignals for O/U picks)
+          mlOuTotal: ouResult?.pred_total ?? null,
           // Update predicted runs to reflect ML margin (keeps total for O/U, adjusts who wins)
           homeRuns: parseFloat(((pred.homeRuns + pred.awayRuns) / 2 + mlResult.ml_margin / 2).toFixed(1)),
           awayRuns: parseFloat(((pred.homeRuns + pred.awayRuns) / 2 - mlResult.ml_margin / 2).toFixed(1)),
         };
       })() : pred;
-      return { ...g, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
+      // If no ML margin override but O/U model returned, still attach it
+      if (finalPred && ouResult?.pred_total && !finalPred.mlOuTotal) {
+        finalPred.mlOuTotal = ouResult.pred_total;
+      }
+      return { ...g, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult, ouModel: ouResult };
     }));
 
     // ── Sort: Finals sink to bottom, rest by start time ──
