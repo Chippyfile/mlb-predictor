@@ -446,19 +446,40 @@ export function HistoryTab({ table, refreshKey }) {
                       <td style={{ padding: "7px 8px" }}><span style={{ color: confColor(r.confidence), fontWeight: 700, fontSize: 10 }}>{r.confidence}</span></td>
                       <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayAbbr} {awayScore} – {homeAbbr} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{!hasMarketSpread ? <span style={{ color: C.dim }}>—</span> : !r.result_entered ? "—" : (r.ats_units != null ? (!r.ats_units ? <span style={{ color: C.dim, fontSize: 10 }}>—</span> : r.ats_correct === null ? "🔲" : r.ats_correct ? "✅" : "❌") : (r.rl_correct === null ? <span style={{ color: C.dim, fontSize: 10 }}>—</span> : r.rl_correct ? "✅" : "❌"))}</td>
+                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
+                        if (!hasMarketSpread || !r.result_entered) return "—";
+                        // Only grade ATS when model had enough edge to trigger a bet
+                        const modelMargin = r.spread_home ?? (r.pred_home_runs != null && r.pred_away_runs != null ? r.pred_home_runs - r.pred_away_runs : null);
+                        if (modelMargin == null) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        const mktImplied = -parseFloat(r.market_spread_home);
+                        const disagree = Math.abs(modelMargin - mktImplied);
+                        const atsMinEdge = isMLB ? 0.5 : 4;
+                        if (disagree < atsMinEdge) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        // Compute ATS result from actual scores
+                        const hs = parseFloat(r.actual_home_runs ?? r.actual_home_score ?? 0);
+                        const as_ = parseFloat(r.actual_away_runs ?? r.actual_away_score ?? 0);
+                        const margin = hs - as_;
+                        const atsResult = margin + parseFloat(r.market_spread_home);
+                        if (atsResult === 0) return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
+                        const modelSideHome = modelMargin > mktImplied;
+                        const homeCovered = atsResult > 0;
+                        return modelSideHome === homeCovered ? "✅" : "❌";
+                      })()}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
                         if (!hasMarketOU || !r.result_entered) return "—";
-                        const ouEdge = (r.ou_total && r.market_ou_total) ? Math.abs(parseFloat(r.ou_total) - parseFloat(r.market_ou_total)) : 0;
-                        const ouMinEdge = isMLB ? 0.5 : 4;
-                        if (ouEdge < ouMinEdge) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        // Compute O/U correctness directly from scores (avoids inconsistent ou_correct field)
                         const modelTotal = parseFloat(r.ou_total || 0);
                         const mktTotal = parseFloat(r.market_ou_total || 0);
+                        if (!mktTotal || !modelTotal) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        // Only grade when model triggered an O/U bet
+                        const absDiff = Math.abs(modelTotal - mktTotal);
+                        const pctDiff = absDiff / mktTotal;
+                        const triggered = isMLB ? absDiff >= 0.5 : pctDiff >= 0.04;
+                        if (!triggered) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        // Compute from actual scores
                         const hs = parseFloat(r.actual_home_runs ?? r.actual_home_score ?? 0);
                         const as_ = parseFloat(r.actual_away_runs ?? r.actual_away_score ?? 0);
                         const actualTotal = hs + as_;
-                        if (!mktTotal || !actualTotal || !modelTotal) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        if (!actualTotal) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
                         if (actualTotal === mktTotal) return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
                         const modelSaysOver = modelTotal > mktTotal;
                         const actualOver = actualTotal > mktTotal;
