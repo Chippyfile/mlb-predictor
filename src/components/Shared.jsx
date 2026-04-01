@@ -83,7 +83,7 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
     (async () => {
       setLoading(true);
       const typeFilter = (table === "mlb_predictions" && gameTypeFilter !== "ALL") ? `&game_type=eq.${gameTypeFilter}` : "";
-      const accCols = "id,game_date,ml_correct,rl_correct,ou_correct,win_pct_home,confidence,spread_home,market_spread_home,market_ou_total";
+      const accCols = "id,game_date,ml_correct,rl_correct,ou_correct,win_pct_home,confidence,spread_home,market_spread_home,market_ou_total,result_entered";
       const dateFilter = daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "";
       const cacheKey = `acc_${table}_${gameTypeFilter}_${daysBack}_${refreshKey}`;
       const data = await cachedQuery(cacheKey, () =>
