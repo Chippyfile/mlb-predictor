@@ -284,12 +284,11 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         calibrationFactor,
       });
       const rawOdds = odds?.games?.find(o => matchMLBOddsToGame(o, g)) || null;
-      const gameOdds = rawOdds ? {
-        ...rawOdds,
-        homeSpread: rawOdds.marketSpreadHome ?? null,
-        ouLine: rawOdds.marketTotal ?? null,
-      } : (() => {
-        // Fallback: use stored market data from Supabase for Final/Live games
+      const isPreGame = g.status !== "Final" && g.status !== "Live";
+
+      // For Final/Live games, prefer stored OPENING odds (pre-game)
+      // Live API returns in-game spreads (e.g., -5.5 when team is up 8-0) which are meaningless
+      const storedOdds = (() => {
         const stored = storedPredMap.get(String(g.gamePk));
         if (stored?.market_spread_home != null) {
           return {
@@ -303,9 +302,13 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         }
         return null;
       })();
+
+      const gameOdds = isPreGame
+        ? (rawOdds ? { ...rawOdds, homeSpread: rawOdds.marketSpreadHome ?? null, ouLine: rawOdds.marketTotal ?? null } : storedOdds)
+        : (storedOdds ?? (rawOdds ? { ...rawOdds, homeSpread: rawOdds.marketSpreadHome ?? null, ouLine: rawOdds.marketTotal ?? null } : null));
+
       const homeSPipPerStart = pred.homeSpAvgIP ?? 5.5;
       const awaySPipPerStart = pred.awaySpAvgIP ?? 5.5;
-      const isPreGame = g.status !== "Final" && g.status !== "Live";
 
       let mlResult = null, mcResult = null, ouResult = null;
       if (isPreGame) {
