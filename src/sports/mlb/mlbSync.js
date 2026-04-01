@@ -76,6 +76,10 @@ function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game,
     // Enhancement 2: Lineup confirmation flags (real lineup vs defaults)
     home_lineup_confirmed: pred.homeLineupConfirmed ? 1 : 0,
     away_lineup_confirmed: pred.awayLineupConfirmed ? 1 : 0,
+    // AUDIT v4 Finding 10: Team aggregate ERA as proxy for team FIP
+    // Used by backend for sp_relative_fip_diff = (starter - team) differential
+    home_team_era: parseFloat((homePitch?.era ?? 4.25).toFixed(2)),
+    away_team_era: parseFloat((awayPitch?.era ?? 4.25).toFixed(2)),
   };
 }
 
@@ -199,8 +203,9 @@ async function mlbBuildPredictionRow(game, dateStr, oddsData) {
       model_ml_home: row.model_ml_home,
       home_woba: raw.home_woba,
       away_woba: raw.away_woba,
-      home_fip: raw.home_sp_fip,
-      away_fip: raw.away_sp_fip,
+      // AUDIT v4 FIX: home_fip/away_fip = TEAM aggregate FIP (not starter)
+      home_fip: raw.home_team_era ?? 4.25,
+      away_fip: raw.away_team_era ?? 4.25,
       home_sp_fip: raw.home_sp_fip,
       away_sp_fip: raw.away_sp_fip,
       home_bullpen_era: raw.home_bullpen_era,
@@ -218,18 +223,55 @@ async function mlbBuildPredictionRow(game, dateStr, oddsData) {
       away_bb9: raw.away_bb9 ?? 3.2,
       home_rest_days: 4,
       away_rest_days: 4,
+      // AUDIT v4: team/date/ump for travel, series, rolling stats
+      home_team: row.home_team,
+      away_team: row.away_team,
+      game_date: dateStr,
+      ump_name: raw.umpire_name ?? null,
+      // Platoon
+      home_platoon_delta: raw.home_platoon_delta ?? 0,
+      away_platoon_delta: raw.away_platoon_delta ?? 0,
+      // Market
+      market_spread_home: openingFields.market_spread_home ?? 0,
+      market_ou_total: openingFields.market_ou_total ?? 0,
     });
     if (mlResult && mlResult.ml_win_prob_home != null && !mlResult.error) {
       row.win_pct_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
       row.ml_win_prob_home = parseFloat(mlResult.ml_win_prob_home.toFixed(4));
       if (mlResult.ml_margin != null) {
-        row.pred_home_runs = parseFloat(((row.pred_home_runs + row.pred_away_runs) / 2 + mlResult.ml_margin / 2).toFixed(2));
-        row.pred_away_runs = parseFloat(((row.pred_home_runs + row.pred_away_runs) / 2 - mlResult.ml_margin / 2).toFixed(2));
+        // FIX: save original total BEFORE mutating pred_home_runs
+        const origTotal = row.pred_home_runs + row.pred_away_runs;
+        row.pred_home_runs = parseFloat((origTotal / 2 + mlResult.ml_margin / 2).toFixed(2));
+        row.pred_away_runs = parseFloat((origTotal / 2 - mlResult.ml_margin / 2).toFixed(2));
       }
       console.log(`[MLB ML] ${row.home_team} vs ${row.away_team}: wp=${mlResult.ml_win_prob_home?.toFixed(3)}, margin=${mlResult.ml_margin?.toFixed(1)}`);
     }
   } catch (e) {
     console.warn(`[MLB ML] predict failed for ${row.home_team} vs ${row.away_team}:`, e.message);
+  }
+
+  // AUDIT v4 Finding 5: Call O/U model and store predicted total
+  try {
+    const ouResult = await mlPredict("mlb/ou", {
+      home_team: row.home_team, away_team: row.away_team, game_date: dateStr,
+      pred_home_runs: row.pred_home_runs, pred_away_runs: row.pred_away_runs,
+      home_woba: raw.home_woba, away_woba: raw.away_woba,
+      home_sp_fip: raw.home_sp_fip, away_sp_fip: raw.away_sp_fip,
+      home_fip: raw.home_team_era ?? 4.25, away_fip: raw.away_team_era ?? 4.25,
+      home_bullpen_era: raw.home_bullpen_era, away_bullpen_era: raw.away_bullpen_era,
+      park_factor: raw.park_factor, temp_f: raw.temp_f ?? 70,
+      wind_mph: raw.wind_mph ?? 5, wind_out_flag: raw.wind_out_flag ?? 0,
+      home_k9: raw.home_k9 ?? 8.5, away_k9: raw.away_k9 ?? 8.5,
+      home_bb9: raw.home_bb9 ?? 3.2, away_bb9: raw.away_bb9 ?? 3.2,
+      home_sp_ip: raw.home_sp_ip ?? 5.5, away_sp_ip: raw.away_sp_ip ?? 5.5,
+      market_ou_total: openingFields.market_ou_total ?? 0,
+      ump_name: raw.umpire_name ?? null,
+    });
+    if (ouResult?.pred_total != null && !ouResult.error) {
+      row.ml_ou_pred_total = parseFloat(ouResult.pred_total.toFixed(2));
+    }
+  } catch (e) {
+    console.warn(`[MLB O/U] predict failed for ${row.home_team} vs ${row.away_team}:`, e.message);
   }
 
   return row;
@@ -288,9 +330,10 @@ export async function mlbFillFinalScores(pendingRows, oddsData) {
             : (spread < -1.5 ? true : spread > 1.5 ? false : null);
           const total = homeScore + awayScore;
           // FIX: O/U grading now checks if MODEL's prediction matched actual direction
-          // Previous code just stored the actual result ("OVER"/"UNDER"), not model correctness
+          // AUDIT v4: Prefer ML O/U model total, fall back to heuristic total
           const ouLine = matchedRow.market_ou_total ?? matchedRow.ou_total ?? null;
-          const predTotal = (matchedRow.pred_home_runs ?? 0) + (matchedRow.pred_away_runs ?? 0);
+          const predTotal = matchedRow.ml_ou_pred_total
+            ?? ((matchedRow.pred_home_runs ?? 0) + (matchedRow.pred_away_runs ?? 0));
           let ou_correct = null;
           if (ouLine && total !== ouLine && predTotal) {
             const actualOver = total > ouLine;
@@ -350,7 +393,7 @@ export async function mlbFillFinalScores(pendingRows, oddsData) {
 export async function mlbRegradeAllResults(onProgress) {
   onProgress?.("⏳ Loading all graded MLB records…");
   const allGraded = await supabaseQuery(
-    `/mlb_predictions?result_entered=eq.true&select=id,home_team,win_pct_home,pred_home_runs,pred_away_runs,actual_home_runs,actual_away_runs,ou_total&limit=2000`
+    `/mlb_predictions?result_entered=eq.true&select=id,home_team,win_pct_home,pred_home_runs,pred_away_runs,actual_home_runs,actual_away_runs,ou_total,ml_ou_pred_total&limit=2000`
   );
   if (!allGraded?.length) { onProgress?.("No graded records found"); return 0; }
   let fixed = 0;
@@ -375,9 +418,11 @@ export async function mlbRegradeAllResults(onProgress) {
       : (spread < -1.5 ? true : spread > 1.5 ? false : null);
     const total = homeScore + awayScore;
     const ouLine = row.market_ou_total ?? row.ou_total ?? null;
-    const predTotal = row.pred_home_runs && row.pred_away_runs
-      ? parseFloat(row.pred_home_runs) + parseFloat(row.pred_away_runs)
-      : null;
+    // AUDIT v4: prefer ML O/U total for grading when available
+    const predTotal = row.ml_ou_pred_total
+      ?? (row.pred_home_runs && row.pred_away_runs
+        ? parseFloat(row.pred_home_runs) + parseFloat(row.pred_away_runs)
+        : null);
     let ou_correct = null;
     if (ouLine && total !== ouLine && predTotal) {
       const actualOver = total > ouLine;

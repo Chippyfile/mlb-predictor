@@ -316,7 +316,10 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
             win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
             model_ml_home: pred.modelML_home,
             home_woba: pred.homeWOBA, away_woba: pred.awayWOBA,
-            home_fip: pred.hFIP, away_fip: pred.aFIP,
+            // AUDIT v4 Finding 10: home_fip = TEAM pitching (ERA proxy), not starter FIP
+            // sp_relative_fip_diff needs team FIP to compute (starter - team) differential
+            home_fip: homePitch?.era || 4.25,
+            away_fip: awayPitch?.era || 4.25,
             home_sp_fip: pred.hFIP, away_sp_fip: pred.aFIP,
             home_bullpen_era: homePitch?.era || 4.10,
             away_bullpen_era: awayPitch?.era || 4.10,
