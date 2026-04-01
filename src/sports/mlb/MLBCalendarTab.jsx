@@ -344,6 +344,8 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
             away_platoon_delta: pred.awayPlatoonDelta ?? 0,
             // Umpire name for ump profile lookup
             ump_name: g.umpire?.name || null,
+            // AUDIT FIX F-08/F-02: game_date for series + travel computation
+            game_date: dateStr,
             home_rest_days: (() => {
               if (!homeForm?.lastGameDate) return 4;
               const daysSince = Math.floor((Date.now() - new Date(homeForm.lastGameDate).getTime()) / 86400000);
@@ -386,15 +388,9 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       }
       // Recalculate modelML from ML win probability with vig for display consistency
       const finalPred = pred && mlResult ? (() => {
-        let mlWinHome = mlResult.ml_win_prob_home;
-        // FIX: Isotonic calibrator returns 0.98/0.02 for most games (broken).
-        // When probability is extreme but margin is small, derive from margin instead.
-        // MLB σ ≈ 4.0 runs (typical game standard deviation).
-        if ((mlWinHome > 0.85 || mlWinHome < 0.15) && Math.abs(mlResult.ml_margin) < 3) {
-          const mlbSigma = 4.0;
-          mlWinHome = 1 / (1 + Math.pow(10, -mlResult.ml_margin / mlbSigma));
-          mlWinHome = Math.max(0.25, Math.min(0.75, mlWinHome));
-        }
+        // AUDIT FIX F-04: Use backend probability directly (Gaussian CDF, σ=4.0).
+        // No Elo override — backend already clamps to [0.20, 0.80].
+        let mlWinHome = Math.max(0.25, Math.min(0.75, mlResult.ml_win_prob_home));
         const VIG = 0.0225;
         const hProb = mlWinHome + VIG;
         const aProb = (1 - mlWinHome) + VIG;
