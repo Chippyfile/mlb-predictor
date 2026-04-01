@@ -453,7 +453,7 @@ export function HistoryTab({ table, refreshKey }) {
                         if (modelMargin == null) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
                         const mktImplied = -parseFloat(r.market_spread_home);
                         const disagree = Math.abs(modelMargin - mktImplied);
-                        const atsMinEdge = isMLB ? 0.5 : 4;
+                        const atsMinEdge = isMLB ? 1.0 : 4;
                         if (disagree < atsMinEdge) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
                         // Compute ATS result from actual scores
                         const hs = parseFloat(r.actual_home_runs ?? r.actual_home_score ?? 0);

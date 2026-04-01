@@ -225,18 +225,18 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
 
     // Sport-specific thresholds
     const isMLB = sport === "mlb";
-    const t3 = isMLB ? 1.5 : 10;  // 3u edge threshold
-    const t2 = isMLB ? 1.0 : 7;   // 2u edge threshold
-    const t1 = isMLB ? 0.5 : 4;   // 1u edge threshold
+    const t3 = isMLB ? 2.0 : 10;  // 3u edge threshold
+    const t2 = isMLB ? 1.5 : 7;   // 2u edge threshold
+    const t1 = isMLB ? 1.0 : 4;   // 1u edge threshold
     const unitLabel = isMLB ? "run" : "pt";
 
     // Validated accuracy labels
-    const a3 = isMLB ? "~69%" : "~65%";
-    const a2 = isMLB ? "~64%" : "~62%";
-    const a1 = isMLB ? "~61%" : "~60%";
-    const roi3 = isMLB ? "+31%" : "+20%";
-    const roi2 = isMLB ? "+23%" : "+15%";
-    const roi1 = isMLB ? "+16%" : "+15%";
+    const a3 = isMLB ? "~71%" : "~65%";
+    const a2 = isMLB ? "~69%" : "~62%";
+    const a1 = isMLB ? "~64%" : "~60%";
+    const roi3 = isMLB ? "+35%" : "+20%";
+    const roi2 = isMLB ? "+31%" : "+15%";
+    const roi1 = isMLB ? "+23%" : "+15%";
     const sampleSize = isMLB ? "7,943" : "861";
 
     // MLB confidence gate: edge alone isn't enough with fixed ±1.5 run line
