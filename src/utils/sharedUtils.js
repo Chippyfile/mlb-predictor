@@ -194,7 +194,9 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     } else {
       ouSignal = {
         verdict: "SKIP",
-        reason:  `Model total (${projTotal.toFixed(1)}) within ${(OU_EDGE_THRESHOLD * 100).toFixed(0)}% of market (${mktTotal})`,
+        reason: sport === "mlb"
+          ? `Model total (${projTotal.toFixed(1)}) within threshold of market (${mktTotal}) — need 1.0+ runs UNDER or 2.0+ OVER`
+          : `Model total (${projTotal.toFixed(1)}) within ${(OU_EDGE_THRESHOLD * 100).toFixed(0)}% of market (${mktTotal})`,
       };
     }
   } else {
