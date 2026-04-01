@@ -473,7 +473,7 @@ export function HistoryTab({ table, refreshKey }) {
                         // Only grade when model triggered an O/U bet
                         const absDiff = Math.abs(modelTotal - mktTotal);
                         const pctDiff = absDiff / mktTotal;
-                        const triggered = isMLB ? absDiff >= 0.5 : pctDiff >= 0.04;
+                        const triggered = isMLB ? absDiff >= 1.0 : pctDiff >= 0.04;
                         if (!triggered) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
                         // Compute from actual scores
                         const hs = parseFloat(r.actual_home_runs ?? r.actual_home_score ?? 0);

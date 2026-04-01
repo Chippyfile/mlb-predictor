@@ -160,9 +160,9 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     // NCAA/NBA totals ~150-230: percentage thresholds work well
     let ouEntry, ouGo, ouUnits;
     if (sport === "mlb") {
-      // MLB: 0.5 run entry, 1.0 GO, unit sizing by absolute runs
-      ouEntry = absDiff >= 0.5;
-      ouGo    = absDiff >= 1.0;
+      // MLB: 1.0 run entry, 1.5 GO, unit sizing by absolute runs
+      ouEntry = absDiff >= 1.0;
+      ouGo    = absDiff >= 1.5;
       ouUnits = absDiff >= 2.0 ? 3 : absDiff >= 1.5 ? 2 : 1;
     } else {
       // NCAA/NBA: percentage-based (4% entry, 8% GO, 12% 3u)
