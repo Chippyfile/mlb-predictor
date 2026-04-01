@@ -216,7 +216,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
 };
 
 export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })).toISOString().split("T")[0];
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);

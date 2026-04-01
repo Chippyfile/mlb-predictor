@@ -223,7 +223,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
 // NBACalendarTab
 // ─────────────────────────────────────────────────────────────
 export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })).toISOString().split("T")[0];
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -842,7 +842,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     gap: 8,
                     marginBottom: 10
                   }}>
-                    <Kv k="Projected Score" v={`${awayName} ${((game.pred.awayScore ?? game.pred.awayRuns ?? 0).toFixed(0))} — ${homeName} ${((game.pred.homeScore ?? game.pred.homeRuns ?? 0).toFixed(0))}`} />
+                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore.toFixed(0)} — ${homeName} ${game.pred.homeScore.toFixed(0)}`} />
                     <Kv k="Win %" v={`${homeName} ${(game.pred.homeWinPct*100).toFixed(1)}% / ${awayName} ${((game.pred.awayWinPct ?? (1-game.pred.homeWinPct))*100).toFixed(1)}%`} />
                     <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${homeName} -${game.pred.projectedSpread.toFixed(1)}` : `${awayName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
                     <Kv k="O/U Total" v={game.pred._ouPredictedTotal
