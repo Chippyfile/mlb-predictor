@@ -29,7 +29,22 @@ import {
 // ─────────────────────────────────────────────────────────────
 // HELPER: Extract raw features from prediction + fetched data
 // ─────────────────────────────────────────────────────────────
-function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game }) {
+function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game, homeTeamId, homePitch, awayPitch, homeStarterStats, awayStarterStats }) {
+  // ── AUDIT FIX F4: Park-rotated wind direction (matches mlb.js heuristic) ──
+  // The heuristic engine rotates wind by park's CF heading before checking out/in.
+  // Without this, non-south-facing parks (Wrigley, Fenway, Oracle, etc.) get wrong flags.
+  let wind_out_flag = null;
+  if (parkWeather && parkWeather.windDir != null) {
+    const parkData = PARK_FACTORS[homeTeamId] || {};
+    if (parkData.dome) {
+      wind_out_flag = 0; // dome parks: wind irrelevant
+    } else {
+      const parkWindBase = parkData.windBaseDir || 180;
+      const adjustedDir = ((parkWeather.windDir - parkWindBase + 360) % 360);
+      wind_out_flag = (adjustedDir >= 135 && adjustedDir <= 225) ? 1 : 0;
+    }
+  }
+
   return {
     // M-6 FIX: Fallback was 0.314 but engine uses LG_WOBA (currently 0.315 for 2025+).
     home_woba: parseFloat((pred.homeWOBA || 0.315).toFixed(3)),
@@ -41,15 +56,18 @@ function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game 
     park_factor: pred.parkFactor || 1.00,
     temp_f: parkWeather?.tempF ?? null,
     wind_mph: parkWeather?.windMph ?? null,
-    wind_out_flag: parkWeather
-      ? ((parkWeather.windDir >= 145 && parkWeather.windDir <= 255) ? 1 : 0)
-      : null,
+    wind_out_flag,
     home_starter_name: game?.homeStarterName || null,
     away_starter_name: game?.awayStarterName || null,
     umpire_name: game?.umpire?.name || null,
     // F-05: SP average innings pitched (for bullpen exposure ML feature)
     home_sp_ip: pred.homeSpAvgIP ?? null,
     away_sp_ip: pred.awaySpAvgIP ?? null,
+    // ── AUDIT FIX F10: K/9 and BB/9 (were never sent — k_bb_diff was always 0 in production) ──
+    home_k9: parseFloat((homeStarterStats?.k9 ?? homePitch?.k9 ?? 8.5).toFixed(2)),
+    away_k9: parseFloat((awayStarterStats?.k9 ?? awayPitch?.k9 ?? 8.5).toFixed(2)),
+    home_bb9: parseFloat((homeStarterStats?.bb9 ?? homePitch?.bb9 ?? 3.2).toFixed(2)),
+    away_bb9: parseFloat((awayStarterStats?.bb9 ?? awayPitch?.bb9 ?? 3.2).toFixed(2)),
     // Enhancement 1: Platoon splits (wOBA delta from L/R matchup advantage)
     home_platoon_delta: pred.homePlatoonDelta != null
       ? parseFloat(pred.homePlatoonDelta.toFixed(4)) : null,
@@ -133,7 +151,13 @@ async function mlbBuildPredictionRow(game, dateStr, oddsData) {
   if (!pred) return null;
 
   const home = mlbTeamById(game.homeTeamId), away = mlbTeamById(game.awayTeamId);
-  const raw = extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game });
+  const raw = extractRawFeatures(pred, {
+    homeBullpen, awayBullpen, parkWeather,
+    homeTeamId: game.homeTeamId,
+    homePitch, awayPitch,
+    homeStarterStats: homeStarter, awayStarterStats: awayStarter,
+    game,
+  });
 
   // Step 6: Capture opening odds at prediction creation time
   const gameOdds = oddsData?.games?.find(o => matchMLBOddsToGame(o, game)) || null;
@@ -187,6 +211,11 @@ async function mlbBuildPredictionRow(game, dateStr, oddsData) {
       wind_out_flag: raw.wind_out_flag ?? 0,
       home_sp_ip: raw.home_sp_ip ?? 5.5,
       away_sp_ip: raw.away_sp_ip ?? 5.5,
+      // AUDIT FIX F10: K/9 and BB/9 — critical for k_bb_diff feature
+      home_k9: raw.home_k9 ?? 8.5,
+      away_k9: raw.away_k9 ?? 8.5,
+      home_bb9: raw.home_bb9 ?? 3.2,
+      away_bb9: raw.away_bb9 ?? 3.2,
       home_rest_days: 4,
       away_rest_days: 4,
     });
@@ -444,6 +473,9 @@ export async function mlbRefreshPredictions(rows, onProgress) {
 
         const raw = extractRawFeatures(pred, {
           homeBullpen, awayBullpen, parkWeather,
+          homeTeamId,
+          homePitch, awayPitch,
+          homeStarterStats: homeStarter, awayStarterStats: awayStarter,
           game: {
             homeStarterName: schedGame?.teams?.home?.probablePitcher?.fullName,
             awayStarterName: schedGame?.teams?.away?.probablePitcher?.fullName,
