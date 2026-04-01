@@ -88,20 +88,26 @@ function extractRawFeatures(pred, { homeBullpen, awayBullpen, parkWeather, game,
 // ─────────────────────────────────────────────────────────────
 function extractOpeningOdds(gameOdds) {
   if (!gameOdds) return {};
+  // MLB standard run line is ALWAYS ±1.5. The Odds API returns live/alternate
+  // spreads (±2.5, ±5.5) for in-progress games — reject those.
+  const spread = gameOdds.marketSpreadHome;
+  const isStandardRL = spread != null && Math.abs(Math.abs(spread) - 1.5) < 0.01;
   return {
     ...(gameOdds.homeML != null && { opening_home_ml: gameOdds.homeML }),
     ...(gameOdds.awayML != null && { opening_away_ml: gameOdds.awayML }),
-    ...(gameOdds.marketSpreadHome != null && { market_spread_home: gameOdds.marketSpreadHome }),
+    ...(isStandardRL && { market_spread_home: spread }),
     ...(gameOdds.marketTotal != null && { market_ou_total: gameOdds.marketTotal }),
   };
 }
 
 function extractClosingOdds(gameOdds) {
   if (!gameOdds) return {};
+  const spread = gameOdds.marketSpreadHome;
+  const isStandardRL = spread != null && Math.abs(Math.abs(spread) - 1.5) < 0.01;
   return {
     ...(gameOdds.homeML != null && { closing_home_ml: gameOdds.homeML }),
     ...(gameOdds.awayML != null && { closing_away_ml: gameOdds.awayML }),
-    ...(gameOdds.marketSpreadHome != null && { closing_spread_home: gameOdds.marketSpreadHome }),
+    ...(isStandardRL && { closing_spread_home: spread }),
     ...(gameOdds.marketTotal != null && { closing_ou_total: gameOdds.marketTotal }),
   };
 }
@@ -597,7 +603,10 @@ export async function mlbAutoSync(onProgress) {
     const unsaved = schedule.filter(g => {
       const ha = normAbbr(g.homeAbbr || mlbTeamById(g.homeTeamId)?.abbr);
       const aa = normAbbr(g.awayAbbr || mlbTeamById(g.awayTeamId)?.abbr);
-      return !savedKeys.has(`${dateStr}|${aa}@${ha}`);
+      // Only predict games that haven't started — predictions for Final/Live
+      // games use post-game stats and produce misleading results
+      const isPreGame = g.status !== "Final" && g.status !== "Live";
+      return isPreGame && !savedKeys.has(`${dateStr}|${aa}@${ha}`);
     });
     if (!unsaved.length) continue;
     const rows = [];
