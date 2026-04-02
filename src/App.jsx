@@ -168,9 +168,9 @@ export default function App() {
 
         {sport === "BETS" && (
           <DailyBets
-            ncaaGames={ncaaGames}
-            nbaGames={nbaGames}
-            mlbGames={mlbGames}
+            setNcaaGames={setNcaaGames}
+            setNbaGames={setNbaGames}
+            setMlbGames={setMlbGames}
           />
         )}
 

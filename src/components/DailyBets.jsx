@@ -1,359 +1,275 @@
-// src/components/DailyBets.jsx
-// Daily betting card — parlay strategy + individual sport picks
-// Reads from Supabase predictions tables for today's games
-
-import React, { useState, useEffect, useMemo } from "react";
-import { C, Pill } from "./Shared.jsx";
-import { getBetSignals, DECISIVENESS_GATE } from "../utils/sharedUtils.js";
+// src/components/DailyBets.jsx — Daily Bets page with self-contained sync
+import React, { useState, useMemo, useCallback, useEffect } from "react";
+import { C } from "./Shared.jsx";
+import { getBetSignals } from "../utils/sharedUtils.js";
 import { supabaseQuery } from "../utils/supabase.js";
 
-// ── Strategy constants ──
-const ML_CAP = -500;
-const CONF_GATE = 0.65;
-const MIN_LEGS = 3;
-const MAX_LEGS = 5;
+const ML_CAP = -500, CONF_GATE = 0.65, MIN_LEGS = 3;
+const getToday = () => new Date().toISOString().slice(0, 10);
 
 function getStrategyMode() {
-  const now = new Date();
-  const month = now.getMonth() + 1; // 1-indexed
-  const day = now.getDate();
-
-  // Jan 1-7: SKIP entirely
-  if (month === 1 && day <= 7) return "skip";
-  // Jan 8-31 or Feb: 3-leg only at $75
-  if (month === 1 || month === 2) return "3only";
-  // Nov, Dec, Mar: full 3+5 strategy
+  const m = new Date().getMonth() + 1, d = new Date().getDate();
+  if (m === 1 && d <= 7) return "skip";
+  if (m === 1 || m === 2) return "3only";
   return "full";
 }
-
-const STRATEGY_LABELS = {
-  skip: { label: "🚫 NO BETS — Jan W1 (conference chaos)", color: "#f85149", sublabel: "Historical −23.6% ROI. Skip this week." },
-  "3only": { label: "🛡 SAFE MODE — 3-Leg Only @ $75", color: "#d29922", sublabel: "Jan/Feb: 5-leg historically unprofitable. Consolidate to 3-leg." },
-  full: { label: "🎯 FULL STRATEGY — $50 on 3-Leg + $25 on 5-Leg", color: "#2ea043", sublabel: "Nov/Dec/Mar: Both legs profitable. 44.6% ROI across 6 seasons." },
+const STRAT = {
+  skip:   { label: "🚫 NO BETS — Jan W1 (conference chaos)", color: "#f85149", sub: "Historical −23.6% ROI. Skip this week." },
+  "3only":{ label: "🛡 SAFE MODE — 3-Leg Only @ $75",        color: "#d29922", sub: "Jan/Feb: 5-leg historically unprofitable. Consolidate to 3-leg." },
+  full:   { label: "🎯 FULL — $50 on 3-Leg + $25 on 5-Leg",  color: "#2ea043", sub: "Nov/Dec/Mar: Both legs profitable. 44.6% ROI across 6 seasons." },
 };
 
-// ── Spread to ML conversion ──
-function spreadToML(spread) {
-  const s = Math.abs(spread);
-  if (s < 0.5) return -110;
-  const pairs = [[1,-120],[2,-140],[3,-160],[4,-185],[5,-210],[6,-245],[7,-280],[8,-320],[9,-370],[10,-420],[12,-550],[14,-700],[16,-900],[18,-1200],[20,-1500]];
-  let ml = -2000;
-  for (const [lim, f] of pairs) { if (s <= lim) { ml = f; break; } }
-  return spread < 0 ? ml : -ml;
+function spreadToML(sp) {
+  const s = Math.abs(sp); if (s < 0.5) return -110;
+  for (const [l,f] of [[1,-120],[2,-140],[3,-160],[4,-185],[5,-210],[6,-245],[7,-280],[8,-320],[9,-370],[10,-420],[12,-550],[14,-700],[16,-900],[18,-1200],[20,-1500]])
+    if (s <= l) return sp < 0 ? f : -f;
+  return sp < 0 ? -2000 : 2000;
+}
+function mlDec(ml) { return ml > 0 ? ml/100+1 : 100/Math.abs(ml)+1; }
+function parlayOdds(picks) { return picks.reduce((a,p) => a * mlDec(p.ml), 1); }
+
+// ── Supabase fetchers — only today's games ──
+async function fetchSport(table, date) {
+  try {
+    const rows = await supabaseQuery(table, `game_date=eq.${date}&select=*`);
+    return rows?.filter(r => r.ml_margin != null) || [];
+  } catch(e) { console.error(`[DailyBets] ${table}:`, e); return []; }
 }
 
-// ── Styles ──
-const S = {
-  page: { maxWidth: 800, margin: "0 auto", padding: "16px 12px", fontFamily: "'JetBrains Mono', 'SF Mono', monospace" },
-  header: { textAlign: "center", marginBottom: 24 },
-  title: { fontSize: 28, fontWeight: 900, letterSpacing: -1, color: "#e6edf3", margin: 0 },
-  subtitle: { fontSize: 12, color: C.dim, marginTop: 4 },
-  strategyCard: (color) => ({
-    background: `linear-gradient(135deg, ${color}12, ${color}06)`,
-    border: `1px solid ${color}55`,
-    borderRadius: 12, padding: "16px 20px", marginBottom: 20,
-  }),
-  strategyLabel: (color) => ({ fontSize: 16, fontWeight: 800, color, marginBottom: 4 }),
-  strategySub: { fontSize: 11, color: C.dim },
-  parlayCard: {
-    background: `linear-gradient(135deg, #0d1117, #161b22)`,
-    border: `1px solid #30363d`,
-    borderRadius: 10, padding: "14px 18px", marginBottom: 12,
-  },
-  parlayHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
-  parlayTitle: { fontSize: 14, fontWeight: 800, color: "#e6edf3" },
-  parlayBadge: (color) => ({
-    fontSize: 10, fontWeight: 800, color: "#fff", background: color,
-    borderRadius: 5, padding: "3px 10px", letterSpacing: 1,
-  }),
-  legRow: {
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "8px 0", borderBottom: `1px solid #21262d`,
-  },
-  legTeam: { fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 },
-  legMl: { fontSize: 12, color: C.muted, width: 60, textAlign: "right" },
-  legConf: { fontSize: 11, width: 50, textAlign: "right" },
-  sportSection: { marginTop: 28 },
-  sportHeader: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12, paddingBottom: 8, borderBottom: `1px solid #21262d` },
-  sportIcon: { fontSize: 20 },
-  sportName: { fontSize: 18, fontWeight: 900, color: "#e6edf3", letterSpacing: -0.5 },
-  sportCount: { fontSize: 11, color: C.dim, marginLeft: "auto" },
-  categoryLabel: { fontSize: 10, fontWeight: 800, color: C.dim, letterSpacing: 2, marginTop: 14, marginBottom: 6, textTransform: "uppercase" },
-  pickRow: {
-    display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-    background: "#0d1117", borderRadius: 8, marginBottom: 6,
-    border: "1px solid #21262d",
-  },
-  pickTeam: { fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1, minWidth: 0 },
-  pickLine: { fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" },
-  pickEdge: { fontSize: 11, width: 55, textAlign: "right" },
-  unitBadge: (units, color) => ({
-    fontSize: 10, fontWeight: 900, color: "#fff",
-    background: color, borderRadius: 4, padding: "2px 8px",
-    minWidth: 30, textAlign: "center",
-  }),
-  noPicks: { fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0" },
-  timestamp: { fontSize: 10, color: "#484f58", textAlign: "center", marginTop: 20 },
-};
+function mapNCAA(rows) { return rows.map(r => ({
+  gameId: r.game_id, homeTeam: r.home_team, awayTeam: r.away_team,
+  pred: { projectedSpread: r.ml_margin, homeWinPct: r.ml_win_prob_home ?? .5, mlMargin: r.ml_margin,
+          _ouPick: r.ou_pick, _ouEdge: r.ou_edge, _ouPredictedTotal: r.ou_predicted_total },
+  odds: { homeSpread: r.market_spread ?? r.espn_spread, homeML: r.home_ml, awayML: r.away_ml, ouLine: r.market_ou ?? r.espn_ou },
+})); }
 
-// ── Unit color helper ──
-function unitColor(units) {
-  if (units >= 5) return "#2ea043";
-  if (units >= 4) return "#2ea043";
-  if (units >= 3) return "#d29922";
-  if (units >= 2) return "#d29922";
-  return "#8b949e";
-}
+function mapNBA(rows) { return rows.map(r => ({
+  gameId: r.game_id, homeTeam: r.home_team, awayTeam: r.away_team,
+  pred: { projectedSpread: r.ml_margin, homeWinPct: r.ml_win_prob_home ?? .5,
+          _ouPick: r.ou_pick, _ouEdge: r.ou_edge, _ouPredictedTotal: r.ou_predicted_total },
+  odds: { homeSpread: r.market_spread, homeML: r.home_ml, awayML: r.away_ml, ouLine: r.market_ou },
+})); }
 
-function confColor(conf) {
-  if (conf >= 80) return "#2ea043";
-  if (conf >= 70) return "#58a6ff";
-  if (conf >= 60) return "#d29922";
-  return "#8b949e";
-}
+function mapMLB(rows) { return rows.map(r => ({
+  gameId: r.game_id || r.game_pk, homeTeam: r.home_team || r.home_abbr, awayTeam: r.away_team || r.away_abbr,
+  pred: { projectedSpread: r.ml_margin, homeWinPct: r.ml_win_prob_home ?? .5,
+          homeRuns: r.pred_home_runs ?? ((r.pred_total??0)/2+(r.ml_margin??0)/2),
+          awayRuns: r.pred_away_runs ?? ((r.pred_total??0)/2-(r.ml_margin??0)/2) },
+  odds: { homeSpread: r.run_line_home ?? -1.5, homeML: r.home_ml, awayML: r.away_ml, ouLine: r.market_ou },
+})); }
 
-// ── Main Component ──
-export default function DailyBets({ ncaaGames = [], nbaGames = [], mlbGames = [] }) {
-  const today = new Date().toISOString().slice(0, 10);
-  const mode = getStrategyMode();
-  const strategy = STRATEGY_LABELS[mode];
+// ── Colors ──
+function unitColor(u) { return u >= 4 ? "#2ea043" : u >= 2 ? "#d29922" : "#8b949e"; }
+function confColor(c) { return c >= 80 ? "#2ea043" : c >= 70 ? "#58a6ff" : c >= 60 ? "#d29922" : "#8b949e"; }
 
-  // ── Build NCAA parlay picks ──
-  const ncaaParlayPicks = useMemo(() => {
+export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
+  const today = getToday(), mode = getStrategyMode(), strat = STRAT[mode];
+  const [games, setGames] = useState({ ncaa: [], nba: [], mlb: [] });
+  const [syncing, setSyncing] = useState({});
+  const [lastSync, setLastSync] = useState(null);
+
+  const syncSport = useCallback(async (sport) => {
+    setSyncing(s => ({ ...s, [sport]: true }));
+    const table = { ncaa: "ncaa_predictions", nba: "nba_predictions", mlb: "mlb_predictions" }[sport];
+    const mapper = { ncaa: mapNCAA, nba: mapNBA, mlb: mapMLB }[sport];
+    const rows = await fetchSport(table, today);
+    const mapped = mapper(rows);
+    setGames(g => ({ ...g, [sport]: mapped }));
+    // Also push up to App state if setters provided
+    const setter = { ncaa: setNcaaGames, nba: setNbaGames, mlb: setMlbGames }[sport];
+    if (setter && mapped.length) setter(mapped);
+    setSyncing(s => ({ ...s, [sport]: false }));
+  }, [today, setNcaaGames, setNbaGames, setMlbGames]);
+
+  const syncAll = useCallback(async () => {
+    await Promise.all(["ncaa","nba","mlb"].map(s => syncSport(s)));
+    setLastSync(new Date().toLocaleTimeString());
+  }, [syncSport]);
+
+  useEffect(() => { syncAll(); }, []);
+
+  // ── NCAA Parlay Picks ──
+  const parlayPicks = useMemo(() => {
     if (mode === "skip") return [];
-
-    const eligible = ncaaGames
+    return games.ncaa
       .filter(g => g.pred && g.odds)
       .map(g => {
-        const signals = getBetSignals({ pred: g.pred, odds: g.odds, sport: "ncaa", homeName: g.homeTeam, awayName: g.awayTeam });
-        const margin = g.pred?.projectedSpread || g.pred?.mlMargin || 0;
-        const probHome = g.pred?.homeWinPct || 0.5;
-        const conf = Math.max(probHome, 1 - probHome);
-        const spread = g.odds?.homeSpread ?? 0;
-        const impliedML = spreadToML(spread);
-        const pickHome = margin < 0; // negative margin = home favored
-        const pickML = pickHome ? impliedML : -impliedML;
-        const pickTeam = pickHome ? (g.homeTeam || "Home") : (g.awayTeam || "Away");
-        const pickSpread = pickHome ? spread : -spread;
-
-        return {
-          team: pickTeam,
-          ml: pickML,
-          conf: conf * 100,
-          margin: Math.abs(margin),
-          pickHome,
-          spread: pickSpread,
-          signals,
-          gameId: g.gameId,
-        };
+        const margin = g.pred.projectedSpread || g.pred.mlMargin || 0;
+        const conf = Math.max(g.pred.homeWinPct || .5, 1 - (g.pred.homeWinPct || .5));
+        const spread = g.odds.homeSpread ?? 0;
+        const pickHome = margin < 0;
+        const ml = spreadToML(pickHome ? spread : -spread);
+        return { team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(margin), gameId: g.gameId };
       })
-      .filter(p => p.conf >= CONF_GATE * 100 && p.ml > ML_CAP)
-      .sort((a, b) => b.conf - a.conf);
+      .filter(p => p.conf >= CONF_GATE*100 && p.ml > ML_CAP)
+      .sort((a,b) => b.conf - a.conf);
+  }, [games.ncaa, mode]);
 
-    return eligible;
-  }, [ncaaGames, mode]);
+  const p3 = parlayPicks.slice(0, 3), p5 = parlayPicks.slice(0, Math.min(5, parlayPicks.length));
 
-  const parlay3Picks = ncaaParlayPicks.slice(0, 3);
-  const parlay5Picks = ncaaParlayPicks.slice(0, Math.min(5, ncaaParlayPicks.length));
-
-  // ── Build ATS/OU picks for each sport ──
-  function buildPicks(games, sport) {
-    const atsPicks = [];
-    const ouPicks = [];
-
-    for (const g of games) {
+  // ── Sport picks ──
+  function buildPicks(gameList, sport) {
+    const ats = [], ou = [];
+    for (const g of gameList) {
       if (!g.pred || !g.odds) continue;
-      const home = g.homeTeam || g.homeAbbr || "Home";
-      const away = g.awayTeam || g.awayAbbr || "Away";
-      const signals = getBetSignals({ pred: g.pred, odds: g.odds, sport, homeName: home, awayName: away });
-
-      if (signals.betSizing) {
-        const side = signals.betSizing.side;
-        const team = side === "HOME" ? home : away;
-        const spread = g.odds?.homeSpread;
-        const displaySpread = spread != null
-          ? (side === "HOME" ? spread : -spread)
-          : null;
-
-        atsPicks.push({
-          team,
-          spread: displaySpread,
-          units: signals.betSizing.units,
-          edge: parseFloat(signals.betSizing.disagree || 0),
-          label: signals.betSizing.label,
-          color: signals.betSizing.color,
-          side,
-        });
+      const h = g.homeTeam || "Home", a = g.awayTeam || "Away";
+      const sig = getBetSignals({ pred: g.pred, odds: g.odds, sport, homeName: h, awayName: a });
+      if (sig.betSizing) {
+        const side = sig.betSizing.side, team = side === "HOME" ? h : a;
+        const sp = g.odds.homeSpread; const dsp = sp != null ? (side === "HOME" ? sp : -sp) : null;
+        ats.push({ team, spread: dsp, units: sig.betSizing.units, edge: parseFloat(sig.betSizing.disagree||0), side });
       }
-
-      if (signals.ou && (signals.ou.verdict === "GO" || signals.ou.verdict === "LEAN") && signals.ou.units) {
-        ouPicks.push({
-          team: signals.ou.side === "OVER" ? `${home}/${away}` : `${home}/${away}`,
-          side: signals.ou.side,
-          edge: parseFloat(signals.ou.diff || signals.ou.edge || 0),
-          units: signals.ou.units,
-          modelTotal: signals.ou.modelTotal,
-          marketLine: signals.ou.marketLine,
-        });
+      if (sig.ou && (sig.ou.verdict === "GO" || sig.ou.verdict === "LEAN") && sig.ou.units) {
+        ou.push({ team: `${h} / ${a}`, side: sig.ou.side, edge: parseFloat(sig.ou.diff||sig.ou.edge||0), units: sig.ou.units, modelTotal: sig.ou.modelTotal });
       }
     }
-
-    return { atsPicks, ouPicks };
+    return { ats, ou };
   }
 
-  const ncaaPicks = buildPicks(ncaaGames, "ncaa");
-  const nbaPicks = buildPicks(nbaGames, "nba");
-  const mlbPicks = buildPicks(mlbGames, "mlb");
-
-  const sportData = [
-    { name: "NCAA", icon: "🏀", color: C.orange, ...ncaaPicks },
-    { name: "NBA", icon: "🏀", color: "#58a6ff", ...nbaPicks },
-    { name: "MLB", icon: "⚾", color: C.blue, ...mlbPicks },
+  const sports = [
+    { key: "ncaa", name: "NCAA", icon: "🏀", color: C.orange, ...buildPicks(games.ncaa, "ncaa"), count: games.ncaa.length },
+    { key: "nba",  name: "NBA",  icon: "🏀", color: "#58a6ff", ...buildPicks(games.nba, "nba"),   count: games.nba.length },
+    { key: "mlb",  name: "MLB",  icon: "⚾", color: C.blue,   ...buildPicks(games.mlb, "mlb"),   count: games.mlb.length },
   ];
+  const totalPicks = sports.reduce((s,sp) => s + sp.ats.length + sp.ou.length, 0);
+  const anySyncing = Object.values(syncing).some(Boolean);
 
-  const totalPicks = sportData.reduce((s, sp) => s + sp.atsPicks.length + sp.ouPicks.length, 0);
-
+  // ── Render ──
   return (
-    <div style={S.page}>
+    <div style={{ maxWidth: 800, margin: "0 auto", padding: "16px 12px" }}>
       {/* Header */}
-      <div style={S.header}>
-        <h1 style={S.title}>Daily Bets</h1>
-        <div style={S.subtitle}>{today} · {totalPicks} active signals</div>
+      <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <h1 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, color: "#e6edf3", margin: 0 }}>Daily Bets</h1>
+        <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>{today} · {totalPicks} active signals</div>
       </div>
 
-      {/* ── NCAA PARLAY STRATEGY ── */}
-      <div style={S.strategyCard(strategy.color)}>
-        <div style={S.strategyLabel(strategy.color)}>{strategy.label}</div>
-        <div style={S.strategySub}>{strategy.sublabel}</div>
+      {/* Sync bar */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 20, flexWrap: "wrap", justifyContent: "center" }}>
+        <button onClick={syncAll} disabled={anySyncing} style={{
+          padding: "6px 18px", borderRadius: 6, border: "1px solid #2ea04377",
+          background: anySyncing ? "#0d281822" : "#2ea04322", color: anySyncing ? C.dim : "#2ea043",
+          fontSize: 12, fontWeight: 800, cursor: anySyncing ? "wait" : "pointer", letterSpacing: 1,
+        }}>{anySyncing ? "⏳ SYNCING..." : "🔄 SYNC ALL"}</button>
+        {sports.map(sp => (
+          <button key={sp.key} onClick={() => syncSport(sp.key)} disabled={syncing[sp.key]} style={{
+            padding: "5px 12px", borderRadius: 6, border: `1px solid ${sp.color}55`,
+            background: syncing[sp.key] ? `${sp.color}22` : `${sp.color}11`,
+            color: syncing[sp.key] ? C.dim : sp.color, fontSize: 11, fontWeight: 700, cursor: syncing[sp.key] ? "wait" : "pointer",
+          }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", display: "inline-block",
+              background: sp.count > 0 ? "#2ea043" : "#484f58", marginRight: 4 }} />
+            {sp.icon} {sp.name}{sp.count > 0 && ` (${sp.count})`}{syncing[sp.key] && " ⏳"}
+          </button>
+        ))}
+        {lastSync && <span style={{ fontSize: 9, color: "#484f58" }}>Last: {lastSync}</span>}
       </div>
 
-      {mode !== "skip" && ncaaParlayPicks.length >= MIN_LEGS && (
-        <>
-          {/* 3-Leg Parlay */}
-          {parlay3Picks.length >= 3 && (
-            <div style={S.parlayCard}>
-              <div style={S.parlayHeader}>
-                <span style={S.parlayTitle}>🏀 3-Leg Parlay</span>
-                <span style={S.parlayBadge("#2ea043")}>
-                  {mode === "3only" ? "$75" : "$50"}
-                </span>
-              </div>
-              {parlay3Picks.map((p, i) => (
-                <div key={i} style={{ ...S.legRow, borderBottom: i === parlay3Picks.length - 1 ? "none" : S.legRow.borderBottom }}>
-                  <span style={S.legTeam}>{p.team} ML</span>
-                  <span style={S.legMl}>{p.ml > 0 ? `+${p.ml}` : p.ml}</span>
-                  <span style={{ ...S.legConf, color: confColor(p.conf) }}>{p.conf.toFixed(0)}%</span>
-                </div>
-              ))}
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: C.dim }}>
-                <span>Parlay odds: {parlay3Picks.reduce((acc, p) => acc * (p.ml > 0 ? p.ml/100+1 : 100/Math.abs(p.ml)+1), 1).toFixed(2)}x</span>
-                <span>Potential: ${(mode === "3only" ? 75 : 50) * parlay3Picks.reduce((acc, p) => acc * (p.ml > 0 ? p.ml/100+1 : 100/Math.abs(p.ml)+1), 1).toFixed(0)}</span>
-              </div>
-            </div>
-          )}
+      {/* Strategy card */}
+      <div style={{ background: `linear-gradient(135deg, ${strat.color}12, ${strat.color}06)`,
+        border: `1px solid ${strat.color}55`, borderRadius: 12, padding: "16px 20px", marginBottom: 20 }}>
+        <div style={{ fontSize: 16, fontWeight: 800, color: strat.color, marginBottom: 4 }}>{strat.label}</div>
+        <div style={{ fontSize: 11, color: C.dim }}>{strat.sub}</div>
+      </div>
 
-          {/* 5-Leg Parlay (only in full mode) */}
-          {mode === "full" && parlay5Picks.length >= 5 && (
-            <div style={S.parlayCard}>
-              <div style={S.parlayHeader}>
-                <span style={S.parlayTitle}>🏀 5-Leg Parlay</span>
-                <span style={S.parlayBadge("#58a6ff")}>$25</span>
-              </div>
-              {parlay5Picks.map((p, i) => (
-                <div key={i} style={{ ...S.legRow, borderBottom: i === parlay5Picks.length - 1 ? "none" : S.legRow.borderBottom }}>
-                  <span style={S.legTeam}>{p.team} ML</span>
-                  <span style={S.legMl}>{p.ml > 0 ? `+${p.ml}` : p.ml}</span>
-                  <span style={{ ...S.legConf, color: confColor(p.conf) }}>{p.conf.toFixed(0)}%</span>
-                </div>
-              ))}
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: C.dim }}>
-                <span>Parlay odds: {parlay5Picks.reduce((acc, p) => acc * (p.ml > 0 ? p.ml/100+1 : 100/Math.abs(p.ml)+1), 1).toFixed(2)}x</span>
-                <span>Potential: ${(25 * parlay5Picks.reduce((acc, p) => acc * (p.ml > 0 ? p.ml/100+1 : 100/Math.abs(p.ml)+1), 1)).toFixed(0)}</span>
-              </div>
+      {/* ── PARLAYS ── */}
+      {mode !== "skip" && parlayPicks.length >= MIN_LEGS && [
+        { picks: p3, legs: 3, bet: mode === "3only" ? 75 : 50, color: "#2ea043", show: p3.length >= 3 },
+        { picks: p5, legs: 5, bet: 25, color: "#58a6ff", show: mode === "full" && p5.length >= 5 },
+      ].filter(p => p.show).map(({ picks, legs, bet, color }) => (
+        <div key={legs} style={{ background: "linear-gradient(135deg, #0d1117, #161b22)",
+          border: "1px solid #30363d", borderRadius: 10, padding: "14px 18px", marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <span style={{ fontSize: 14, fontWeight: 800, color: "#e6edf3" }}>🏀 {legs}-Leg Parlay</span>
+            <span style={{ fontSize: 10, fontWeight: 800, color: "#fff", background: color,
+              borderRadius: 5, padding: "3px 10px", letterSpacing: 1 }}>${bet}</span>
+          </div>
+          {picks.map((p, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "8px 0", borderBottom: i === picks.length-1 ? "none" : "1px solid #21262d" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>{p.team} ML</span>
+              <span style={{ fontSize: 12, color: C.muted, width: 60, textAlign: "right" }}>{p.ml > 0 ? `+${p.ml}` : p.ml}</span>
+              <span style={{ fontSize: 11, width: 50, textAlign: "right", color: confColor(p.conf) }}>{p.conf.toFixed(0)}%</span>
             </div>
-          )}
+          ))}
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: C.dim }}>
+            <span>Odds: {parlayOdds(picks).toFixed(2)}x</span>
+            <span>Potential: ${(bet * parlayOdds(picks)).toFixed(0)}</span>
+          </div>
+        </div>
+      ))}
 
-          {ncaaParlayPicks.length < MIN_LEGS && (
-            <div style={S.noPicks}>Not enough qualifying NCAA picks for parlays today ({ncaaParlayPicks.length} picks, need {MIN_LEGS})</div>
-          )}
-        </>
+      {mode !== "skip" && games.ncaa.length > 0 && parlayPicks.length < MIN_LEGS && (
+        <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0" }}>
+          {parlayPicks.length > 0
+            ? `Only ${parlayPicks.length} qualifying NCAA picks (need ${MIN_LEGS})`
+            : `${games.ncaa.length} NCAA games loaded — none pass ≥65% + ML cap -500 filter`}
+        </div>
       )}
 
-      {/* ── INDIVIDUAL SPORT PICKS ── */}
-      {sportData.map(sport => {
-        const hasPicks = sport.atsPicks.length > 0 || sport.ouPicks.length > 0;
-        if (!hasPicks) return null;
-
+      {/* ── SPORT SECTIONS ── */}
+      {sports.map(sp => {
+        const has = sp.ats.length > 0 || sp.ou.length > 0;
         return (
-          <div key={sport.name} style={S.sportSection}>
-            <div style={S.sportHeader}>
-              <span style={S.sportIcon}>{sport.icon}</span>
-              <span style={S.sportName}>{sport.name}</span>
-              <span style={S.sportCount}>
-                {sport.atsPicks.length} ATS · {sport.ouPicks.length} O/U
+          <div key={sp.key} style={{ marginTop: 28 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, paddingBottom: 8, borderBottom: "1px solid #21262d" }}>
+              <span style={{ fontSize: 20 }}>{sp.icon}</span>
+              <span style={{ fontSize: 18, fontWeight: 900, color: "#e6edf3", letterSpacing: -0.5 }}>{sp.name}</span>
+              <span style={{ fontSize: 11, color: C.dim, marginLeft: "auto" }}>
+                {has ? `${sp.ats.length} ATS · ${sp.ou.length} O/U` : sp.count > 0 ? `${sp.count} games · no signals` : "not synced"}
               </span>
+              <button onClick={() => syncSport(sp.key)} disabled={syncing[sp.key]} style={{
+                padding: "3px 10px", borderRadius: 6, border: `1px solid ${sp.color}55`,
+                background: `${sp.color}11`, color: sp.color, fontSize: 10, fontWeight: 700, cursor: "pointer",
+              }}>{syncing[sp.key] ? "⏳" : "🔄"}</button>
             </div>
 
-            {/* ATS Picks */}
-            {sport.atsPicks.length > 0 && (
-              <>
-                <div style={S.categoryLabel}>ATS / Spread</div>
-                {sport.atsPicks
-                  .sort((a, b) => b.units - a.units || b.edge - a.edge)
-                  .map((pick, i) => (
-                    <div key={i} style={S.pickRow}>
-                      <span style={S.pickTeam}>{pick.team}</span>
-                      <span style={S.pickLine}>
-                        {pick.spread != null
-                          ? (pick.spread > 0 ? `+${pick.spread.toFixed(1)}` : pick.spread.toFixed(1))
-                          : "—"
-                        }
-                      </span>
-                      <span style={S.pickEdge}>{pick.edge.toFixed(1)} pts</span>
-                      <span style={S.unitBadge(pick.units, unitColor(pick.units))}>
-                        {pick.units}u
-                      </span>
-                    </div>
-                  ))}
-              </>
-            )}
+            {!has && sp.count === 0 && <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0" }}>Tap 🔄 to load</div>}
 
-            {/* O/U Picks */}
-            {sport.ouPicks.length > 0 && (
-              <>
-                <div style={S.categoryLabel}>Over / Under</div>
-                {sport.ouPicks
-                  .sort((a, b) => b.units - a.units || b.edge - a.edge)
-                  .map((pick, i) => (
-                    <div key={i} style={S.pickRow}>
-                      <span style={S.pickTeam}>
-                        {pick.side === "OVER" ? "▲" : "▼"} {pick.side} {pick.team}
-                      </span>
-                      <span style={S.pickLine}>
-                        {pick.modelTotal?.toFixed?.(1) ?? "—"}
-                      </span>
-                      <span style={S.pickEdge}>{pick.edge.toFixed(1)} pts</span>
-                      <span style={S.unitBadge(pick.units, pick.side === "OVER" ? "#2ea043" : "#58a6ff")}>
-                        {pick.units}u
-                      </span>
-                    </div>
-                  ))}
-              </>
-            )}
+            {sp.ats.length > 0 && <>
+              <div style={{ fontSize: 10, fontWeight: 800, color: C.dim, letterSpacing: 2, marginTop: 14, marginBottom: 6 }}>ATS / SPREAD</div>
+              {sp.ats.sort((a,b) => b.units - a.units || b.edge - a.edge).map((p,i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                  background: "#0d1117", borderRadius: 8, marginBottom: 6, border: "1px solid #21262d" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>{p.team}</span>
+                  <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>
+                    {p.spread != null ? (p.spread > 0 ? `+${p.spread.toFixed(1)}` : p.spread.toFixed(1)) : "—"}
+                  </span>
+                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.edge.toFixed(1)} pts</span>
+                  <span style={{ fontSize: 10, fontWeight: 900, color: "#fff", background: unitColor(p.units),
+                    borderRadius: 4, padding: "2px 8px", minWidth: 30, textAlign: "center" }}>{p.units}u</span>
+                </div>
+              ))}
+            </>}
+
+            {sp.ou.length > 0 && <>
+              <div style={{ fontSize: 10, fontWeight: 800, color: C.dim, letterSpacing: 2, marginTop: 14, marginBottom: 6 }}>OVER / UNDER</div>
+              {sp.ou.sort((a,b) => b.units - a.units || b.edge - a.edge).map((p,i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                  background: "#0d1117", borderRadius: 8, marginBottom: 6, border: "1px solid #21262d" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>
+                    {p.side === "OVER" ? "▲" : "▼"} {p.side} {p.team}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>{p.modelTotal?.toFixed?.(1) ?? "—"}</span>
+                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.edge.toFixed(1)} pts</span>
+                  <span style={{ fontSize: 10, fontWeight: 900, color: "#fff",
+                    background: p.side === "OVER" ? "#2ea043" : "#58a6ff",
+                    borderRadius: 4, padding: "2px 8px", minWidth: 30, textAlign: "center" }}>{p.units}u</span>
+                </div>
+              ))}
+            </>}
           </div>
         );
       })}
 
-      {totalPicks === 0 && (
+      {totalPicks === 0 && !anySyncing && sports.every(s => s.count === 0) && (
         <div style={{ textAlign: "center", padding: 40, color: C.dim }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>📊</div>
-          <div style={{ fontSize: 14 }}>No signals yet today</div>
-          <div style={{ fontSize: 11, marginTop: 4 }}>Sync games from each sport tab to generate picks</div>
+          <div style={{ fontSize: 14 }}>Hit "Sync All" to load today's picks</div>
         </div>
       )}
 
-      <div style={S.timestamp}>
-        Last updated: {new Date().toLocaleTimeString()} · Strategy: {mode} mode
+      <div style={{ fontSize: 10, color: "#484f58", textAlign: "center", marginTop: 20 }}>
+        {lastSync ? `Synced ${lastSync}` : "Not synced"} · {mode} mode · ML cap {ML_CAP}
       </div>
     </div>
   );
