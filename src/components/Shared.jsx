@@ -510,9 +510,9 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
     const mlbLegs = mlbGames.filter(g => g.pred).map(g => {
       const pickHome = g.pred.homeWinPct >= 0.5;
       const ml = pickHome ? (g.odds?.homeML || g.pred.modelML_home) : (g.odds?.awayML || g.pred.modelML_away);
-      const home = g.homeTeam || { abbr: "HOME" };
-      const away = g.awayTeam || { abbr: "AWAY" };
-      return { sport: "MLB", gamePk: g.gamePk || g.gameId, label: `${away.abbr} @ ${home.abbr}`, pick: pickHome ? home.abbr : away.abbr, prob: pickHome ? g.pred.homeWinPct : g.pred.awayWinPct, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
+      const hName = (g.homeAbbr || g.homeTeam?.abbr || g.homeTeamName || "HOME").slice(0, 8);
+      const aName = (g.awayAbbr || g.awayTeam?.abbr || g.awayTeamName || "AWAY").slice(0, 8);
+      return { sport: "MLB", gamePk: g.gamePk || g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? g.pred.homeWinPct : g.pred.awayWinPct, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
     const ncaaLegs = ncaaGames.filter(g => g.pred).map(g => {
       const pickHome = g.pred.homeWinPct >= 0.5;
