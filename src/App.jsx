@@ -22,11 +22,13 @@ import { nbaAutoSync }   from "./sports/nba/nbaSync.js";
 import { nflAutoSync }   from "./sports/nfl/nflSync.js";
 import { ncaafAutoSync } from "./sports/ncaaf/ncaafSync.js";
 import ModelHealth from "./components/ModelHealth.jsx";
+import DailyBets from "./components/DailyBets.jsx";
 
 // ─────────────────────────────────────────────────────────────
 // SPORT NAV CONFIG
 // ─────────────────────────────────────────────────────────────
 const SPORTS = [
+  ["BETS",  "💰", "#2ea043"],
   ["MLB",   "⚾", C.blue],
   ["NCAA",  "🏀", C.orange],
   ["NBA",   "🏀", "#58a6ff"],
@@ -54,7 +56,7 @@ function useCalibration(key, defaultVal = 1.0) {
 // ROOT APP
 // ─────────────────────────────────────────────────────────────
 export default function App() {
-  const [sport, setSport] = useState("MLB");
+  const [sport, setSport] = useState("BETS");
 
   // Per-sport game lists (passed down so ParlayBuilder can combine them)
   const [mlbGames,   setMlbGames]   = useState([]);
@@ -118,7 +120,7 @@ export default function App() {
         position: "sticky", top: 0, background: "#0d1117", zIndex: 100, flexWrap: "wrap",
       }}>
         <div style={{ fontSize: 10, fontWeight: 800, color: "#e2e8f0", letterSpacing: 1, whiteSpace: "nowrap" }}>
-          ⚾🏀🏀🏈🏈 <span style={{ fontSize: 8, color: C.dim, letterSpacing: 2 }}>PREDICTOR v15</span>
+          💰⚾🏀🏈 <span style={{ fontSize: 8, color: C.dim, letterSpacing: 2 }}>PREDICTOR v16</span>
         </div>
 
         <div style={{
@@ -163,6 +165,14 @@ export default function App() {
 
       {/* ── CONTENT ───────────────────────────────────────────── */}
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
+
+        {sport === "BETS" && (
+          <DailyBets
+            ncaaGames={ncaaGames}
+            nbaGames={nbaGames}
+            mlbGames={mlbGames}
+          />
+        )}
 
         {sport === "MLB" && (
           <MLBSection
@@ -218,7 +228,7 @@ export default function App() {
         borderTop: `1px solid ${C.border}`,
         fontSize: 9, color: "#21262d", letterSpacing: 2,
       }}>
-        MULTI-SPORT PREDICTOR v15 · MLB · NCAAB · NBA · NFL · NCAAF · ESPN API · {SEASON}
+        MULTI-SPORT PREDICTOR v16 · DAILY BETS · MLB · NCAAB · NBA · NFL · NCAAF · {SEASON}
       </div>
     </div>
   );
