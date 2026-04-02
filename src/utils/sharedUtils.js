@@ -174,10 +174,20 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
         ouUnits = 1;  // max 1u for OVER
       }
     } else {
-      // NCAA/NBA: percentage-based (4% entry, 8% GO, 12% 3u)
-      ouEntry = diffPct >= OU_EDGE_THRESHOLD;
-      ouGo    = diffPct >= 0.08;
-      ouUnits = diffPct >= 0.12 ? 3 : diffPct >= 0.08 ? 2 : 1;
+      // NCAA/NBA: POINT-BASED thresholds (AUDIT-v3: unified with NBACalendarTab override)
+      // 4pt = 1u entry, 7pt = 2u GO, 10pt = 3u MAX
+      const isNBA = sport === "nba";
+      const ouPtThresholdEntry = isNBA ? 4 : null;  // NBA uses absolute points
+      if (isNBA) {
+        ouEntry = absDiff >= 4;
+        ouGo = absDiff >= 7;
+        ouUnits = absDiff >= 10 ? 3 : absDiff >= 7 ? 2 : 1;
+      } else {
+        // NCAA: percentage-based (4% entry, 8% GO, 12% 3u)
+        ouEntry = diffPct >= OU_EDGE_THRESHOLD;
+        ouGo    = diffPct >= 0.08;
+        ouUnits = diffPct >= 0.12 ? 3 : diffPct >= 0.08 ? 2 : 1;
+      }
     }
 
     if (ouEntry) {

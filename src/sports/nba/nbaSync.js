@@ -183,8 +183,8 @@ export async function nbaAutoSync(onProgress) {
       // margin, win prob, scores — exactly what we store, display, and backtest.
       const odds = isToday ? (todayOdds.find(o => matchNBAOddsToGame(o, g)) || null) : null;
 
-      // VIG + ML cap constants for moneyline computation
-      const VIG = 0.0225;
+      // AUDIT-v3: VIG removed — model outputs fair probability, not juiced
+      const VIG = 0;
       const ML_CAP = 900;
 
       // Start with raw stats row (always persisted for training)

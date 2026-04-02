@@ -19,8 +19,8 @@ import {
   computeLeagueAverages,
 } from "./nbaUtils.js";
 
-// ML moneyline cap
-const ML_CAP = 500;
+// ML moneyline cap — AUDIT-v3: bumped from 500 to 800 for display fidelity
+const ML_CAP = 800;
 
 // Unit badge for spread/ML/OU cells
 const SignalBadge = ({ label, color, children }) => {
@@ -246,7 +246,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const mlWinAway = 1 - mlWinHome;
         const homeScore = mlResult.pred_home_score ?? (g.homeStats?.ppg || 112) + mlMargin / 2;
         const awayScore = mlResult.pred_away_score ?? (g.awayStats?.ppg || 112) - mlMargin / 2;
-        const VIG = 0.0225;
+        const VIG = 0;  // AUDIT-v3: removed — model outputs fair probability, not juiced
         const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
         const pred = {
           ...(g.pred || {}),
@@ -257,11 +257,11 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           awayWinPct: mlWinAway,
           ouTotal: mlResult.ou_predicted_total ?? parseFloat((homeScore + awayScore).toFixed(1)),
           modelML_home: mlWinHome >= 0.5
-            ? -Math.min(4000, Math.round((hProb / (1 - hProb)) * 100))
-            : +Math.min(4000, Math.round(((1 - hProb) / hProb) * 100)),
+            ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
+            : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100)),
           modelML_away: mlWinAway >= 0.5
-            ? -Math.min(4000, Math.round((aProb / (1 - aProb)) * 100))
-            : +Math.min(4000, Math.round(((1 - aProb) / aProb) * 100)),
+            ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
+            : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100)),
           mlEnhanced: true,
           _ouPredictedTotal: mlResult.ou_predicted_total ?? null,
           _ouEdge: mlResult.ou_edge ?? null,
@@ -337,8 +337,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           const mlWinAway = 1 - mlWinHome;
           const homeScore = mlResult.pred_home_score ?? parseFloat(((hs?.ppg || 112) + mlMargin / 2).toFixed(1));
           const awayScore = mlResult.pred_away_score ?? parseFloat(((as_?.ppg || 112) - mlMargin / 2).toFixed(1));
-          const VIG = 0.0225;
-          const ML_CAP_DISPLAY = 500;
+          const VIG = 0;  // AUDIT-v3: removed — model outputs fair probability
           const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
           pred = {
             homeScore: parseFloat(homeScore.toFixed?.(1) ?? homeScore),
@@ -348,11 +347,11 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
             projectedSpread: parseFloat(mlMargin.toFixed(1)),
             ouTotal: mlResult.ou_predicted_total ?? parseFloat((homeScore + awayScore).toFixed(1)),
             modelML_home: mlWinHome >= 0.5
-              ? -Math.min(ML_CAP_DISPLAY, Math.round((hProb / (1 - hProb)) * 100))
-              : +Math.min(ML_CAP_DISPLAY, Math.round(((1 - hProb) / hProb) * 100)),
+              ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
+              : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100)),
             modelML_away: mlWinAway >= 0.5
-              ? -Math.min(ML_CAP_DISPLAY, Math.round((aProb / (1 - aProb)) * 100))
-              : +Math.min(ML_CAP_DISPLAY, Math.round(((1 - aProb) / aProb) * 100)),
+              ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
+              : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100)),
             homeNetRtg: nbaRealH?.netRtg ?? 0,
             awayNetRtg: nbaRealA?.netRtg ?? 0,
             possessions: hs && as_ ? Math.round((hs.pace + as_.pace) / 2) : 99,
@@ -507,26 +506,9 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
 
           const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" });
 
-          // v27: Override O/U signal with ML O/U model when available
-          if (signals.ou && game.pred?._ouPick) {
-            const ouEdge = Math.abs(game.pred._ouEdge || 0);
-            const ouSide = game.pred._ouPick;
-            if (ouEdge >= 4) {
-              const ouUnits = ouEdge >= 10 ? 3 : ouEdge >= 7 ? 2 : 1;
-              signals.ou = {
-                ...signals.ou,
-                verdict: "GO",
-                side: ouSide,
-                label: `${ouSide} ${ouEdge.toFixed(1)}pts edge · ${ouUnits}u`,
-                edge: ouEdge,
-                units: ouUnits,
-                modelTotal: game.pred._ouPredictedTotal,
-                marketLine: game.odds?.ouLine ?? null,
-              };
-            } else {
-              signals.ou = { ...signals.ou, verdict: "SKIP", label: `O/U edge ${ouEdge.toFixed(1)} < 4` };
-            }
-          }
+          // AUDIT-v3: O/U override REMOVED — sharedUtils.getBetSignals now uses
+          // point-based thresholds (4/7/10) for NBA, matching the former override.
+          // pred.ouTotal already contains ML O/U model total when available.
 
           const isBetGame = !!signals.betSizing || (signals.ou?.verdict === "GO" && !!signals.ou?.units);
           const bannerInfo = getBannerInfo(game.pred, game.odds);
