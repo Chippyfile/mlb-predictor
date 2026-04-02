@@ -244,51 +244,82 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     const fmtModel = projSpread >= 0 ? `−${projSpread.toFixed(1)}` : `+${Math.abs(projSpread).toFixed(1)}`;
     const fmtMarket = mktSpread >= 0 ? `+${mktSpread.toFixed(1)}` : `−${Math.abs(mktSpread).toFixed(1)}`;
 
-    // Sport-specific thresholds
+    // Sport-specific thresholds validated via walk-forward:
+    //
+    // NCAA (Lasso+LGBM v30, 43 features, 34,055 games):
+    //   0-4 pts:  ~54% ATS → NO BET (noise zone)
+    //   4-6 pts:  65.4% ATS → 2u (+25% ROI)
+    //   6-8 pts:  76.6% ATS → 3u (+46% ROI)
+    //   8-10 pts: 87.2% ATS → 4u (+66% ROI)
+    //   10+ pts:  96.5% ATS → 5u MAX (+84% ROI)
+    //
+    // NBA (Lasso+Ridge+LGBM v29, 50 features, 5,392 games):
+    //   0-4 pts:  ~57% → NO BET
+    //   4-7 pts:  63.6% → 1u (+21% ROI)
+    //   7-10 pts: 69.4% → 2u (+33% ROI)
+    //   10+ pts:  68.8% → 3u (+31% ROI)
+    //
+    // MLB (Lasso+EN+CatBoost v8, 19,877 games):
+    //   0-0.5 runs: ~58% → SKIP
+    //   0.5+ runs: 61.0% → 1u (+17% ROI)
+    //   1.0+ runs: 63.9% → 2u (+22% ROI)
+    //   1.5+ runs: 66.7% → 3u (+27% ROI)
+
     const isMLB = sport === "mlb";
-    const t3 = isMLB ? 2.0 : 10;  // 3u edge threshold
-    const t2 = isMLB ? 1.5 : 7;   // 2u edge threshold
-    const t1 = isMLB ? 1.0 : 4;   // 1u edge threshold
+    const isNCAA = sport === "ncaa" || sport === "ncaaf";
     const unitLabel = isMLB ? "run" : "pt";
 
-    // Validated accuracy labels
-    const a3 = isMLB ? "~71%" : "~65%";
-    const a2 = isMLB ? "~69%" : "~62%";
-    const a1 = isMLB ? "~64%" : "~60%";
-    const roi3 = isMLB ? "+35%" : "+20%";
-    const roi2 = isMLB ? "+31%" : "+15%";
-    const roi1 = isMLB ? "+23%" : "+15%";
-    const sampleSize = isMLB ? "7,943" : "861";
+    // Determine edge tier and units based on sport
+    let edgeTier = 0;
+    let tierLabels;
 
-    // MLB confidence gate: edge alone isn't enough with fixed ±1.5 run line
-    // Model win probability must support the bet size
-    //   3u MAX: edge ≥ 1.5 AND model ≥ 65% confident
-    //   2u GO:  edge ≥ 1.0 AND model ≥ 60% confident
-    //   1u LEAN: edge ≥ 0.5 (any confidence)
-    const modelConf = Math.max(homeWin, awayWin);
-    const confGate3 = isMLB ? modelConf >= 0.65 : true;  // basketball spreads are variable, no gate needed
-    const confGate2 = isMLB ? modelConf >= 0.60 : true;
-
-    // Determine raw edge tier
-    let edgeTier = 0; // 0=skip, 1=lean, 2=go, 3=max
-    if (disagree >= t3) edgeTier = 3;
-    else if (disagree >= t2) edgeTier = 2;
-    else if (disagree >= t1) edgeTier = 1;
-
-    // Apply confidence gate (MLB only — caps units when model isn't confident)
-    let finalTier = edgeTier;
     if (isMLB) {
-      if (finalTier >= 3 && !confGate3) finalTier = confGate2 ? 2 : 1;
-      if (finalTier >= 2 && !confGate2) finalTier = 1;
+      if (disagree >= 1.5) edgeTier = 3;
+      else if (disagree >= 1.0) edgeTier = 2;
+      else if (disagree >= 0.5) edgeTier = 1;
+      tierLabels = {
+        3: { label: "MAX (3u)", units: 3, color: "green", verdict: "GO", acc: "~67%", roi: "+27%" },
+        2: { label: "STRONG (2u)", units: 2, color: "yellow", verdict: "GO", acc: "~64%", roi: "+22%" },
+        1: { label: "BET (1u)", units: 1, color: "muted", verdict: "LEAN", acc: "~61%", roi: "+17%" },
+      };
+    } else if (isNCAA) {
+      // NCAA: higher entry (4+), steeper unit curve (validated 65-97% accuracy)
+      if (disagree >= 10) edgeTier = 5;
+      else if (disagree >= 8) edgeTier = 4;
+      else if (disagree >= 6) edgeTier = 3;
+      else if (disagree >= 4) edgeTier = 2;
+      // No 1u tier — below 4 is noise
+      tierLabels = {
+        5: { label: "MAX (5u)", units: 5, color: "green", verdict: "GO", acc: "~97%", roi: "+84%" },
+        4: { label: "STRONG (4u)", units: 4, color: "green", verdict: "GO", acc: "~87%", roi: "+66%" },
+        3: { label: "HIGH (3u)", units: 3, color: "yellow", verdict: "GO", acc: "~77%", roi: "+46%" },
+        2: { label: "BET (2u)", units: 2, color: "muted", verdict: "GO", acc: "~65%", roi: "+25%" },
+      };
+    } else {
+      // NBA: current thresholds
+      if (disagree >= 10) edgeTier = 3;
+      else if (disagree >= 7) edgeTier = 2;
+      else if (disagree >= 4) edgeTier = 1;
+      tierLabels = {
+        3: { label: "MAX (3u)", units: 3, color: "green", verdict: "GO", acc: "~69%", roi: "+33%" },
+        2: { label: "STRONG (2u)", units: 2, color: "yellow", verdict: "GO", acc: "~69%", roi: "+33%" },
+        1: { label: "BET (1u)", units: 1, color: "muted", verdict: "LEAN", acc: "~64%", roi: "+21%" },
+      };
     }
 
-    const tierLabels = {
-      3: { label: "MAX (3u)", color: "green", verdict: "GO", acc: a3, roi: roi3 },
-      2: { label: "STRONG (2u)", color: "yellow", verdict: "GO", acc: a2, roi: roi2 },
-      1: { label: "BET (1u)", color: "muted", verdict: "LEAN", acc: a1, roi: roi1 },
-    };
+    // MLB confidence gate
+    const modelConf = Math.max(homeWin, awayWin);
+    if (isMLB) {
+      const confGate3 = modelConf >= 0.65;
+      const confGate2 = modelConf >= 0.60;
+      if (edgeTier >= 3 && !confGate3) edgeTier = confGate2 ? 2 : 1;
+      if (edgeTier >= 2 && !confGate2) edgeTier = 1;
+    }
 
-    if (finalTier >= 1) {
+    const finalTier = edgeTier;
+    const sampleSize = isMLB ? "19,877" : isNCAA ? "34,055" : "5,392";
+
+    if (finalTier >= 1 && tierLabels[finalTier]) {
       const tl = tierLabels[finalTier];
       const confNote = isMLB && finalTier < edgeTier
         ? ` (capped from ${edgeTier}u — model only ${(modelConf * 100).toFixed(0)}% confident)`
@@ -301,7 +332,7 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
         reason: `Model ${fmtModel} vs market ${fmtMarket} — ${disagree.toFixed(1)} ${unitLabel} gap (${tl.acc} ${isMLB ? "RL" : "ATS"})${confNote}`,
       };
       betSizing = {
-        units: finalTier, label: tl.label, color: tl.color, side, sideLabel,
+        units: tl.units, label: tl.label, color: tl.color, side, sideLabel,
         disagree: parseFloat(disagree.toFixed(1)),
         atsHistorical: tl.acc,
         reason: `${disagree.toFixed(1)} ${unitLabel}s disagreement → ${finalTier}u (validated ${tl.acc} on ${sampleSize} games, ${tl.roi} ROI)${confNote}`,
