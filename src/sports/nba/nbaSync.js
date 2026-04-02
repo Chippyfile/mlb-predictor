@@ -1,13 +1,14 @@
 // src/sports/nba/nbaSync.js
-// NBA v17 — Deep Formula Audit Implementation
+// NBA v18 — ML-first prediction (single source of truth)
 //
-// v16 fixes retained:
-//   NBA-07: Persist 30+ raw stat columns to Supabase for ML training
-//   NBA-10: Real B2B rest detection from schedule data
-//   NBA-11: Real travel distance from previous game city
+// v18 changes:
+//   ML API (/predict/nba/full) is now the PRIMARY prediction source.
+//   Heuristic nbaPredictGame is FALLBACK only if ML API fails.
+//   What gets stored = what gets displayed = what we backtest on.
+//   FIX HIGH-4: Moneylines computed from ML win probability
+//   FIX MED-1:  O/U total from ML model when available
 //
-// v17 fixes:
-//   Removed redundant fetchNBARealPace calls (team stats already contain pace/ratings)
+// Retained: raw stat columns for training, rest/travel, CLV, ATS picks
 
 import { supabaseQuery } from "../../utils/supabase.js";
 import { fetchOdds } from "../../utils/sharedUtils.js";
@@ -177,37 +178,26 @@ export async function nbaAutoSync(onProgress) {
       // NBA-11: Get previous city for travel distance
       const awayPrevCityAbbr = as_.lastGameCity || null;
 
-      const pred = nbaPredictGame({
-        homeStats: hs, awayStats: as_,
-        neutralSite: g.neutralSite,
-        homeRealStats: nbaRealH, awayRealStats: nbaRealA,
-        homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr,
-        homeDaysRest, awayDaysRest,
-        awayPrevCityAbbr,
-      });
-      if (!pred) return null;
+      // ═══ v18: ML-FIRST PREDICTION (single source of truth) ═══
+      // Backend (/predict/nba/full) fetches all data server-side and returns
+      // margin, win prob, scores — exactly what we store, display, and backtest.
       const odds = isToday ? (todayOdds.find(o => matchNBAOddsToGame(o, g)) || null) : null;
 
+      // VIG + ML cap constants for moneyline computation
+      const VIG = 0.0225;
+      const ML_CAP = 900;
+
+      // Start with raw stats row (always persisted for training)
       const row = {
         game_date: dateStr, game_id: g.gameId,
         home_team: g.homeAbbr, away_team: g.awayAbbr,
         home_team_name: g.homeTeamName, away_team_name: g.awayTeamName,
-        model_ml_home: pred.modelML_home, model_ml_away: pred.modelML_away,
-        spread_home: pred.projectedSpread, ou_total: pred.ouTotal,
-        win_pct_home: parseFloat(pred.homeWinPct.toFixed(4)),
-        confidence: pred.confidence,
-        pred_home_score: pred.homeScore, pred_away_score: pred.awayScore,
-        home_net_rtg: pred.homeNetRtg, away_net_rtg: pred.awayNetRtg,
+        home_net_rtg: nbaRealH.netRtg, away_net_rtg: nbaRealA.netRtg,
         ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
         ...(odds?.marketTotal != null && { market_ou_total: odds.marketTotal }),
-        // ── CLV: Opening lines captured at prediction time ──
-        // FIX: odds.js returns homeML/awayML, not homeOdds/awayOdds
         ...(odds?.homeML != null && { opening_home_ml: odds.homeML }),
         ...(odds?.awayML != null && { opening_away_ml: odds.awayML }),
-        // ══════════════════════════════════════════════════════
-        // NBA-07 FIX: Raw stats persisted for ML training
-        // (mirrors NCAAB ncaaSync.js pattern — 30+ columns)
-        // ══════════════════════════════════════════════════════
+        // Raw stats for ML training
         home_ppg: hs.ppg, away_ppg: as_.ppg,
         home_opp_ppg: hs.oppPpg, away_opp_ppg: as_.oppPpg,
         home_fgpct: hs.fgPct, away_fgpct: as_.fgPct,
@@ -226,30 +216,65 @@ export async function nbaAutoSync(onProgress) {
         home_wins: hs.wins, away_wins: as_.wins,
         home_losses: hs.losses, away_losses: as_.losses,
         home_form: hs.formScore, away_form: as_.formScore,
-        // NBA-10/11: rest + travel context
         home_days_rest: homeDaysRest, away_days_rest: awayDaysRest,
         away_travel_dist: awayPrevCityAbbr && g.homeAbbr
           ? Math.round(haversineDistance(awayPrevCityAbbr, g.homeAbbr))
           : null,
       };
 
-      // ═══ v27: Override with ML ensemble prediction (55 features, server-side) ═══
-      // Backend fetches ESPN summary, Supabase enrichment, referee profiles, etc.
-      // Falls back to heuristic if ML API is unavailable.
+      // ── PRIMARY: ML API prediction ──
+      let mlUsed = false;
       try {
         const mlResult = await mlPredictNBAFull(g.gameId, { gameDate: dateStr });
         if (mlResult && mlResult.ml_margin != null && !mlResult.error) {
-          row.win_pct_home = parseFloat((mlResult.ml_win_prob_home ?? row.win_pct_home).toFixed(4));
-          row.ml_win_prob_home = parseFloat((mlResult.ml_win_prob_home ?? 0.5).toFixed(4));
+          mlUsed = true;
+          const mlWinHome = parseFloat((mlResult.ml_win_prob_home ?? 0.5).toFixed(4));
+          const mlWinAway = parseFloat((1 - mlWinHome).toFixed(4));
           row.spread_home = parseFloat(mlResult.ml_margin.toFixed(1));
-          if (mlResult.pred_home_score) row.pred_home_score = parseFloat(mlResult.pred_home_score.toFixed(1));
-          if (mlResult.pred_away_score) row.pred_away_score = parseFloat(mlResult.pred_away_score.toFixed(1));
+          row.win_pct_home = mlWinHome;
+          row.ml_win_prob_home = mlWinHome;
+          row.pred_home_score = mlResult.pred_home_score ? parseFloat(mlResult.pred_home_score.toFixed(1)) : parseFloat((hs.ppg + mlResult.ml_margin / 2).toFixed(1));
+          row.pred_away_score = mlResult.pred_away_score ? parseFloat(mlResult.pred_away_score.toFixed(1)) : parseFloat((as_.ppg - mlResult.ml_margin / 2).toFixed(1));
+          row.ou_total = mlResult.ou_predicted_total ? parseFloat(mlResult.ou_predicted_total.toFixed(1)) : parseFloat((row.pred_home_score + row.pred_away_score).toFixed(1));
+          row.confidence = mlResult.model_meta?.confidence || (Math.abs(mlResult.ml_margin) >= 7 ? "HIGH" : Math.abs(mlResult.ml_margin) >= 3 ? "MEDIUM" : "LOW");
           row.ml_feature_coverage = mlResult.feature_coverage || null;
           row.ml_model_type = mlResult.model_meta?.model_type || null;
-          console.log(`[NBA ML] ${g.homeAbbr} vs ${g.awayAbbr}: margin=${mlResult.ml_margin?.toFixed(1)}, wp=${mlResult.ml_win_prob_home?.toFixed(3)}, coverage=${mlResult.feature_coverage}`);
+
+          // FIX HIGH-4: Compute moneylines from ML win probability (not stale heuristic)
+          const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
+          row.model_ml_home = mlWinHome >= 0.5
+            ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
+            : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100));
+          row.model_ml_away = mlWinAway >= 0.5
+            ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
+            : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100));
+
+          console.log(`[NBA ML] ${g.homeAbbr} vs ${g.awayAbbr}: margin=${mlResult.ml_margin?.toFixed(1)}, wp=${mlWinHome.toFixed(3)}, ml=${row.model_ml_home}/${row.model_ml_away}, coverage=${mlResult.feature_coverage}`);
         }
       } catch (e) {
         console.warn(`[NBA ML] predict failed for ${g.gameId}:`, e.message);
+      }
+
+      // ── FALLBACK: Heuristic prediction (only if ML failed) ──
+      if (!mlUsed) {
+        const pred = nbaPredictGame({
+          homeStats: hs, awayStats: as_,
+          neutralSite: g.neutralSite,
+          homeRealStats: nbaRealH, awayRealStats: nbaRealA,
+          homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr,
+          homeDaysRest, awayDaysRest,
+          awayPrevCityAbbr,
+        });
+        if (!pred) return null;
+        row.model_ml_home = pred.modelML_home;
+        row.model_ml_away = pred.modelML_away;
+        row.spread_home = pred.projectedSpread;
+        row.ou_total = pred.ouTotal;
+        row.win_pct_home = parseFloat(pred.homeWinPct.toFixed(4));
+        row.confidence = pred.confidence;
+        row.pred_home_score = pred.homeScore;
+        row.pred_away_score = pred.awayScore;
+        console.log(`[NBA HEURISTIC] ${g.homeAbbr} vs ${g.awayAbbr}: margin=${pred.projectedSpread?.toFixed(1)} (ML unavailable)`);
       }
 
       // ═══ v27: ATS PICK — computed from spread disagreement ═══

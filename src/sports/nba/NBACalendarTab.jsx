@@ -1,6 +1,8 @@
 // src/sports/nba/NBACalendarTab.jsx
-// v2: Matched to NCAA grid layout — BetBanner, UnitBadge, confidence footer, green ML styling
-// v17 audit fixes preserved: removed redundant fetchNBARealPace calls
+// v18: ML-first prediction — single source of truth
+// ML API (/predict/nba/full) is PRIMARY. No blending, no reconciliation.
+// What you see = what's stored = what's backtested.
+// Heuristic nbaPredictGame is FALLBACK only if ML API fails.
 import { useState, useEffect, useCallback } from "react";
 import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, BetSignalsPanel } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
@@ -231,7 +233,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
   const [oddsInfo, setOddsInfo] = useState(null);
   const [refreshingGame, setRefreshingGame] = useState(null);
 
-  // Per-game refresh: re-calls ML API with latest data
+  // Per-game refresh: re-calls ML API with latest data (straight pass-through, no blending)
   const refreshGame = useCallback(async (game) => {
     setRefreshingGame(game.gameId);
     try {
@@ -239,32 +241,32 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (!mlResult || mlResult.error) { setRefreshingGame(null); return; }
       setGames(prev => prev.map(g => {
         if (g.gameId !== game.gameId) return g;
-        const pred = g.pred ? { ...g.pred } : {};
         const mlMargin = mlResult.ml_margin;
-        const heuristicMargin = pred.projectedSpread || 0;
-        const marginShift = (mlMargin - heuristicMargin) / 2;
-        pred.homeScore = parseFloat((pred._heuristicHomeScore || pred.homeScore || 112) + marginShift).toFixed(1);
-        pred.awayScore = parseFloat((pred._heuristicAwayScore || pred.awayScore || 112) - marginShift).toFixed(1);
-        pred.projectedSpread = parseFloat(mlMargin.toFixed(1));
-        pred.homeWinPct = Math.max(0.05, Math.min(0.95, mlResult.ml_win_prob_home));
-        pred.awayWinPct = 1 - pred.homeWinPct;
-        pred.mlEnhanced = true;
-        // O/U from ML model
-        if (mlResult.ou_predicted_total) {
-          pred.ouTotal = mlResult.ou_predicted_total;
-          pred._ouPredictedTotal = mlResult.ou_predicted_total;
-          pred._ouEdge = mlResult.ou_edge;
-          pred._ouPick = mlResult.ou_pick;
-        }
-        // Recalc moneylines
+        const mlWinHome = Math.max(0.05, Math.min(0.95, mlResult.ml_win_prob_home ?? 0.5));
+        const mlWinAway = 1 - mlWinHome;
+        const homeScore = mlResult.pred_home_score ?? (g.homeStats?.ppg || 112) + mlMargin / 2;
+        const awayScore = mlResult.pred_away_score ?? (g.awayStats?.ppg || 112) - mlMargin / 2;
         const VIG = 0.0225;
-        const hp = pred.homeWinPct + VIG, ap = pred.awayWinPct + VIG;
-        pred.modelML_home = pred.homeWinPct >= 0.5
-          ? -Math.min(4000, Math.round((hp / (1 - hp)) * 100))
-          : +Math.min(4000, Math.round(((1 - hp) / hp) * 100));
-        pred.modelML_away = pred.homeWinPct < 0.5
-          ? -Math.min(4000, Math.round((ap / (1 - ap)) * 100))
-          : +Math.min(4000, Math.round(((1 - ap) / ap) * 100));
+        const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
+        const pred = {
+          ...(g.pred || {}),
+          homeScore: parseFloat(homeScore.toFixed?.(1) ?? homeScore),
+          awayScore: parseFloat(awayScore.toFixed?.(1) ?? awayScore),
+          projectedSpread: parseFloat(mlMargin.toFixed(1)),
+          homeWinPct: mlWinHome,
+          awayWinPct: mlWinAway,
+          ouTotal: mlResult.ou_predicted_total ?? parseFloat((homeScore + awayScore).toFixed(1)),
+          modelML_home: mlWinHome >= 0.5
+            ? -Math.min(4000, Math.round((hProb / (1 - hProb)) * 100))
+            : +Math.min(4000, Math.round(((1 - hProb) / hProb) * 100)),
+          modelML_away: mlWinAway >= 0.5
+            ? -Math.min(4000, Math.round((aProb / (1 - aProb)) * 100))
+            : +Math.min(4000, Math.round(((1 - aProb) / aProb) * 100)),
+          mlEnhanced: true,
+          _ouPredictedTotal: mlResult.ou_predicted_total ?? null,
+          _ouEdge: mlResult.ou_edge ?? null,
+          _ouPick: mlResult.ou_pick ?? null,
+        };
         return {
           ...g, pred,
           mlShap: mlResult.shap ?? g.mlShap,
@@ -301,15 +303,6 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const awayDaysRest = as_ ? computeDaysRest(as_, d) : 2;
       const awayPrevCityAbbr = as_?.lastGameCity || null;
 
-      const pred = hs && as_ ? nbaPredictGame({
-        homeStats: hs, awayStats: as_,
-        neutralSite: g.neutralSite,
-        calibrationFactor,
-        homeRealStats: nbaRealH, awayRealStats: nbaRealA,
-        homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr,
-        homeDaysRest, awayDaysRest,
-        awayPrevCityAbbr,
-      }) : null;
       const rawOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
       const gameOdds = rawOdds ? (() => {
         const normalize = s => (s || "").toLowerCase().replace(/[^a-z]/g, "");
@@ -329,70 +322,74 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _swapped: isSwapped,
         };
       })() : null;
-      // ── ML API: calibrated win prob + SHAP + Monte Carlo ──
+
+      // ═══ v18: ML-FIRST PREDICTION — single source of truth ═══
+      // No blending, no reconciliation. ML results pass straight through.
       let mlResult = null, mcResult = null;
+      let pred = null;
+
+      // PRIMARY: ML API
+      try {
+        mlResult = await mlPredictNBAFull(g.gameId, { gameDate: d });
+        if (mlResult && mlResult.ml_margin != null && !mlResult.error) {
+          const mlMargin = mlResult.ml_margin;
+          const mlWinHome = Math.max(0.05, Math.min(0.95, mlResult.ml_win_prob_home ?? 0.5));
+          const mlWinAway = 1 - mlWinHome;
+          const homeScore = mlResult.pred_home_score ?? parseFloat(((hs?.ppg || 112) + mlMargin / 2).toFixed(1));
+          const awayScore = mlResult.pred_away_score ?? parseFloat(((as_?.ppg || 112) - mlMargin / 2).toFixed(1));
+          const VIG = 0.0225;
+          const ML_CAP_DISPLAY = 500;
+          const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
+          pred = {
+            homeScore: parseFloat(homeScore.toFixed?.(1) ?? homeScore),
+            awayScore: parseFloat(awayScore.toFixed?.(1) ?? awayScore),
+            homeWinPct: mlWinHome,
+            awayWinPct: mlWinAway,
+            projectedSpread: parseFloat(mlMargin.toFixed(1)),
+            ouTotal: mlResult.ou_predicted_total ?? parseFloat((homeScore + awayScore).toFixed(1)),
+            modelML_home: mlWinHome >= 0.5
+              ? -Math.min(ML_CAP_DISPLAY, Math.round((hProb / (1 - hProb)) * 100))
+              : +Math.min(ML_CAP_DISPLAY, Math.round(((1 - hProb) / hProb) * 100)),
+            modelML_away: mlWinAway >= 0.5
+              ? -Math.min(ML_CAP_DISPLAY, Math.round((aProb / (1 - aProb)) * 100))
+              : +Math.min(ML_CAP_DISPLAY, Math.round(((1 - aProb) / aProb) * 100)),
+            homeNetRtg: nbaRealH?.netRtg ?? 0,
+            awayNetRtg: nbaRealA?.netRtg ?? 0,
+            possessions: hs && as_ ? Math.round((hs.pace + as_.pace) / 2) : 99,
+            confidence: Math.abs(mlMargin) >= 7 ? "HIGH" : Math.abs(mlMargin) >= 3 ? "MEDIUM" : "LOW",
+            confScore: parseFloat(Math.abs(mlMargin).toFixed(1)),
+            decisiveness: parseFloat((Math.abs(mlWinHome - 0.5) * 100).toFixed(1)),
+            mlEnhanced: true,
+            _ouPredictedTotal: mlResult.ou_predicted_total ?? null,
+            _ouEdge: mlResult.ou_edge ?? null,
+            _ouPick: mlResult.ou_pick ?? null,
+          };
+          console.log(`[NBA ML] ${g.homeAbbr}: margin=${mlMargin.toFixed(1)}, wp=${mlWinHome.toFixed(3)}`);
+        }
+      } catch (e) { console.warn("[NBA ML] predict failed:", e.message); }
+
+      // FALLBACK: Heuristic only if ML failed
+      if (!pred && hs && as_) {
+        pred = nbaPredictGame({
+          homeStats: hs, awayStats: as_,
+          neutralSite: g.neutralSite,
+          calibrationFactor,
+          homeRealStats: nbaRealH, awayRealStats: nbaRealA,
+          homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr,
+          homeDaysRest, awayDaysRest,
+          awayPrevCityAbbr,
+        });
+        if (pred) pred.mlEnhanced = false;
+      }
+
+      // Monte Carlo (uses ML scores if available)
       if (pred) {
         try {
-          // v27: Use /predict/nba/full — backend fetches all 55 features server-side
-          // (ESPN summary, Supabase enrichment, referee profiles, rolling PBP, etc.)
-          mlResult = await mlPredictNBAFull(g.gameId, { gameDate: d });
-          if (mlResult) console.log(`[NBA ML] ${g.homeAbbr}: margin=${mlResult.ml_margin}, shap=${!!mlResult.shap}, meta=${!!mlResult.model_meta}`);
-        } catch (e) { console.warn("[NBA ML] predict failed:", e.message); }
-        // MC with ML-adjusted means
-        const heuristicTotal = pred.homeScore + pred.awayScore;
-        const ouBase = pred.ouTotal ?? heuristicTotal;
-        const homeRatio = heuristicTotal > 0 ? pred.homeScore / heuristicTotal : 0.5;
-        const mlMarginAdj = mlResult ? (mlResult.ml_margin - pred.projectedSpread) / 2 : 0;
-        const mcHome = ouBase * homeRatio + mlMarginAdj;
-        const mcAway = ouBase * (1 - homeRatio) - mlMarginAdj;
-        try {
-          mcResult = await mlMonteCarlo("NBA", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
+          mcResult = await mlMonteCarlo("NBA", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
         } catch (e) { console.warn("[NBA MC] failed:", e.message); }
       }
-      // Reconcile projected scores with ML margin
-      const finalPred = pred && mlResult ? (() => {
-        const mlMargin = mlResult.ml_margin;
-        const heuristicMargin = pred.projectedSpread;
-        const marginShift = (mlMargin - heuristicMargin) / 2;
-        const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
-        const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
-        const SIGMA = 15.0;
-        const marginBasedWinProb = 1 / (1 + Math.pow(10, -mlMargin / SIGMA));
-        const MARGIN_WEIGHT = 0.70;
-        const rawBlended = MARGIN_WEIGHT * marginBasedWinProb + (1 - MARGIN_WEIGHT) * mlResult.ml_win_prob_home;
-        const blendedWinHome = Math.max(0.08, Math.min(0.92, rawBlended));
-        const blendedWinAway = 1 - blendedWinHome;
-        const VIG = 0.0225;
-        const hProb = blendedWinHome + VIG;
-        const aProb = blendedWinAway + VIG;
-        const newModelML_home = blendedWinHome >= 0.5
-          ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100));
-        const newModelML_away = blendedWinAway >= 0.5
-          ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100));
-        return {
-          ...pred,
-          homeScore: adjHomeScore,
-          awayScore: adjAwayScore,
-          homeWinPct: blendedWinHome,
-          awayWinPct: blendedWinAway,
-          projectedSpread: parseFloat(mlMargin.toFixed(1)),
-          ouTotal: mlResult.ou_predicted_total ?? pred.ouTotal,
-          modelML_home: newModelML_home,
-          modelML_away: newModelML_away,
-          mlEnhanced: true,
-          _ouPredictedTotal: mlResult.ou_predicted_total ?? null,
-          _ouEdge: mlResult.ou_edge ?? null,
-          _ouPick: mlResult.ou_pick ?? null,
-          _heuristicHomeScore: pred.homeScore,
-          _heuristicAwayScore: pred.awayScore,
-          _heuristicSpread: pred.projectedSpread,
-          _heuristicWinPct: pred.homeWinPct,
-          _rawMlWinProb: mlResult.ml_win_prob_home,
-        };
-      })() : pred;
-      return { ...g, homeStats: hs, awayStats: as_, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
+
+      return { ...g, homeStats: hs, awayStats: as_, pred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult };
     }));
 
     // ── Sort: Finals sink to bottom, rest by start time ──
