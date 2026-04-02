@@ -31,7 +31,7 @@ function parlayOdds(picks) { return picks.reduce((a,p) => a * mlDec(p.ml), 1); }
 // ── Supabase fetchers — only today's games ──
 async function fetchSport(table, date) {
   try {
-    const rows = await supabaseQuery(table, `game_date=eq.${date}&select=*`);
+    const rows = await supabaseQuery(`/${table}?game_date=eq.${date}&select=*`);
     return rows?.filter(r => r.ml_margin != null) || [];
   } catch(e) { console.error(`[DailyBets] ${table}:`, e); return []; }
 }
