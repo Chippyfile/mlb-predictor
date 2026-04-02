@@ -341,7 +341,7 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
       spreadSignal = {
         verdict: "SKIP",
         diff: disagree.toFixed(1),
-        reason: `Model agrees with market within ${disagree.toFixed(1)} ${unitLabel}s — no ${isMLB ? "RL" : "ATS"} edge (<${t1} ${unitLabel}s = noise zone)`,
+        reason: `Model agrees with market within ${disagree.toFixed(1)} ${unitLabel}s — no ${isMLB ? "RL" : "ATS"} edge (${isMLB ? "<0.5 runs" : isNCAA ? "<4 pts" : "<4 pts"} = noise zone)`,
       };
     }
   } else {
