@@ -70,7 +70,7 @@ export async function mlPredictFull(homeTeamId, awayTeamId, { neutralSite = fals
         game_date: gameDate,
         game_id: gameId,
       }),
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(45000),
     });
     if (!res.ok) {
       console.error(`[mlApi] /predict/ncaa/full returned ${res.status}`);
@@ -106,7 +106,7 @@ export async function mlPredictNBAFull(gameId, { gameDate = null } = {}) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ game_id: String(gameId), game_date: gameDate }),
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(45000),
     });
     if (!res.ok) {
       console.error(`[mlApi] /predict/nba/full returned ${res.status}`);
