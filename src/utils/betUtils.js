@@ -218,8 +218,8 @@ export const ncaaPredictGameEnhanced = (params) => {
   const awayInjuryAdj = ncaaInjuryImpact(params.awayInjuries);
   if (homeInjuryAdj || awayInjuryAdj) {
     const adjSpread = pred.projectedSpread - homeInjuryAdj + awayInjuryAdj;
-    const SIGMA = 16.0; // F9: calibrated via backtest (Feb 2026)
-    const adjWinPct = Math.min(0.97, Math.max(0.03, 1 / (1 + Math.pow(10, -adjSpread / SIGMA))));
+    const SIGMA = 6.0; // Empirically calibrated via walk-forward (Apr 2026)
+    const adjWinPct = Math.min(0.97, Math.max(0.03, 1 / (1 + Math.exp(-adjSpread / SIGMA))));
     return {
       ...pred,
       homeScore: parseFloat((pred.homeScore - homeInjuryAdj * 0.4).toFixed(1)),
