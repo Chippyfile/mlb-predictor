@@ -49,24 +49,33 @@ function mapNCAA(rows) { return rows.map(r => {
   };
 }).filter(r => r.pred.mlMargin !== 0); }
 
-function mapNBA(rows) { return rows.filter(r => r.ml_margin != null).map(r => ({
-  gameId: r.game_id, homeTeam: r.home_team || r.home_team_name, awayTeam: r.away_team || r.away_team_name,
-  pred: { projectedSpread: r.ml_margin, homeWinPct: r.ml_win_prob_home ?? .5,
-          _ouPick: r.ou_pick, _ouEdge: r.ou_edge, _ouPredictedTotal: r.ou_predicted_total },
-  odds: { homeSpread: parseFloat(r.market_spread_home || r.spread_home) || null,
-          homeML: r.home_ml || r.closing_home_ml, awayML: r.away_ml || r.closing_away_ml,
-          ouLine: parseFloat(r.market_ou_total || r.market_ou) || null },
-})); }
+function mapNBA(rows) { return rows.filter(r => r.pred_home_score != null).map(r => {
+  const margin = (parseFloat(r.pred_home_score)||0) - (parseFloat(r.pred_away_score)||0);
+  return {
+    gameId: r.game_id, homeTeam: r.home_team || r.home_team_name, awayTeam: r.away_team || r.away_team_name,
+    pred: { projectedSpread: -margin, homeWinPct: parseFloat(r.win_pct_home || r.ml_win_prob_home) || 0.5,
+            _ouPick: null, _ouEdge: r.ou_total && r.market_ou_total ? Math.abs(parseFloat(r.ou_total) - parseFloat(r.market_ou_total)) : 0,
+            _ouPredictedTotal: parseFloat(r.ou_total) || null },
+    odds: { homeSpread: parseFloat(r.market_spread_home) || null,
+            homeML: r.opening_home_ml || r.model_ml_home, awayML: r.opening_away_ml || r.model_ml_away,
+            ouLine: parseFloat(r.market_ou_total) || null },
+    // Pre-computed ATS from cron
+    _ats: r.ats_units ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.ats_pick_spread } : null,
+  };
+}); }
 
-function mapMLB(rows) { return rows.filter(r => r.ml_margin != null).map(r => ({
-  gameId: r.game_id || r.game_pk, homeTeam: r.home_team || r.home_abbr, awayTeam: r.away_team || r.away_abbr,
-  pred: { projectedSpread: r.ml_margin, homeWinPct: r.ml_win_prob_home ?? .5,
-          homeRuns: r.pred_home_runs ?? ((r.pred_total??0)/2+(r.ml_margin??0)/2),
-          awayRuns: r.pred_away_runs ?? ((r.pred_total??0)/2-(r.ml_margin??0)/2) },
-  odds: { homeSpread: parseFloat(r.run_line_home || r.spread_home) || -1.5,
-          homeML: r.home_ml || r.closing_home_ml, awayML: r.away_ml || r.closing_away_ml,
-          ouLine: parseFloat(r.market_ou || r.ou_total) || null },
-})); }
+function mapMLB(rows) { return rows.filter(r => r.pred_home_runs != null || r.spread_home != null).map(r => {
+  const hr = parseFloat(r.pred_home_runs) || 0, ar = parseFloat(r.pred_away_runs) || 0;
+  return {
+    gameId: r.game_pk, homeTeam: r.home_team, awayTeam: r.away_team,
+    pred: { projectedSpread: -(hr - ar), homeWinPct: parseFloat(r.win_pct_home || r.ml_win_prob_home) || 0.5,
+            homeRuns: hr, awayRuns: ar },
+    odds: { homeSpread: parseFloat(r.run_line_home) || -1.5,
+            homeML: r.opening_home_ml || r.model_ml_home, awayML: r.opening_away_ml || r.model_ml_away,
+            ouLine: parseFloat(r.market_ou_total) || null },
+    _ats: r.ats_units ? { side: r.ats_side, units: r.ats_units } : null,
+  };
+}); }
 
 // ── Colors ──
 function unitColor(u) { return u >= 4 ? "#2ea043" : u >= 2 ? "#d29922" : "#8b949e"; }
@@ -121,16 +130,42 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
   function buildPicks(gameList, sport) {
     const ats = [], ou = [];
     for (const g of gameList) {
-      if (!g.pred || !g.odds) continue;
+      if (!g.pred) continue;
       const h = g.homeTeam || "Home", a = g.awayTeam || "Away";
-      const sig = getBetSignals({ pred: g.pred, odds: g.odds, sport, homeName: h, awayName: a });
-      if (sig.betSizing) {
-        const side = sig.betSizing.side, team = side === "HOME" ? h : a;
-        const sp = g.odds.homeSpread; const dsp = sp != null ? (side === "HOME" ? sp : -sp) : null;
-        ats.push({ team, spread: dsp, units: sig.betSizing.units, edge: parseFloat(sig.betSizing.disagree||0), side });
+
+      // Use pre-computed ATS from cron if available
+      if (g._ats && g._ats.units) {
+        const side = g._ats.side;
+        const team = side === "HOME" ? h : a;
+        const sp = g._ats.spread || (side === "HOME" ? g.odds?.homeSpread : -(g.odds?.homeSpread || 0));
+        ats.push({ team, spread: sp ? parseFloat(sp) : null, units: g._ats.units, edge: parseFloat(g._ats.disagree || 0), side });
+      } else if (g.odds) {
+        // Fall back to computing via getBetSignals
+        const sig = getBetSignals({ pred: g.pred, odds: g.odds, sport, homeName: h, awayName: a });
+        if (sig.betSizing) {
+          const side = sig.betSizing.side, team = side === "HOME" ? h : a;
+          const sp = g.odds.homeSpread; const dsp = sp != null ? (side === "HOME" ? sp : -sp) : null;
+          ats.push({ team, spread: dsp, units: sig.betSizing.units, edge: parseFloat(sig.betSizing.disagree||0), side });
+        }
+        if (sig.ou && (sig.ou.verdict === "GO" || sig.ou.verdict === "LEAN") && sig.ou.units) {
+          ou.push({ team: `${h} / ${a}`, side: sig.ou.side, edge: parseFloat(sig.ou.diff||sig.ou.edge||0), units: sig.ou.units, modelTotal: sig.ou.modelTotal });
+        }
       }
-      if (sig.ou && (sig.ou.verdict === "GO" || sig.ou.verdict === "LEAN") && sig.ou.units) {
-        ou.push({ team: `${h} / ${a}`, side: sig.ou.side, edge: parseFloat(sig.ou.diff||sig.ou.edge||0), units: sig.ou.units, modelTotal: sig.ou.modelTotal });
+
+      // O/U from pre-computed data
+      if (g.pred._ouPredictedTotal && g.odds?.ouLine) {
+        const predTotal = parseFloat(g.pred._ouPredictedTotal);
+        const mktTotal = parseFloat(g.odds.ouLine);
+        const diff = Math.abs(predTotal - mktTotal);
+        const pctEdge = diff / mktTotal;
+        if (pctEdge >= 0.04) {
+          const side = predTotal > mktTotal ? "OVER" : "UNDER";
+          const units = pctEdge >= 0.12 ? 3 : pctEdge >= 0.08 ? 2 : 1;
+          // Don't duplicate if already added via getBetSignals
+          if (!ou.find(o => o.team === `${h} / ${a}`)) {
+            ou.push({ team: `${h} / ${a}`, side, edge: diff, units, modelTotal: predTotal });
+          }
+        }
       }
     }
     return { ats, ou };
