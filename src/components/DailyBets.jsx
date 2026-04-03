@@ -123,7 +123,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         const margin = g.pred.projectedSpread || g.pred.mlMargin || 0;
         const conf = Math.max(g.pred.homeWinPct || .5, 1 - (g.pred.homeWinPct || .5));
         const spread = g.odds.homeSpread ?? 0;
-        const pickHome = margin < 0;
+        const pickHome = margin > 0; // positive margin = home favored
         const ml = spreadToML(pickHome ? spread : -spread);
         return { team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(margin), gameId: g.gameId };
       })
