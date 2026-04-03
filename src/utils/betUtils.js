@@ -218,7 +218,7 @@ export const ncaaPredictGameEnhanced = (params) => {
   const awayInjuryAdj = ncaaInjuryImpact(params.awayInjuries);
   if (homeInjuryAdj || awayInjuryAdj) {
     const adjSpread = pred.projectedSpread - homeInjuryAdj + awayInjuryAdj;
-    const SIGMA = 6.0; // Empirically calibrated via walk-forward (Apr 2026)
+    const SIGMA = 6.5; // Empirically calibrated via walk-forward (Apr 2026 re-sweep)
     const adjWinPct = Math.min(0.97, Math.max(0.03, 1 / (1 + Math.exp(-adjSpread / SIGMA))));
     return {
       ...pred,

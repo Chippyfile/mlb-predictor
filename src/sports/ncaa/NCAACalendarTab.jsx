@@ -439,7 +439,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         computeRestDays(g.awayTeamId, d).catch(() => 3),
       ]);
       
-      const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 6.0;
+      const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 6.5;
       const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
       const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null;
       const rawOdds = null; // Removed: Odds API matching — using ESPN pickcenter instead

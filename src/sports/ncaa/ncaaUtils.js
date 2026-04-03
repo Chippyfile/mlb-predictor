@@ -22,7 +22,7 @@
 //   F6:  Conference power is now a parameter (dynamic) instead of static lookup
 //   F7:  Four Factors scaled by tempo (possessions / 68)
 //   F8:  Removed oppFGpct from defBoost (double-counted via adjDE)
-//   F9:  Sigma = 6.0 (empirically calibrated via walk-forward, Brier 0.17609)
+//   F9:  Sigma = 6.5 (empirically calibrated via walk-forward, Brier 0.17788)
 //   F13: Form score uses symmetric +1/-1 weights with exponential decay
 //   F14: SOS adjustment symmetric 70/70 for OE/DE
 //   F15: Rank boost uses continuous exponential decay
@@ -422,9 +422,9 @@ export function ncaaPredictGame({
   homeSplits = null,
   awaySplits = null,
   confPowerOverrides = null,
-  // F9: sigma=6.0 — empirically calibrated via walk-forward (Apr 2026)
-  // Brier: 0.17609 at σ=6.0 vs 0.19441 at σ=16.0 (32,527 games tested)
-  sigma = 6.0,
+  // F9: sigma=6.5 — empirically calibrated via walk-forward (Apr 2026 re-sweep)
+  // Brier: 0.17788 at σ=6.5 vs 0.17790 at σ=6.0 (41,400 games tested)
+  sigma = 6.5,
 }) {
   if (!homeStats || !awayStats) return null;
   const possessions = (homeStats.tempo + awayStats.tempo) / 2;
@@ -1056,14 +1056,14 @@ export function getGameContext(gameDateStr, neutralSite = false, espnGame = null
 // ─────────────────────────────────────────────────────────────
 
 const CONF_SIGMA = {
-  // All conferences use σ=6.0 — empirically validated via walk-forward
+  // All conferences use σ=6.5 — empirically validated via walk-forward
   // Dynamic per-conference sigma was never validated and added noise
 };
 
 export function calculateDynamicSigma(homeStats, awayStats, gameDateStr) {
-  // σ=6.0 is Brier-optimal across all 32,527 walk-forward predictions
+  // σ=6.5 is Brier-optimal across all 41,400 walk-forward predictions (Apr 2026 re-sweep)
   // Early season uncertainty is already captured by feature coverage weighting
-  return 6.0;
+  return 6.5;
 }
 
 
