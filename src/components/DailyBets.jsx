@@ -36,18 +36,25 @@ async function fetchSport(table, date) {
   } catch(e) { console.error(`[DailyBets] ${table}:`, e); return []; }
 }
 
-function mapNCAA(rows) { return rows.map(r => {
+function mapNCAA(rows) { return rows.filter(r => r.win_pct_home != null).map(r => {
   const predH = parseFloat(r.pred_home_score) || 0, predA = parseFloat(r.pred_away_score) || 0;
-  const margin = predH - predA;
+  let margin = predH - predA;
+  // If pred scores are null, derive margin from win_pct and spread
+  if (margin === 0 && r.win_pct_home) {
+    const wp = parseFloat(r.win_pct_home);
+    // Convert probability to approximate margin (inverse sigmoid, σ=10)
+    if (wp > 0.01 && wp < 0.99) margin = -10 * Math.log(1/wp - 1);
+  }
   return {
     gameId: r.game_id, homeTeam: r.home_team || r.home_team_name, awayTeam: r.away_team || r.away_team_name,
     pred: { projectedSpread: -margin, homeWinPct: parseFloat(r.win_pct_home) || 0.5, mlMargin: -margin,
-            _ouPick: r.ou_pick, _ouEdge: r.ou_edge, _ouPredictedTotal: r.ou_predicted_total },
+            _ouPick: r.ou_pick, _ouEdge: r.ou_edge, _ouPredictedTotal: parseFloat(r.ou_predicted_total || r.ou_total) || null },
     odds: { homeSpread: parseFloat(r.market_spread_home || r.espn_spread) || null,
-            homeML: r.closing_home_ml, awayML: r.closing_away_ml,
+            homeML: r.closing_home_ml || r.model_ml_home, awayML: r.closing_away_ml || r.model_ml_away,
             ouLine: parseFloat(r.market_ou_total || r.closing_ou_total) || null },
+    _ats: r.ats_units ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.ats_pick_spread } : null,
   };
-}).filter(r => r.pred.mlMargin !== 0); }
+}); }
 
 function mapNBA(rows) { return rows.filter(r => r.pred_home_score != null).map(r => {
   const margin = (parseFloat(r.pred_home_score)||0) - (parseFloat(r.pred_away_score)||0);
