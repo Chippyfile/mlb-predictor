@@ -47,6 +47,7 @@ function mapNCAA(rows) { return rows.filter(r => r.win_pct_home != null).map(r =
   }
   return {
     gameId: r.game_id, homeTeam: r.home_team || r.home_team_name, awayTeam: r.away_team || r.away_team_name,
+    neutralSite: !!r.neutral_site,
     pred: { projectedSpread: -margin, homeWinPct: parseFloat(r.win_pct_home) || 0.5, mlMargin: -margin,
             _ouPick: r.ou_pick, _ouEdge: r.ou_edge, _ouPredictedTotal: parseFloat(r.ou_predicted_total || r.ou_total) || null },
     odds: { homeSpread: parseFloat(r.market_spread_home || r.espn_spread) || null,
@@ -120,12 +121,14 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
     return games.ncaa
       .filter(g => g.pred && g.odds)
       .map(g => {
-        const margin = g.pred.projectedSpread || g.pred.mlMargin || 0;
-        const conf = Math.max(g.pred.homeWinPct || .5, 1 - (g.pred.homeWinPct || .5));
+        const wp = parseFloat(g.pred.homeWinPct) || 0.5;
+        const conf = Math.max(wp, 1 - wp);
         const spread = g.odds.homeSpread ?? 0;
-        const pickHome = margin > 0; // positive margin = home favored
+        
+        // Model says which team wins. wp > 0.5 = home_team wins. That's the pick.
+        const pickHome = wp > 0.5;
         const ml = spreadToML(pickHome ? spread : -spread);
-        return { team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(margin), gameId: g.gameId };
+        return { team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(spread), gameId: g.gameId };
       })
       .filter(p => p.conf >= CONF_GATE*100 && p.ml > ML_CAP)
       .sort((a,b) => b.conf - a.conf);
