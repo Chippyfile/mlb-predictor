@@ -5,7 +5,7 @@ import { getBetSignals } from "../utils/sharedUtils.js";
 import { supabaseQuery } from "../utils/supabase.js";
 
 const ML_CAP = -500, CONF_GATE = 0.65, MIN_LEGS = 3;
-const getToday = () => new Date().toISOString().slice(0, 10);
+const getToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
 function getStrategyMode() {
   const m = new Date().getMonth() + 1, d = new Date().getDate();
