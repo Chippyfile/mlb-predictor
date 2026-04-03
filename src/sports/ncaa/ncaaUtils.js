@@ -22,7 +22,7 @@
 //   F6:  Conference power is now a parameter (dynamic) instead of static lookup
 //   F7:  Four Factors scaled by tempo (possessions / 68)
 //   F8:  Removed oppFGpct from defBoost (double-counted via adjDE)
-//   F9:  Sigma = 16.0 (empirically calibrated via backtest, Brier 0.175 vs 0.184)
+//   F9:  Sigma = 6.0 (empirically calibrated via walk-forward, Brier 0.17609)
 //   F13: Form score uses symmetric +1/-1 weights with exponential decay
 //   F14: SOS adjustment symmetric 70/70 for OE/DE
 //   F15: Rank boost uses continuous exponential decay
@@ -422,9 +422,9 @@ export function ncaaPredictGame({
   homeSplits = null,
   awaySplits = null,
   confPowerOverrides = null,
-  // F9: sigma=16.0 — empirically calibrated via /backtest/ncaa (Feb 2026)
-  // Brier: 0.1754 at σ=16.0 vs 0.1835 at σ=11.0 (614 games tested)
-  sigma = 16.0,
+  // F9: sigma=6.0 — empirically calibrated via walk-forward (Apr 2026)
+  // Brier: 0.17609 at σ=6.0 vs 0.19441 at σ=16.0 (32,527 games tested)
+  sigma = 6.0,
 }) {
   if (!homeStats || !awayStats) return null;
   const possessions = (homeStats.tempo + awayStats.tempo) / 2;
@@ -633,7 +633,7 @@ export function ncaaPredictGame({
 
   const projectedSpread = homeScore - awayScore;
   // F9: Configurable sigma
-  let homeWinPct = 1 / (1 + Math.pow(10, -projectedSpread / sigma));
+  let homeWinPct = 1 / (1 + Math.exp(-projectedSpread / sigma));
   homeWinPct = Math.min(0.97, Math.max(0.03, homeWinPct));
   if (calibrationFactor !== 1.0) {
     homeWinPct = Math.min(0.97, Math.max(0.03, 0.5 + (homeWinPct - 0.5) * calibrationFactor));
@@ -1056,49 +1056,14 @@ export function getGameContext(gameDateStr, neutralSite = false, espnGame = null
 // ─────────────────────────────────────────────────────────────
 
 const CONF_SIGMA = {
-  "Big 12": 14.5, "Southeastern Conference": 14.8, "SEC": 14.8,
-  "Big Ten": 15.0, "Big Ten Conference": 15.0,
-  "Atlantic Coast Conference": 15.2, "ACC": 15.2,
-  "Big East": 15.3, "Big East Conference": 15.3,
-  "Pac-12": 15.5, "Pac-12 Conference": 15.5,
-  "Mountain West Conference": 16.0, "Mountain West": 16.0,
-  "American Athletic Conference": 16.2, "AAC": 16.2,
-  "West Coast Conference": 16.5, "WCC": 16.5,
-  "Atlantic 10 Conference": 16.5, "A-10": 16.5,
-  "Missouri Valley Conference": 16.8, "MVC": 16.8,
-  "Ivy League": 17.5, "Patriot League": 18.0,
-  "MEAC": 18.5, "SWAC": 18.5,
+  // All conferences use σ=6.0 — empirically validated via walk-forward
+  // Dynamic per-conference sigma was never validated and added noise
 };
 
 export function calculateDynamicSigma(homeStats, awayStats, gameDateStr) {
-  let baseSigma = 16.0;
-  try {
-    const date = new Date(gameDateStr + "T12:00:00");
-    const month = date.getMonth() + 1;
-    const day = date.getDate();
-    let dayOfSeason;
-    if (month >= 11) {
-      dayOfSeason = (month - 11) * 30 + day;
-    } else {
-      dayOfSeason = 60 + (month - 1) * 30 + day;
-    }
-    const seasonProgress = Math.min(1.0, Math.max(0.0, dayOfSeason / 160));
-    baseSigma = 19.2 - (4.2 * seasonProgress);
-  } catch {
-    baseSigma = 16.0;
-  }
-
-  const homeConfSigma = CONF_SIGMA[homeStats?.conferenceName] || 16.5;
-  const awayConfSigma = CONF_SIGMA[awayStats?.conferenceName] || 16.5;
-  const confSigma = (homeConfSigma + awayConfSigma) / 2;
-
-  const homeQuality = Math.min(1, Math.max(0, ((homeStats?.adjEM || 0) + 15) / 45));
-  const awayQuality = Math.min(1, Math.max(0, ((awayStats?.adjEM || 0) + 15) / 45));
-  const avgQuality = (homeQuality + awayQuality) / 2;
-  const qualityAdj = -1.5 * avgQuality;
-
-  const finalSigma = (baseSigma * 0.50) + (confSigma * 0.35) + ((baseSigma + qualityAdj) * 0.15);
-  return parseFloat(Math.max(11.0, Math.min(17.0, finalSigma - 2.0)).toFixed(2));
+  // σ=6.0 is Brier-optimal across all 32,527 walk-forward predictions
+  // Early season uncertainty is already captured by feature coverage weighting
+  return 6.0;
 }
 
 

@@ -4,7 +4,7 @@ import { C } from "./Shared.jsx";
 import { getBetSignals } from "../utils/sharedUtils.js";
 import { supabaseQuery } from "../utils/supabase.js";
 
-const ML_CAP = -500, CONF_GATE = 0.65, MIN_LEGS = 3;
+const ML_CAP = -500, CONF_GATE = 0.70, MIN_LEGS = 3;
 const getToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
 function getStrategyMode() {
@@ -257,7 +257,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0" }}>
           {parlayPicks.length > 0
             ? `Only ${parlayPicks.length} qualifying NCAA picks (need ${MIN_LEGS})`
-            : `${games.ncaa.length} NCAA games loaded — none pass ≥65% + ML cap -500 filter`}
+            : `${games.ncaa.length} NCAA games loaded — none pass ≥70% + ML cap -500 filter`}
         </div>
       )}
 
