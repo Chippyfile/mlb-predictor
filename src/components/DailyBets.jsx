@@ -4,7 +4,7 @@ import { C } from "./Shared.jsx";
 import { getBetSignals } from "../utils/sharedUtils.js";
 import { supabaseQuery } from "../utils/supabase.js";
 
-const ML_CAP = -500, CONF_GATE = 0.70, MIN_LEGS = 3;
+const ML_CAP = -500, CONF_GATE = 0.70, MIN_LEGS = 3, MIN_BET_UNITS = 2;
 const getToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
 function getStrategyMode() {
@@ -178,7 +178,10 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         }
       }
     }
-    return { ats, ou };
+    return { 
+      ats: ats.filter(p => p.units >= MIN_BET_UNITS), 
+      ou: ou.filter(p => p.units >= MIN_BET_UNITS) 
+    };
   }
 
   const sports = [
