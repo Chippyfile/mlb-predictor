@@ -261,26 +261,38 @@ async function ncaaBuildPredictionRow(game, dateStr) {
       if (audit.away_sos != null) row.away_sos = audit.away_sos;
       if (audit.home_conference) row.home_conference = audit.home_conference;
       if (audit.away_conference) row.away_conference = audit.away_conference;
+
+      // v29: Capture O/U v5 fields from ML response
+      if (mlResult.ou_predicted_total != null) row.ou_predicted_total = parseFloat(mlResult.ou_predicted_total.toFixed(1));
+      if (mlResult.ou_pick != null) row.ou_pick = mlResult.ou_pick;           // "OVER" | "UNDER" | null
+      if (mlResult.ou_tier != null) row.ou_tier = mlResult.ou_tier;           // 1, 2, 3
+      if (mlResult.ou_res_avg != null) row.ou_res_avg = parseFloat(mlResult.ou_res_avg.toFixed(2));
+      if (mlResult.ou_cls_avg != null) row.ou_cls_avg = parseFloat(mlResult.ou_cls_avg.toFixed(4));
+      if (mlResult.ou_edge != null) row.ou_edge = parseFloat(mlResult.ou_edge.toFixed(1));
+      // Update pred scores from backend (replaces heuristic PPG-based scores)
+      if (mlResult.ou_predicted_total != null && row.market_ou_total) {
+        row.ou_total = parseFloat(mlResult.ou_predicted_total.toFixed(1));
+      }
     }
   } catch {
     // ML API unavailable — keep sigma-based win_pct_home as fallback
   }
 
-  // ═══ v27: ATS PICK — computed from spread disagreement at prediction time ═══
-  // Validated on 26,160 true out-of-sample games:
-  //   2-3 pts: 55.9% ATS (1u)  |  3-4 pts: 60.3% ATS (2u)  |  4+ pts: 68.4% ATS (3u)
+  // ═══ v29: ATS PICK — computed from spread disagreement at prediction time ═══
+  // Validated on 41,831 walk-forward games (ncaa_final_retrain.py):
+  //   4-7 pts: 73.6% ATS (1u)  |  7-10 pts: 90.1% ATS (2u)  |  10+ pts: 96.5% ATS (3u)
   if (row.spread_home != null && row.market_spread_home != null) {
     const modelMargin = row.spread_home;           // positive = home wins by X
     const mktImplied = -row.market_spread_home;    // market implied home margin
     const disagree = Math.abs(modelMargin - mktImplied);
     row.ats_disagree = parseFloat(disagree.toFixed(2));
 
-    if (disagree >= 2) {
+    if (disagree >= 4) {
       // Model says home wins by more → bet HOME ATS, else AWAY ATS
       const side = modelMargin > mktImplied ? "HOME" : "AWAY";
       row.ats_side = side;
       row.ats_pick_spread = row.market_spread_home; // the spread we're betting against
-      row.ats_units = disagree >= 4 ? 3 : disagree >= 3 ? 2 : 1;
+      row.ats_units = disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1;
     } else {
       row.ats_side = null;
       row.ats_units = 0;
@@ -345,7 +357,8 @@ export async function ncaaFillFinalScores(pendingRows) {
         // No fallback — if no market spread, rl_correct stays null
         const total = homeScore + awayScore;
         const ouLine = matchedRow.market_ou_total ?? matchedRow.ou_total ?? null;
-        const predTotal = (matchedRow.pred_home_score ?? 0) + (matchedRow.pred_away_score ?? 0);
+        // v29: Use O/U v5 predicted total when available, fall back to old pred scores
+        const predTotal = matchedRow.ou_predicted_total ?? ((matchedRow.pred_home_score ?? 0) + (matchedRow.pred_away_score ?? 0));
         let ou_correct = null;
         if (ouLine !== null && total !== ouLine) {
           const actualOver = total > ouLine;
@@ -388,7 +401,7 @@ export async function ncaaRegradeAllResults(onProgress) {
   const pageSize = 1000;
   while (true) {
     const page = await supabaseQuery(
-      `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em,home_wins,home_losses,away_wins,away_losses,home_ppg,away_ppg,home_opp_ppg,home_form,home_sos,ats_units,ats_side&limit=${pageSize}&offset=${offset}&order=id.asc`
+      `/ncaa_predictions?result_entered=eq.true&select=id,win_pct_home,spread_home,market_spread_home,market_ou_total,actual_home_score,actual_away_score,ou_total,ou_predicted_total,pred_home_score,pred_away_score,home_team_id,away_team_id,home_adj_em,away_adj_em,home_wins,home_losses,away_wins,away_losses,home_ppg,away_ppg,home_opp_ppg,home_form,home_sos,ats_units,ats_side&limit=${pageSize}&offset=${offset}&order=id.asc`
     );
     if (!page || !page.length) break;
     allGraded = allGraded.concat(page);
@@ -419,7 +432,8 @@ export async function ncaaRegradeAllResults(onProgress) {
     // No fallback — if no market spread, rl_correct stays null
     const total = homeScore + awayScore;
     const ouLine = row.market_ou_total ?? row.ou_total ?? null;
-    const predTotal = (row.pred_home_score ?? 0) + (row.pred_away_score ?? 0);
+    // v29: Use O/U v5 predicted total when available, fall back to old pred scores
+    const predTotal = row.ou_predicted_total ?? ((row.pred_home_score ?? 0) + (row.pred_away_score ?? 0));
     let ou_correct = null;
     if (ouLine !== null && total !== ouLine) {
       const actualOver = total > ouLine;
@@ -521,7 +535,7 @@ export async function ncaaAutoSync(onProgress) {
       await supabaseQuery("/ncaa_predictions", "UPSERT", normalizedRows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score,ats_units,ats_side`
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,ou_predicted_total,ou_pick,ou_tier,ou_res_avg,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score,ats_units,ats_side`
       );
       if (ns?.length) await ncaaFillFinalScores(ns);
       rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
@@ -578,7 +592,7 @@ export async function ncaaFullBackfill(onProgress, signal) {
       await supabaseQuery("/ncaa_predictions", "UPSERT", rows, "game_id");
       newPred += rows.length;
       const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score,ats_units,ats_side`
+        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,ou_predicted_total,ou_pick,ou_tier,ou_res_avg,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score,ats_units,ats_side`
       );
       if (ns?.length) await ncaaFillFinalScores(ns);
       rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));

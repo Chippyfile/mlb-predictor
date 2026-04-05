@@ -486,11 +486,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
               bias_correction_applied: 0,
               feature_coverage: "stored",
               _fromSupabase: true,
-              // O/U from stored prediction
-              ou_predicted_total: stored.ou_total ?? null,
-              ou_edge: (stored.ou_total && stored.market_ou_total) ? parseFloat((stored.ou_total - stored.market_ou_total).toFixed(1)) : null,
-              ou_pick: (stored.ou_total && stored.market_ou_total && Math.abs(stored.ou_total - stored.market_ou_total) >= 5)
-                ? (stored.ou_total > stored.market_ou_total ? "OVER" : "UNDER") : null,
+              // O/U from stored prediction (v29: use v5 fields when available)
+              ou_predicted_total: stored.ou_predicted_total ?? stored.ou_total ?? null,
+              ou_edge: stored.ou_edge ?? ((stored.ou_predicted_total ?? stored.ou_total) && stored.market_ou_total
+                ? parseFloat(((stored.ou_predicted_total ?? stored.ou_total) - stored.market_ou_total).toFixed(1)) : null),
+              ou_pick: stored.ou_pick ?? null,   // v5: from backend triple agreement, not simple threshold
+              ou_tier: stored.ou_tier ?? null,
+              ou_res_avg: stored.ou_res_avg ?? null,
             };
           }
         }
