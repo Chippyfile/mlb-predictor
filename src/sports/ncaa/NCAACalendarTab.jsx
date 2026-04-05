@@ -1178,18 +1178,18 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                             Features: <span style={{ color: allZero.length > 30 ? "#f85149" : allZero.length > 15 ? "#d29922" : "#3fb950", fontWeight: 600 }}>{coverage}</span>
                           </span>
                           {ds.referee != null && (
-                            <span style={{ fontSize: 10, color: ds.referee ? "#3fb950" : "#f85149" }}>
-                              {ds.referee ? "✓" : "✗"} Refs
+                            <span style={{ fontSize: 10, color: ds.referee ? "#3fb950" : "#d29922" }}>
+                              {ds.referee ? "✓ Refs" : "✗ Refs (using league avg)"}
                             </span>
                           )}
                           {ds.spread_movement != null && (
-                            <span style={{ fontSize: 10, color: ds.spread_movement ? "#3fb950" : "#f85149" }}>
-                              {ds.spread_movement ? "✓" : "✗"} Line movement
+                            <span style={{ fontSize: 10, color: ds.spread_movement ? "#3fb950" : "#8b949e" }}>
+                              {ds.spread_movement ? "✓ Line movement" : "✗ Line movement"}
                             </span>
                           )}
                           {ds.attendance != null && (
-                            <span style={{ fontSize: 10, color: ds.attendance ? "#3fb950" : "#f85149" }}>
-                              {ds.attendance ? "✓" : "✗"} Attendance
+                            <span style={{ fontSize: 10, color: ds.attendance ? "#3fb950" : "#8b949e" }}>
+                              {ds.attendance ? "✓ Attendance" : "✗ Attendance"}
                             </span>
                           )}
                         </div>
