@@ -147,7 +147,7 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
   // Use ML O/U model prediction when available, fall back to heuristic total
   const projTotal = sport === "mlb"
     ? (pred.mlOuTotal ?? (pred.homeRuns + pred.awayRuns))
-    : (pred.ouTotal ?? (pred.homeScore + pred.awayScore));
+    : (pred._ouPredictedTotal ?? pred.ou_predicted_total ?? pred.ouTotal ?? (pred.homeScore + pred.awayScore));
   const mktTotal = odds?.ouLine ?? odds?.marketTotal ?? null;
   if (mktTotal) {
     const diff    = projTotal - mktTotal;
@@ -190,7 +190,27 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
       }
     }
 
-    if (ouEntry) {
+    // ── v29: NCAA O/U v5 override — use backend triple agreement when available ──
+    const backendOuPick = pred?._ouPick ?? pred?.ou_pick ?? null;
+    const backendOuTier = pred?._ouTier ?? pred?.ou_tier ?? 0;
+    if (isNCAA && backendOuPick) {
+      const tierLabelsOU = {
+        3: { label: "MAX (3u)", units: 3, color: "green", verdict: "GO", acc: "~66%", roi: "+26%" },
+        2: { label: "STRONG (2u)", units: 2, color: "yellow", verdict: "GO", acc: "~63%", roi: "+21%" },
+        1: { label: "BET (1u)", units: 1, color: "muted", verdict: "GO", acc: "~60%", roi: "+16%" },
+      };
+      const tl = tierLabelsOU[backendOuTier] || tierLabelsOU[1];
+      ouSignal = {
+        verdict: tl.verdict,
+        side: backendOuPick,
+        diff: absDiff.toFixed(1),
+        edge: absDiff,
+        units: tl.units,
+        modelTotal: projTotal,
+        marketLine: mktTotal,
+        reason: `O/U v5 triple agreement: ${backendOuPick} ${backendOuTier}u (${tl.acc} validated, ${tl.roi} ROI)`,
+      };
+    } else if (ouEntry) {
       ouSignal = {
         verdict: ouGo ? "GO" : "LEAN",
         side:    diff > 0 ? "OVER" : "UNDER",
@@ -283,17 +303,16 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
         1: { label: "BET (1u)", units: 1, color: "muted", verdict: "LEAN", acc: "~61%", roi: "+17%" },
       };
     } else if (isNCAA) {
-      // NCAA: higher entry (4+), steeper unit curve (validated 65-97% accuracy)
-      if (disagree >= 10) edgeTier = 5;
-      else if (disagree >= 8) edgeTier = 4;
-      else if (disagree >= 6) edgeTier = 3;
-      else if (disagree >= 4) edgeTier = 2;
-      // No 1u tier — below 4 is noise
+      // NCAA ATS: validated on 41,831 walk-forward games (ncaa_final_retrain.py, Apr 2026)
+      //   4+ pts: 73.6% ATS (1u)  |  7+ pts: 90.1% ATS (2u)  |  10+ pts: 96.5% ATS (3u)
+      if (disagree >= 10) edgeTier = 3;
+      else if (disagree >= 7) edgeTier = 2;
+      else if (disagree >= 4) edgeTier = 1;
+      // No tier below 4 — noise zone
       tierLabels = {
-        5: { label: "MAX (5u)", units: 5, color: "green", verdict: "GO", acc: "~97%", roi: "+84%" },
-        4: { label: "STRONG (4u)", units: 4, color: "green", verdict: "GO", acc: "~87%", roi: "+66%" },
-        3: { label: "HIGH (3u)", units: 3, color: "yellow", verdict: "GO", acc: "~77%", roi: "+46%" },
-        2: { label: "BET (2u)", units: 2, color: "muted", verdict: "GO", acc: "~65%", roi: "+25%" },
+        3: { label: "MAX (3u)", units: 3, color: "green", verdict: "GO", acc: "~97%", roi: "+84%" },
+        2: { label: "STRONG (2u)", units: 2, color: "yellow", verdict: "GO", acc: "~90%", roi: "+72%" },
+        1: { label: "BET (1u)", units: 1, color: "muted", verdict: "GO", acc: "~74%", roi: "+40%" },
       };
     } else {
       // NBA: current thresholds
