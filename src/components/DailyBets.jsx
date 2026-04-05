@@ -284,7 +284,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
               <div style={{ fontSize: 10, fontWeight: 800, color: C.dim, letterSpacing: 2, marginTop: 14, marginBottom: 6 }}>ATS / SPREAD</div>
               {sp.ats.sort((a,b) => b.units - a.units || b.edge - a.edge).map((p,i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-                  background: "#0d1117", borderRadius: 8, marginBottom: 6, border: "1px solid #21262d" }}>
+                  background: "#0d1117", borderRadius: 8, marginBottom: 6, border: "1px solid #21262d", maxWidth: 480 }}>
                   <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>{p.team}</span>
                   <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>
                     {p.spread != null ? (p.spread > 0 ? `+${p.spread.toFixed(1)}` : p.spread.toFixed(1)) : "—"}
@@ -300,7 +300,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
               <div style={{ fontSize: 10, fontWeight: 800, color: C.dim, letterSpacing: 2, marginTop: 14, marginBottom: 6 }}>OVER / UNDER</div>
               {sp.ou.sort((a,b) => b.units - a.units || b.edge - a.edge).map((p,i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-                  background: "#0d1117", borderRadius: 8, marginBottom: 6, border: "1px solid #21262d" }}>
+                  background: "#0d1117", borderRadius: 8, marginBottom: 6, border: "1px solid #21262d", maxWidth: 480 }}>
                   <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>
                     {p.side === "OVER" ? "▲" : "▼"} {p.side} {p.team}
                   </span>
