@@ -193,7 +193,7 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     // ── v29: NCAA O/U v5 override — use backend triple agreement when available ──
     const backendOuPick = pred?._ouPick ?? pred?.ou_pick ?? null;
     const backendOuTier = pred?._ouTier ?? pred?.ou_tier ?? 0;
-    if (isNCAA && backendOuPick) {
+    if ((sport === "ncaa" || sport === "ncaaf") && backendOuPick) {
       const tierLabelsOU = {
         3: { label: "MAX (3u)", units: 3, color: "green", verdict: "GO", acc: "~66%", roi: "+26%" },
         2: { label: "STRONG (2u)", units: 2, color: "yellow", verdict: "GO", acc: "~63%", roi: "+21%" },
