@@ -518,6 +518,16 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const adjHomeScore = parseFloat((pred.homeScore + marginShift).toFixed(1));
         const adjAwayScore = parseFloat((pred.awayScore - marginShift).toFixed(1));
 
+        // v29: Rescale projected scores to match v5 O/U total (market + residual)
+        // Keeps the margin from the ATS model, adjusts total from the O/U model
+        let finalHomeScore = adjHomeScore;
+        let finalAwayScore = adjAwayScore;
+        const v5Total = mlResult.ou_predicted_total;
+        if (v5Total && v5Total > 100) {
+          finalHomeScore = parseFloat(((v5Total + mlMargin) / 2).toFixed(1));
+          finalAwayScore = parseFloat(((v5Total - mlMargin) / 2).toFixed(1));
+        }
+
         const winHome = Math.max(0.05, Math.min(0.95, mlWinProb));
         const winAway = 1 - winHome;
 
@@ -534,8 +544,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
 
         return {
           ...pred,
-          homeScore: adjHomeScore,
-          awayScore: adjAwayScore,
+          homeScore: finalHomeScore,
+          awayScore: finalAwayScore,
           homeWinPct: winHome,
           awayWinPct: winAway,
           projectedSpread: parseFloat(mlMargin.toFixed(1)),
