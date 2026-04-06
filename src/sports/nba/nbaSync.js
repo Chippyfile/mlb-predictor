@@ -22,8 +22,18 @@ import {
   haversineDistance,
 } from "./nbaUtils.js";
 
+// PST/PDT date helper — all date logic uses Pacific time, not UTC
+const _pstToday = () => new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+const _pstTodayStr = () => {
+  const d = _pstToday();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 const _nbaSeason = (() => {
-  const n = new Date();
+  const n = _pstToday();
   return `${n.getMonth() < 7 ? n.getFullYear() - 1 : n.getFullYear()}-10-01`;
 })();
 
@@ -62,7 +72,7 @@ export async function nbaFillFinalScores(pendingRows) {
     try {
       // ── CLV: Fetch closing odds for today's games ──────────
       let closingOdds = null;
-      const todayStr = new Date().toISOString().split("T")[0];
+      const todayStr = _pstTodayStr();
       if (dateStr === todayStr) {
         try { closingOdds = (await fetchOdds("basketball_nba"))?.games || []; }
         catch (e) { console.warn("NBA CLV: Could not fetch closing odds:", e.message); }
@@ -141,7 +151,7 @@ export async function nbaFillFinalScores(pendingRows) {
 // ─────────────────────────────────────────────────────────────
 export async function nbaAutoSync(onProgress) {
   onProgress?.("🏀 Syncing NBA…");
-  const today = new Date().toISOString().split("T")[0];
+  const today = _pstTodayStr();
   const existing = await supabaseQuery(
     `/nba_predictions?select=id,game_date,home_team,away_team,result_entered,game_id&order=game_date.asc&limit=10000`
   );
