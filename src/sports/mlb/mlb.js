@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/mlb/mlb.js
 // Lines 387–807 of App.jsx (extracted)
 
@@ -376,7 +377,7 @@ export async function fetchStarterStats(pitcherId) {
 
 export async function fetchRecentForm(teamId, numGames = 15) {
   if (!teamId) return null;
-  const today = new Date().toISOString().split("T")[0];
+  const today = pstTodayStr();
   const data  = await mlbFetch("schedule", {
     teamId, season: SEASON, startDate: `${SEASON}-01-01`, endDate: today,
     hydrate: "linescore", sportId: 1,

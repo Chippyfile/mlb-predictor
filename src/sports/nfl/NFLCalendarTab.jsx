@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/nfl/NFLCalendarTab.jsx
 // Lines 3312–3527 of App.jsx (extracted)
 
@@ -25,7 +26,7 @@ function matchNFLOddsToGame(o, g) {
 // NFL CALENDAR TAB
 // ─────────────────────────────────────────────────────────────
 export function NFLCalendarTab({ calibrationFactor, onGamesLoaded }) {
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = pstTodayStr();
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);

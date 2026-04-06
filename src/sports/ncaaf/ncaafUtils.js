@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/ncaaf/ncaafUtils.js
 // Lines 3528–3968 of App.jsx (extracted)
 
@@ -454,7 +455,7 @@ export async function ncaafFillFinalScores(pendingRows) {
     try {
       // CLV: Fetch closing odds for today's games
       let closingOdds = null;
-      const todayStr = new Date().toISOString().split("T")[0];
+      const todayStr = pstTodayStr();
       if (dateStr === todayStr) {
         try { closingOdds = (await fetchOdds("americanfootball_ncaaf"))?.games || []; }
         catch (e) { console.warn("NCAAF CLV: Could not fetch closing odds:", e.message); }

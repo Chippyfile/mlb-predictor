@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/ncaaf/NCAAFCalendarTab.jsx
 // Lines 4047–4281 of App.jsx (extracted)
 
@@ -17,7 +18,7 @@ import { ncaafAutoSync } from "./ncaafSync.js";
 // NCAAF CALENDAR TAB
 // ─────────────────────────────────────────────────────────────
 export function NCAAFCalendarTab({ calibrationFactor, onGamesLoaded }) {
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = pstTodayStr();
 
   // Default to most recent Saturday
   const defaultDate = (() => {

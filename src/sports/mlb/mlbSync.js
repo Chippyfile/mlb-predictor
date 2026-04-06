@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/mlb/mlbSync.js
 // Step 5: Persist raw features + Step 6: Closing line tracking
 import { supabaseQuery } from "../../utils/supabase.js";
@@ -298,7 +299,7 @@ export async function mlbFillFinalScores(pendingRows, oddsData) {
   MLB_TEAMS.forEach(t => { teamIdToAbbr[t.id] = t.abbr; });
 
   // Step 6: Fetch current odds if not passed in (these become closing lines)
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = pstTodayStr();
   let closingOdds = oddsData || null;
   if (!closingOdds && Object.keys(byDate).some(d => d === todayStr)) {
     try { closingOdds = await fetchOdds("baseball_mlb"); } catch { /* no odds */ }
@@ -573,7 +574,7 @@ export async function mlbAutoSync(onProgress) {
     }
   } catch (e) { console.warn("MLB game_type migration:", e); }
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = pstTodayStr();
   const allDates = [];
   const cur = new Date(MLB_SEASON_START);
   while (cur.toISOString().split("T")[0] <= today) {

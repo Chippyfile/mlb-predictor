@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/nfl/nflSync.js
 // NFL v15 — Forensic Audit Implementation
 // N-03: Persist 30+ raw stats to Supabase for ML training
@@ -173,7 +174,7 @@ export async function nflFillFinalScores(pendingRows) {
 // ─────────────────────────────────────────────────────────────
 export async function nflAutoSync(onProgress) {
   onProgress?.("🏈 Syncing NFL…");
-  const today = new Date().toISOString().split("T")[0];
+  const today = pstTodayStr();
   const existing = await supabaseQuery(
     `/nfl_predictions?select=id,game_date,home_team,away_team,result_entered,game_id&order=game_date.asc&limit=5000`
   );

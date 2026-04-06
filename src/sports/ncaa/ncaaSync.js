@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/ncaa/ncaaSync.js
 // NCAAB v18 — Phase 1: Injury detection, tournament context, dynamic sigma
 import { supabaseQuery } from "../../utils/supabase.js";
@@ -16,7 +17,7 @@ const _ncaaSeasonStart = (() => {
 })();
 
 const _sleep = ms => new Promise(r => setTimeout(r, ms));
-const _todayPT = () => new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })).toISOString().split("T")[0];
+const _todayPT = () => pstTodayStr();
 
 // v18: TTL-based stats cache — prevents redundant ESPN API calls
 const _teamStatsCache = createTTLCache(4 * 60 * 60 * 1000); // 4-hour TTL

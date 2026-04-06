@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/ncaa/NCAACalendarTab.jsx
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
@@ -248,7 +249,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
 };
 
 export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
-  const todayStr = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })).toISOString().split("T")[0];
+  const todayStr = pstTodayStr();
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);

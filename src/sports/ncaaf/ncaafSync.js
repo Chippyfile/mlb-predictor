@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/ncaaf/ncaafSync.js
 // Lines 3969–4046 of App.jsx (extracted)
 
@@ -16,7 +17,7 @@ import {
 // ─────────────────────────────────────────────────────────────
 export async function ncaafAutoSync(onProgress) {
   onProgress?.("🏈 Syncing NCAAF…");
-  const today = new Date().toISOString().split("T")[0];
+  const today = pstTodayStr();
   const yr    = new Date().getFullYear();
   const seasonStart = `${yr}-08-15`; // CFB starts late August
 

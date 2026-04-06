@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/nba/NBACalendarTab.jsx
 // v18: ML-first prediction — single source of truth
 // ML API (/predict/nba/full) is PRIMARY. No blending, no reconciliation.
@@ -225,7 +226,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
 // NBACalendarTab
 // ─────────────────────────────────────────────────────────────
 export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
-  const todayStr = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })).toISOString().split("T")[0];
+  const todayStr = pstTodayStr();
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);

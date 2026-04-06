@@ -1,3 +1,4 @@
+import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/mlb/MLBCalendarTab.jsx
 // v2: Matched to NCAA grid layout — BetBanner, UnitBadge, confidence footer, green ML styling
 import React, { useState, useEffect, useCallback } from "react";
@@ -216,7 +217,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
 };
 
 export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
-  const todayStr = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })).toISOString().split("T")[0];
+  const todayStr = pstTodayStr();
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
