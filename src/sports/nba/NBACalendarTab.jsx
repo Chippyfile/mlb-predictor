@@ -10,7 +10,7 @@ import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
 import { supabaseQuery } from "../../utils/supabase.js";
-import { mlPredict, mlPredictNBAFull, mlMonteCarlo } from "../../utils/mlApi.js";
+import { mlPredictNBAFull, mlMonteCarlo } from "../../utils/mlApi.js";
 import { nbaAutoSync, computeDaysRest } from "./nbaSync.js";
 import {
   fetchNBAGamesForDate,
@@ -269,8 +269,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       setGames(prev => prev.map(g => {
         if (g.gameId !== game.gameId) return g;
         const mlWinAway = 1 - mlWinHome;
-        const homeScore = mlResult.pred_home_score;
-        const awayScore = mlResult.pred_away_score;
+        const homeScore = mlResult.pred_home_score ?? (mlMargin != null ? (mlMargin / 2) : null);
+        const awayScore = mlResult.pred_away_score ?? (mlMargin != null ? -(mlMargin / 2) : null);
         const VIG = 0;
         const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
         const pred = {
@@ -379,8 +379,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const mlMargin = stored.spread_home ?? 0;
         const mlWinHome = Math.max(0.05, Math.min(0.95, stored.ml_win_prob_home ?? stored.win_pct_home ?? 0.5));
         const mlWinAway = 1 - mlWinHome;
-        const homeScore = stored.pred_home_score;
-        const awayScore = stored.pred_away_score;
+        const homeScore = stored.pred_home_score ?? (mlMargin != null ? (mlMargin / 2) : null);
+        const awayScore = stored.pred_away_score ?? (mlMargin != null ? -(mlMargin / 2) : null);
         const VIG = 0;
         const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
         pred = {
@@ -891,7 +891,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     gap: 8,
                     marginBottom: 10
                   }}>
-                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore.toFixed(0)} — ${homeName} ${game.pred.homeScore.toFixed(0)}`} />
+                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore?.toFixed(0) ?? "—"} — ${homeName} ${game.pred.homeScore?.toFixed(0) ?? "—"}`} />
                     <Kv k="Win %" v={`${homeName} ${(game.pred.homeWinPct*100).toFixed(1)}% / ${awayName} ${((game.pred.awayWinPct ?? (1-game.pred.homeWinPct))*100).toFixed(1)}%`} />
                     <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${homeName} -${game.pred.projectedSpread.toFixed(1)}` : `${awayName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
                     <Kv k="O/U Total" v={game.pred._ouPredictedTotal

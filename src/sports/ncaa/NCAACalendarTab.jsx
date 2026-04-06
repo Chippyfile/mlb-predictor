@@ -403,7 +403,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ats_disagree,ats_units,ats_side,ats_pick_spread,ou_total,pred_home_score,pred_away_score`
+        `/ncaa_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ats_disagree,ats_units,ats_side,ats_pick_spread,ou_total,pred_home_score,pred_away_score,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
