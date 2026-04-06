@@ -313,7 +313,25 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
 
       let mlResult = null, mcResult = null, ouResult = null;
       if (isPreGame) {
-        const mlPayload = {
+        // v19: Stored prediction PRIMARY (from cron) — same data as backtesting
+        const stored = storedPredMap.get(String(g.gamePk));
+        if (stored && stored.ml_win_prob_home != null) {
+          mlResult = {
+            ml_win_prob_home: stored.ml_win_prob_home,
+            ml_win_prob_away: 1 - stored.ml_win_prob_home,
+            ml_margin: stored.pred_home_runs && stored.pred_away_runs
+              ? stored.pred_home_runs - stored.pred_away_runs : 0,
+            pred_home_runs: stored.pred_home_runs ?? null,
+            pred_away_runs: stored.pred_away_runs ?? null,
+            _fromSupabase: true,
+          };
+          if (stored.ou_total) {
+            ouResult = { pred_total: stored.ou_total };
+          }
+          console.log(`[MLB STORED] ${g.homeAbbr || g.home?.abbreviation}: wp=${stored.ml_win_prob_home?.toFixed(3)}`);
+        } else {
+          // FALLBACK: No stored prediction — call ML API
+          const mlPayload = {
             home_team: g.homeAbbr || g.home?.abbreviation,
             away_team: g.awayAbbr || g.away?.abbreviation,
             pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
@@ -368,6 +386,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
           mlPredict("mlb/ou", mlPayload),
         ]);
+        }  // end FALLBACK else
       } else {
         // Final/Live: reconstruct mlResult from stored Supabase prediction
         const stored = storedPredMap.get(String(g.gamePk));

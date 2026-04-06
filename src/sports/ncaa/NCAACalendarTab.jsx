@@ -473,10 +473,30 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         // which would contaminate the prediction with future information.
         const isPreGame = g.status !== "Final" && g.status !== "Live";
         if (isPreGame) {
-          mlResult = await mlPredictFull(
-              g.homeTeamId, g.awayTeamId,
-              { neutralSite: effectiveNeutral, gameDate: d, gameId: g.gameId }
-          ).catch(() => null);
+          // v19: Stored prediction PRIMARY (from cron) — same data as backtesting
+          const stored = storedPredMap.get(String(g.gameId));
+          if (stored && stored.ml_win_prob_home != null) {
+            mlResult = {
+              ml_margin: stored.spread_home ?? 0,
+              ml_win_prob_home: stored.ml_win_prob_home ?? stored.win_pct_home ?? 0.5,
+              bias_correction_applied: 0,
+              feature_coverage: "stored",
+              _fromSupabase: true,
+              ou_predicted_total: stored.ou_predicted_total ?? stored.ou_total ?? null,
+              ou_edge: stored.ou_edge ?? ((stored.ou_predicted_total ?? stored.ou_total) && stored.market_ou_total
+                ? parseFloat(((stored.ou_predicted_total ?? stored.ou_total) - stored.market_ou_total).toFixed(1)) : null),
+              ou_pick: stored.ou_pick ?? null,
+              ou_tier: stored.ou_tier ?? null,
+              ou_res_avg: stored.ou_res_avg ?? null,
+            };
+            console.log(`[NCAA STORED] ${g.homeTeamName}: margin=${mlResult.ml_margin.toFixed?.(1) ?? mlResult.ml_margin}`);
+          } else {
+            // FALLBACK: No stored prediction — call ML API
+            mlResult = await mlPredictFull(
+                g.homeTeamId, g.awayTeamId,
+                { neutralSite: effectiveNeutral, gameDate: d, gameId: g.gameId }
+            ).catch(() => null);
+          }
         } else {
           // v26: For Final/Live games, reconstruct mlResult from stored Supabase prediction
           const stored = storedPredMap.get(String(g.gameId));
