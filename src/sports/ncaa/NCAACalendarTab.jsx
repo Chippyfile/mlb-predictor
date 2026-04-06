@@ -491,11 +491,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
             };
             console.log(`[NCAA STORED] ${g.homeTeamName}: margin=${mlResult.ml_margin.toFixed?.(1) ?? mlResult.ml_margin}`);
           } else {
-            // FALLBACK: No stored prediction — call ML API
-            mlResult = await mlPredictFull(
-                g.homeTeamId, g.awayTeamId,
-                { neutralSite: effectiveNeutral, gameDate: d, gameId: g.gameId }
-            ).catch(() => null);
+            // No stored prediction — keep heuristic pred as-is, no ML overlay
+            // Use 🔄 refresh to generate ML prediction and save to Supabase
+            console.log(`[NCAA PENDING] ${g.homeTeamName}: no stored prediction — use 🔄 to generate`);
           }
         } else {
           // v26: For Final/Live games, reconstruct mlResult from stored Supabase prediction

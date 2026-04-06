@@ -128,6 +128,40 @@ export async function mlPredictNBAFull(gameId, { gameDate = null } = {}) {
   }
 }
 
+// Hits /predict/mlb/full — backend fetches all data from MLB Stats API + Supabase
+// No frontend feature computation needed — server handles everything.
+export async function mlPredictMLBFull(gameId, { gameDate = null } = {}) {
+  if (!isAvailable("mlb")) {
+    console.warn(`[mlApi] mlb circuit breaker open — skipping mlPredictMLBFull`);
+    return null;
+  }
+  try {
+    const res = await fetch(`${ML_API}/predict/mlb/full`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ game_id: gameId, game_date: gameDate }),
+      signal: AbortSignal.timeout(45000),
+    });
+    if (!res.ok) {
+      console.error(`[mlApi] /predict/mlb/full returned ${res.status}`);
+      markFailed("mlb");
+      return null;
+    }
+    const data = await res.json();
+    if (data?.error) {
+      console.error(`[mlApi] /predict/mlb/full error:`, data.error);
+      return null;
+    }
+    console.log(`[mlApi] /predict/mlb/full OK — margin: ${data.ml_margin?.toFixed(1)}, wp: ${data.ml_win_prob_home?.toFixed(3)}, coverage: ${data.feature_coverage}`);
+    return data;
+  } catch (e) {
+    const isTimeout = e.name === "TimeoutError" || e.message?.includes("timed out");
+    console.error(`[mlApi] /predict/mlb/full ${isTimeout ? "timeout" : "exception"}:`, e.message);
+    if (!isTimeout) markFailed("mlb");
+    return null;
+  }
+}
+
 export async function mlMonteCarlo(sport, homeMean, awayMean, nSims = 10000, ouLine = null, gameId = null) {
   if (!isAvailable("monte-carlo")) return null;
   try {

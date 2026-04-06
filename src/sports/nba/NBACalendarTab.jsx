@@ -427,59 +427,28 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         console.log(`[NBA STORED] ${g.homeAbbr}: margin=${mlMargin.toFixed?.(1) ?? mlMargin}, wp=${mlWinHome.toFixed(3)}`);
 
       } else {
-        // FALLBACK: No stored prediction — call ML API (new game not yet synced)
-        try {
-          const apiResult = await mlPredictNBAFull(g.gameId, { gameDate: d });
-          if (apiResult && apiResult.ml_margin != null && !apiResult.error) {
-            mlResult = apiResult;
-            const mlMargin = apiResult.ml_margin;
-            const mlWinHome = Math.max(0.05, Math.min(0.95, apiResult.ml_win_prob_home ?? 0.5));
-            const mlWinAway = 1 - mlWinHome;
-            const homeScore = apiResult.pred_home_score ?? parseFloat(((hs?.ppg || 112) + mlMargin / 2).toFixed(1));
-            const awayScore = apiResult.pred_away_score ?? parseFloat(((as_?.ppg || 112) - mlMargin / 2).toFixed(1));
-            const VIG = 0;
-            const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
-            pred = {
-              homeScore: parseFloat(homeScore.toFixed?.(1) ?? homeScore),
-              awayScore: parseFloat(awayScore.toFixed?.(1) ?? awayScore),
-              homeWinPct: mlWinHome,
-              awayWinPct: mlWinAway,
-              projectedSpread: parseFloat(mlMargin.toFixed(1)),
-              ouTotal: apiResult.ou_predicted_total ?? parseFloat((homeScore + awayScore).toFixed(1)),
-              modelML_home: mlWinHome >= 0.5
-                ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
-                : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100)),
-              modelML_away: mlWinAway >= 0.5
-                ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
-                : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100)),
-              homeNetRtg: nbaRealH?.netRtg ?? 0,
-              awayNetRtg: nbaRealA?.netRtg ?? 0,
-              possessions: hs && as_ ? Math.round((hs.pace + as_.pace) / 2) : 99,
-              confidence: Math.abs(mlMargin) >= 7 ? "HIGH" : Math.abs(mlMargin) >= 3 ? "MEDIUM" : "LOW",
-              confScore: parseFloat(Math.abs(mlMargin).toFixed(1)),
-              decisiveness: parseFloat((Math.abs(mlWinHome - 0.5) * 100).toFixed(1)),
-              mlEnhanced: true,
-              _ouPredictedTotal: apiResult.ou_predicted_total ?? null,
-              _ouEdge: apiResult.ou_edge ?? null,
-              _ouPick: apiResult.ou_pick ?? null,
-            };
-            console.log(`[NBA ML API] ${g.homeAbbr}: margin=${mlMargin.toFixed(1)}, wp=${mlWinHome.toFixed(3)}`);
-          }
-        } catch (e) { console.warn("[NBA ML] predict failed:", e.message); }
-
-        // LAST RESORT: Heuristic only if both stored and ML API failed
-        if (!pred && hs && as_) {
-          pred = nbaPredictGame({
-            homeStats: hs, awayStats: as_,
-            neutralSite: g.neutralSite,
-            calibrationFactor,
-            homeRealStats: nbaRealH, awayRealStats: nbaRealA,
-            homeAbbr: g.homeAbbr, awayAbbr: g.awayAbbr,
-            homeDaysRest, awayDaysRest,
-            awayPrevCityAbbr,
-          });
-          if (pred) pred.mlEnhanced = false;
-          console.log(`[NBA HEURISTIC] ${g.homeAbbr}: ML unavailable, using heuristic fallback`);
+        // No stored prediction — show as unpredicted (use 🔄 refresh to generate)
+        // Do NOT call ML API on page load — Supabase is the single source of truth.
+        if (hs && as_) {
+          pred = {
+            homeScore: hs.ppg || 112,
+            awayScore: as_.ppg || 112,
+            homeWinPct: 0.5,
+            awayWinPct: 0.5,
+            projectedSpread: 0,
+            ouTotal: (hs.ppg || 112) + (as_.ppg || 112),
+            modelML_home: 100,
+            modelML_away: 100,
+            homeNetRtg: nbaRealH?.netRtg ?? 0,
+            awayNetRtg: nbaRealA?.netRtg ?? 0,
+            possessions: hs && as_ ? Math.round((hs.pace + as_.pace) / 2) : 99,
+            confidence: "PENDING",
+            confScore: 0,
+            decisiveness: 0,
+            mlEnhanced: false,
+            _notYetPredicted: true,
+          };
+          console.log(`[NBA PENDING] ${g.homeAbbr}: no stored prediction — use 🔄 to generate`);
         }
       }
 

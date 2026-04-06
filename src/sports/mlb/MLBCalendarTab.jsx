@@ -6,7 +6,7 @@ import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
 import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
-import { mlPredict, mlMonteCarlo } from "../../utils/mlApi.js";
+import { mlPredict, mlMonteCarlo, mlPredictMLBFull } from "../../utils/mlApi.js";
 import { supabaseQuery } from "../../utils/supabase.js";
 import {
   mlbTeamById, resolveStatTeamId,
@@ -223,6 +223,63 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(null);
   const [oddsData, setOddsData] = useState(null);
+  const [refreshingGame, setRefreshingGame] = useState(null);
+
+  // Per-game refresh: calls ML API → saves to Supabase → displays stored result
+  const refreshGame = useCallback(async (game) => {
+    const gamePk = game.gamePk || game.gameId;
+    setRefreshingGame(gamePk);
+    try {
+      const mlResult = await mlPredictMLBFull(gamePk, { gameDate: dateStr });
+      if (!mlResult) { setRefreshingGame(null); return; }
+      if (mlResult.error) { console.warn("[MLB refresh] API error:", mlResult.error); setRefreshingGame(null); return; }
+
+      // Save to Supabase (single source of truth)
+      const patch = {
+        win_pct_home: mlResult.ml_win_prob_home ? parseFloat(mlResult.ml_win_prob_home.toFixed(4)) : null,
+        ml_win_prob_home: mlResult.ml_win_prob_home ? parseFloat(mlResult.ml_win_prob_home.toFixed(4)) : null,
+        pred_home_runs: mlResult.ml_margin != null ? parseFloat(((mlResult.ml_margin + 9) / 2).toFixed(1)) : null,
+        pred_away_runs: mlResult.ml_margin != null ? parseFloat((9 - (mlResult.ml_margin + 9) / 2).toFixed(1)) : null,
+        ou_total: mlResult.pred_total ? parseFloat(mlResult.pred_total.toFixed(1)) : null,
+        ml_feature_coverage: mlResult.feature_coverage || null,
+      };
+      if (mlResult.ml_margin != null) patch.spread_home = parseFloat(mlResult.ml_margin.toFixed(2));
+
+      await supabaseQuery(`/mlb_predictions?game_pk=eq.${gamePk}`, "PATCH", patch).catch(e => {
+        console.warn("[MLB refresh] Supabase save failed:", e);
+      });
+
+      // Update local display
+      setGames(prev => prev.map(g => {
+        if ((g.gamePk || g.gameId) !== gamePk) return g;
+        const mlWinHome = Math.max(0.25, Math.min(0.75, mlResult.ml_win_prob_home ?? 0.5));
+        const mlWinAway = 1 - mlWinHome;
+        const VIG = 0.0225;
+        const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
+        const ML_CAP = 500;
+        return {
+          ...g,
+          pred: {
+            ...(g.pred || {}),
+            homeWinPct: mlWinHome,
+            awayWinPct: mlWinAway,
+            modelML_home: mlWinHome >= 0.5
+              ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
+              : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100)),
+            modelML_away: mlWinAway >= 0.5
+              ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
+              : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100)),
+            mlEnhanced: true,
+            mlOuTotal: mlResult.pred_total ?? null,
+          },
+          mlShap: mlResult.shap ?? g.mlShap,
+          mlMeta: mlResult.model_meta ?? g.mlMeta,
+        };
+      }));
+      console.log(`[MLB REFRESH] ${game.homeAbbr}: wp=${mlResult.ml_win_prob_home?.toFixed(3)}, saved to Supabase`);
+    } catch (e) { console.warn("[MLB refresh] error:", e); }
+    setRefreshingGame(null);
+  }, [dateStr]);
 
   const loadGames = useCallback(async (d) => {
     setLoading(true); setGames([]);
@@ -330,63 +387,10 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           }
           console.log(`[MLB STORED] ${g.homeAbbr || g.home?.abbreviation}: wp=${stored.ml_win_prob_home?.toFixed(3)}`);
         } else {
-          // FALLBACK: No stored prediction — call ML API
-          const mlPayload = {
-            home_team: g.homeAbbr || g.home?.abbreviation,
-            away_team: g.awayAbbr || g.away?.abbreviation,
-            pred_home_runs: pred.homeRuns, pred_away_runs: pred.awayRuns,
-            win_pct_home: pred.homeWinPct, ou_total: pred.ouTotal,
-            model_ml_home: pred.modelML_home,
-            home_woba: pred.homeWOBA, away_woba: pred.awayWOBA,
-            // AUDIT v4 Finding 10: home_fip = TEAM pitching (ERA proxy), not starter FIP
-            // sp_relative_fip_diff needs team FIP to compute (starter - team) differential
-            home_fip: homePitch?.era || 4.25,
-            away_fip: awayPitch?.era || 4.25,
-            home_sp_fip: pred.hFIP, away_sp_fip: pred.aFIP,
-            home_bullpen_era: homePitch?.era || 4.10,
-            away_bullpen_era: awayPitch?.era || 4.10,
-            park_factor: pred.parkFactor,
-            temp_f: parkWeather?.tempF ?? 70,
-            wind_mph: parkWeather?.windMph ?? 5,
-            wind_out_flag: parkWeather
-              ? ((parkWeather.windDir >= 145 && parkWeather.windDir <= 255) ? 1 : 0)
-              : 0,
-            home_sp_ip: homeSPipPerStart,
-            away_sp_ip: awaySPipPerStart,
-            // Market data
-            market_spread_home: gameOdds?.homeSpread ?? 0,
-            market_ou_total: gameOdds?.ouLine ?? 0,
-            home_moneyline: gameOdds?.homeML ?? 0,
-            away_moneyline: gameOdds?.awayML ?? 0,
-            // K-BB data
-            home_k9: homeStarter?.k9 ?? 0,
-            home_bb9: homeStarter?.bb9 ?? 0,
-            away_k9: awayStarter?.k9 ?? 0,
-            away_bb9: awayStarter?.bb9 ?? 0,
-            // Platoon — was missing, causing platoon_diff = 0
-            home_platoon_delta: pred.homePlatoonDelta ?? 0,
-            away_platoon_delta: pred.awayPlatoonDelta ?? 0,
-            // Umpire name for ump profile lookup
-            ump_name: g.umpire?.name || null,
-            // AUDIT FIX F-08/F-02: game_date for series + travel computation
-            game_date: dateStr,
-            home_rest_days: (() => {
-              if (!homeForm?.lastGameDate) return 4;
-              const daysSince = Math.floor((Date.now() - new Date(homeForm.lastGameDate).getTime()) / 86400000);
-              return Math.max(0, Math.min(7, daysSince));
-            })(),
-            away_rest_days: (() => {
-              if (!awayForm?.lastGameDate) return 4;
-              const daysSince = Math.floor((Date.now() - new Date(awayForm.lastGameDate).getTime()) / 86400000);
-              return Math.max(0, Math.min(7, daysSince));
-            })(),
-        };
-        [mlResult, mcResult, ouResult] = await Promise.all([
-          mlPredict("mlb", mlPayload),
-          mlMonteCarlo("MLB", pred.homeRuns, pred.awayRuns, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gamePk),
-          mlPredict("mlb/ou", mlPayload),
-        ]);
-        }  // end FALLBACK else
+          // No stored prediction — heuristic only, no ML overlay
+          // Use 🔄 refresh to generate ML prediction and save to Supabase
+          console.log(`[MLB PENDING] ${g.homeAbbr || g.home?.abbreviation}: no stored prediction — use 🔄 to generate`);
+        }
       } else {
         // Final/Live: reconstruct mlResult from stored Supabase prediction
         const stored = storedPredMap.get(String(g.gamePk));
@@ -646,6 +650,15 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                   {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
                   {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE {game.inningHalf} {game.inning}</span>}
                   {game.umpire?.name && <span style={{ fontSize: 9, color: C.dim }}>⚖ {game.umpire.name.split(" ").pop()}</span>}
+                  {game.status !== "Final" && (
+                    <span
+                      style={{ cursor: "pointer", fontSize: 12, opacity: refreshingGame === game.gamePk ? 0.5 : 1 }}
+                      onClick={(e) => { e.stopPropagation(); refreshGame(game); }}
+                      title="Refresh prediction with latest data"
+                    >
+                      {refreshingGame === game.gamePk ? "⏳" : "🔄"}
+                    </span>
+                  )}
                   <span style={{ color: C.dim, fontSize: 12 }}>
                     {expanded === game.gamePk ? "▲" : "▼"}
                   </span>
