@@ -257,7 +257,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
   const [refreshingGame, setRefreshingGame] = useState(null);
 
   // Per-game refresh: re-calls ML API and updates display + Supabase
-  const refreshGame = useCallback(async (game, idx) => {
+  const refreshGame = useCallback(async (game) => {
     setRefreshingGame(game.gameId);
     try {
       const mlResult = await mlPredictFull(
@@ -912,7 +912,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                   {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE</span>}
                   {game.status !== "Final" && game.status !== "Live" && (
                     <span
-                      onClick={(e) => { e.stopPropagation(); refreshGame(game, idx); }}
+                      onClick={(e) => { e.stopPropagation(); refreshGame(game); }}
                       style={{ cursor: "pointer", fontSize: 11, opacity: refreshingGame === game.gameId ? 0.5 : 1, padding: "2px 6px", borderRadius: 4, background: "rgba(88,166,255,0.1)", color: "#58a6ff" }}
                       title="Refresh prediction (re-fetch refs, starters, odds)"
                     >
