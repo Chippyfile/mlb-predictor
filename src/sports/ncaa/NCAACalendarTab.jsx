@@ -403,7 +403,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ats_disagree,ats_units,ats_side,ats_pick_spread,ou_total,pred_home_score,pred_away_score,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg`
+        `/ncaa_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ats_disagree,ats_units,ats_side,ats_pick_spread,ou_total,pred_home_score,pred_away_score,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,home_adj_em,away_adj_em,home_ppg,away_ppg,home_tempo,away_tempo,home_wins,away_wins,home_losses,away_losses,home_rank,away_rank,home_fgpct,away_fgpct,home_threepct,away_threepct,home_ftpct,away_ftpct,home_sos,away_sos,home_form,away_form`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
@@ -445,12 +445,32 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const storedHere = storedPredMap.get(String(g.gameId));
       const pred = storedHere?.ml_win_prob_home != null
         ? (() => {
-            // Build minimal pred from stored data for downstream compatibility
+            // v19: Build FULL pred from Supabase stored prediction — no ESPN needed
             const sm = storedHere.spread_home ?? 0;
             const swp = storedHere.ml_win_prob_home ?? 0.5;
-            const shs = storedHere.pred_home_score ?? (homeStats?.ppg ?? 70) + sm / 2;
-            const sas = storedHere.pred_away_score ?? (awayStats?.ppg ?? 70) - sm / 2;
-            return { homeScore: shs, awayScore: sas, projectedSpread: sm, homeWinPct: swp, awayWinPct: 1 - swp, ouTotal: storedHere.ou_total ?? shs + sas };
+            const shs = storedHere.pred_home_score ?? 70;
+            const sas = storedHere.pred_away_score ?? 70;
+            const hTempo = storedHere.home_tempo ?? 68;
+            const aTempo = storedHere.away_tempo ?? 68;
+            const confScore = Math.abs(sm);
+            return {
+              homeScore: shs, awayScore: sas,
+              projectedSpread: sm,
+              homeWinPct: swp, awayWinPct: 1 - swp,
+              ouTotal: storedHere.ou_predicted_total ?? storedHere.ou_total ?? shs + sas,
+              possessions: (hTempo + aTempo) / 2,
+              homeAdjEM: storedHere.home_adj_em ?? null,
+              awayAdjEM: storedHere.away_adj_em ?? null,
+              confidence: confScore >= 7 ? "HIGH" : confScore >= 3 ? "MEDIUM" : "LOW",
+              confScore: parseFloat(confScore.toFixed(1)),
+              decisiveness: parseFloat((Math.abs(swp - 0.5) * 100).toFixed(1)),
+              _fromStored: true,
+              _ouPredictedTotal: storedHere.ou_predicted_total ?? storedHere.ou_total ?? null,
+              _ouEdge: storedHere.ou_edge ?? null,
+              _ouPick: storedHere.ou_pick ?? null,
+              _ouTier: storedHere.ou_tier ?? null,
+              _ouResAvg: storedHere.ou_res_avg ?? null,
+            };
           })()
         : (homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null);
       const rawOdds = null; // Removed: Odds API matching — using ESPN pickcenter instead
@@ -1179,11 +1199,11 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                       : game.pred.ouTotal} />
                     <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${homeName} -${game.pred.projectedSpread.toFixed(1)}` : `${awayName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
                     <Kv k="Possessions" v={game.pred.possessions?.toFixed(1) ?? "—"} />
-                    {game.homeStats && (
-                      <Kv k={`${homeName} Adj EM`} v={`${game.pred.homeAdjEM}${game.homeStats._kenPomRank ? ` (#${game.homeStats._kenPomRank})` : ''}`} />
+                    {game.pred.homeAdjEM != null && (
+                      <Kv k={`${homeName} Adj EM`} v={`${game.pred.homeAdjEM}${game.homeStats?._kenPomRank ? ` (#${game.homeStats._kenPomRank})` : (game.homeRank && game.homeRank < 99 ? ` (#${game.homeRank})` : '')}`} />
                     )}
-                    {game.awayStats && (
-                      <Kv k={`${awayName} Adj EM`} v={`${game.pred.awayAdjEM}${game.awayStats._kenPomRank ? ` (#${game.awayStats._kenPomRank})` : ''}`} />
+                    {game.pred.awayAdjEM != null && (
+                      <Kv k={`${awayName} Adj EM`} v={`${game.pred.awayAdjEM}${game.awayStats?._kenPomRank ? ` (#${game.awayStats._kenPomRank})` : (game.awayRank && game.awayRank < 99 ? ` (#${game.awayRank})` : '')}`} />
                     )}
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
                     <Kv k="Ratings" v={`${game.pred.ratingsSource || 'SOS'}${game.pred.venueAware ? ' + H/A' : ''}`} />
