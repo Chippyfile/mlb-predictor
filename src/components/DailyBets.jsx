@@ -5,7 +5,7 @@ import { getBetSignals } from "../utils/sharedUtils.js";
 import { supabaseQuery } from "../utils/supabase.js";
 
 const ML_CAP = -500, CONF_GATE = 0.70, MIN_LEGS = 3, MIN_BET_UNITS = 2;
-const getToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
+const getToday = () => { const d = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
 function getStrategyMode() {
   const m = new Date().getMonth() + 1, d = new Date().getDate();
@@ -53,7 +53,8 @@ function mapNCAA(rows) { return rows.filter(r => r.win_pct_home != null).map(r =
     odds: { homeSpread: parseFloat(r.market_spread_home || r.espn_spread) || null,
             homeML: r.closing_home_ml || r.model_ml_home, awayML: r.closing_away_ml || r.model_ml_away,
             ouLine: parseFloat(r.market_ou_total || r.closing_ou_total) || null },
-    _ats: r.ats_units ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.ats_pick_spread } : null,
+    _ats: r.ats_units > 0 ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.ats_pick_spread } : null,
+    _atsComputed: r.ats_units != null,  // cron already evaluated — don't recompute
   };
 }); }
 
@@ -67,8 +68,8 @@ function mapNBA(rows) { return rows.filter(r => r.pred_home_score != null).map(r
     odds: { homeSpread: parseFloat(r.market_spread_home) || null,
             homeML: r.opening_home_ml || r.model_ml_home, awayML: r.opening_away_ml || r.model_ml_away,
             ouLine: parseFloat(r.market_ou_total) || null },
-    // Pre-computed ATS from cron
-    _ats: r.ats_units ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.ats_pick_spread } : null,
+    _ats: r.ats_units > 0 ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.ats_pick_spread } : null,
+    _atsComputed: r.ats_units != null,
   };
 }); }
 
@@ -81,7 +82,8 @@ function mapMLB(rows) { return rows.filter(r => r.pred_home_runs != null || r.sp
     odds: { homeSpread: parseFloat(r.run_line_home) || -1.5,
             homeML: r.opening_home_ml || r.model_ml_home, awayML: r.opening_away_ml || r.model_ml_away,
             ouLine: parseFloat(r.market_ou_total) || null },
-    _ats: r.ats_units ? { side: r.ats_side, units: r.ats_units } : null,
+    _ats: r.ats_units > 0 ? { side: r.ats_side, units: r.ats_units } : null,
+    _atsComputed: r.ats_units != null,
   };
 }); }
 
@@ -149,8 +151,9 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         const team = side === "HOME" ? h : a;
         const sp = g._ats.spread || (side === "HOME" ? g.odds?.homeSpread : -(g.odds?.homeSpread || 0));
         ats.push({ team, spread: sp ? parseFloat(sp) : null, units: g._ats.units, edge: parseFloat(g._ats.disagree || 0), side });
-      } else if (g.odds) {
-        // Fall back to computing via getBetSignals
+      } else if (g.odds && !g._atsComputed) {
+        // Only fall back to getBetSignals if cron never computed ATS
+        // If _atsComputed is true, cron decided no edge — respect that
         const sig = getBetSignals({ pred: g.pred, odds: g.odds, sport, homeName: h, awayName: a });
         if (sig.betSizing) {
           const side = sig.betSizing.side, team = side === "HOME" ? h : a;
