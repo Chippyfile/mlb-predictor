@@ -269,8 +269,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       setGames(prev => prev.map(g => {
         if (g.gameId !== game.gameId) return g;
         const mlWinAway = 1 - mlWinHome;
-        const homeScore = mlResult.pred_home_score ?? (g.homeStats?.ppg || 110) + mlMargin / 2;
-        const awayScore = mlResult.pred_away_score ?? (g.awayStats?.ppg || 110) - mlMargin / 2;
+        const homeScore = mlResult.pred_home_score;
+        const awayScore = mlResult.pred_away_score;
         const VIG = 0;
         const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
         const pred = {
@@ -379,8 +379,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const mlMargin = stored.spread_home ?? 0;
         const mlWinHome = Math.max(0.05, Math.min(0.95, stored.ml_win_prob_home ?? stored.win_pct_home ?? 0.5));
         const mlWinAway = 1 - mlWinHome;
-        const homeScore = stored.pred_home_score ?? parseFloat(((hs?.ppg || 110) + mlMargin / 2).toFixed(1));
-        const awayScore = stored.pred_away_score ?? parseFloat(((as_?.ppg || 110) - mlMargin / 2).toFixed(1));
+        const homeScore = stored.pred_home_score;
+        const awayScore = stored.pred_away_score;
         const VIG = 0;
         const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
         pred = {
@@ -430,12 +430,12 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         // Do NOT call ML API on page load — Supabase is the single source of truth.
         if (hs && as_) {
           pred = {
-            homeScore: hs.ppg || 110,
-            awayScore: as_.ppg || 110,
+            homeScore: hs?.ppg ?? null,
+            awayScore: as_?.ppg ?? null,
             homeWinPct: 0.5,
             awayWinPct: 0.5,
             projectedSpread: 0,
-            ouTotal: (hs.ppg || 110) + (as_.ppg || 110),
+            ouTotal: (hs?.ppg && as_?.ppg) ? hs.ppg + as_.ppg : null,
             modelML_home: 100,
             modelML_away: 100,
             homeNetRtg: nbaRealH?.netRtg ?? 0,
