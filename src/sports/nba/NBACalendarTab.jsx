@@ -261,6 +261,27 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (mlResult.ou_tier != null) patch.ou_tier = mlResult.ou_tier;
       if (mlResult.ou_res_avg != null) patch.ou_res_avg = parseFloat(mlResult.ou_res_avg.toFixed(3));
 
+      // ATS signals with direction flip
+      const mktSpread = game.odds?.homeSpread;
+      if (mktSpread != null) {
+        const mktImplied = -mktSpread;
+        const disagree = Math.abs(mlMargin - mktImplied);
+        const dirFlip = (mlMargin > 0) !== (mktImplied > 0);
+        const threshold = dirFlip ? 3 : 4;
+        patch.ats_disagree = parseFloat(disagree.toFixed(2));
+        if (disagree >= threshold) {
+          patch.ats_side = mlMargin > mktImplied ? "HOME" : "AWAY";
+          patch.ats_pick_spread = mktSpread;
+          patch.ats_units = dirFlip
+            ? (disagree >= 7 ? 3 : disagree >= 5 ? 2 : 1)
+            : (disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1);
+        } else {
+          patch.ats_side = null;
+          patch.ats_units = 0;
+          patch.ats_pick_spread = null;
+        }
+      }
+
       await supabaseQuery(`/nba_predictions?game_id=eq.${game.gameId}`, "PATCH", patch).catch(e => {
         console.warn("[NBA refresh] Supabase save failed:", e);
       });

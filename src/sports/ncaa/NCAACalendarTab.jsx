@@ -310,11 +310,15 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (mktSpread != null) {
         const mktImplied = -mktSpread;
         const disagree = Math.abs(modelMargin - mktImplied);
+        const dirFlip = (modelMargin > 0) !== (mktImplied > 0);
+        const threshold = dirFlip ? 3 : 4;
         patch.ats_disagree = parseFloat(disagree.toFixed(2));
-        if (disagree >= 4) {
+        if (disagree >= threshold) {
           patch.ats_side = modelMargin > mktImplied ? "HOME" : "AWAY";
           patch.ats_pick_spread = mktSpread;
-          patch.ats_units = disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1;
+          patch.ats_units = dirFlip
+            ? (disagree >= 7 ? 3 : disagree >= 5 ? 2 : 1)
+            : (disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1);
         } else {
           patch.ats_side = null;
           patch.ats_units = 0;
