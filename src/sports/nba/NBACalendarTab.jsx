@@ -15,10 +15,8 @@ import { nbaAutoSync, computeDaysRest } from "./nbaSync.js";
 import {
   fetchNBAGamesForDate,
   fetchNBATeamStats,
-  nbaPredictGame,
   matchNBAOddsToGame,
   NBA_TEAM_COLORS,
-  computeLeagueAverages,
 } from "./nbaUtils.js";
 
 // ML moneyline cap — AUDIT-v3: bumped from 500 to 800 for display fidelity
@@ -271,8 +269,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       setGames(prev => prev.map(g => {
         if (g.gameId !== game.gameId) return g;
         const mlWinAway = 1 - mlWinHome;
-        const homeScore = mlResult.pred_home_score ?? (g.homeStats?.ppg || 112) + mlMargin / 2;
-        const awayScore = mlResult.pred_away_score ?? (g.awayStats?.ppg || 112) - mlMargin / 2;
+        const homeScore = mlResult.pred_home_score ?? (g.homeStats?.ppg || 110) + mlMargin / 2;
+        const awayScore = mlResult.pred_away_score ?? (g.awayStats?.ppg || 110) - mlMargin / 2;
         const VIG = 0;
         const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
         const pred = {
@@ -324,7 +322,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (hs && !seenNba.has(hs.abbr)) { seenNba.add(hs.abbr); uniqueNbaStats.push(hs); }
       if (as_ && !seenNba.has(as_.abbr)) { seenNba.add(as_.abbr); uniqueNbaStats.push(as_); }
     }
-    if (uniqueNbaStats.length >= 10) computeLeagueAverages(uniqueNbaStats);
+    // v19: computeLeagueAverages removed — was only needed by heuristic predictor
+    // Team stats are still fetched above for display (pace, netRtg)
 
     // ── v19: Fetch stored predictions from Supabase (single source of truth) ──
     // The cron already called /predict/nba/full and stored the result.
@@ -380,8 +379,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const mlMargin = stored.spread_home ?? 0;
         const mlWinHome = Math.max(0.05, Math.min(0.95, stored.ml_win_prob_home ?? stored.win_pct_home ?? 0.5));
         const mlWinAway = 1 - mlWinHome;
-        const homeScore = stored.pred_home_score ?? parseFloat(((hs?.ppg || 112) + mlMargin / 2).toFixed(1));
-        const awayScore = stored.pred_away_score ?? parseFloat(((as_?.ppg || 112) - mlMargin / 2).toFixed(1));
+        const homeScore = stored.pred_home_score ?? parseFloat(((hs?.ppg || 110) + mlMargin / 2).toFixed(1));
+        const awayScore = stored.pred_away_score ?? parseFloat(((as_?.ppg || 110) - mlMargin / 2).toFixed(1));
         const VIG = 0;
         const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
         pred = {
@@ -431,12 +430,12 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         // Do NOT call ML API on page load — Supabase is the single source of truth.
         if (hs && as_) {
           pred = {
-            homeScore: hs.ppg || 112,
-            awayScore: as_.ppg || 112,
+            homeScore: hs.ppg || 110,
+            awayScore: as_.ppg || 110,
             homeWinPct: 0.5,
             awayWinPct: 0.5,
             projectedSpread: 0,
-            ouTotal: (hs.ppg || 112) + (as_.ppg || 112),
+            ouTotal: (hs.ppg || 110) + (as_.ppg || 110),
             modelML_home: 100,
             modelML_away: 100,
             homeNetRtg: nbaRealH?.netRtg ?? 0,
@@ -452,8 +451,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         }
       }
 
-      // Monte Carlo (uses ML scores if available)
-      if (pred) {
+      // Monte Carlo — only on refresh, not stored predictions (avoids API call on every page load)
+      if (pred && !pred._fromStored && !pred._notYetPredicted) {
         try {
           mcResult = await mlMonteCarlo("NBA", pred.homeScore, pred.awayScore, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
         } catch (e) { console.warn("[NBA MC] failed:", e.message); }

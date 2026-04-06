@@ -282,9 +282,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         pred.homeWinPct = Math.max(0.05, Math.min(0.95, mlWinProb));
         pred.awayWinPct = 1 - pred.homeWinPct;
         pred.mlEnhanced = true;
-        // Recalculate moneylines
-        const VIG = 0.0225;
-        const hp = pred.homeWinPct + VIG, ap = pred.awayWinPct + VIG;
+        // Recalculate moneylines (no vig — backend probabilities are fair)
+        const hp = pred.homeWinPct, ap = pred.awayWinPct;
         pred.modelML_home = pred.homeWinPct >= 0.5
           ? -Math.min(4000, Math.round((hp / (1 - hp)) * 100))
           : +Math.min(4000, Math.round(((1 - hp) / hp) * 100));
@@ -442,7 +441,18 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       
       const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 6.5;
       const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
-      const pred = homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null;
+      // v19: Only compute heuristic if no stored prediction — stored predictions are primary
+      const storedHere = storedPredMap.get(String(g.gameId));
+      const pred = storedHere?.ml_win_prob_home != null
+        ? (() => {
+            // Build minimal pred from stored data for downstream compatibility
+            const sm = storedHere.spread_home ?? 0;
+            const swp = storedHere.ml_win_prob_home ?? 0.5;
+            const shs = storedHere.pred_home_score ?? (homeStats?.ppg ?? 70) + sm / 2;
+            const sas = storedHere.pred_away_score ?? (awayStats?.ppg ?? 70) - sm / 2;
+            return { homeScore: shs, awayScore: sas, projectedSpread: sm, homeWinPct: swp, awayWinPct: 1 - swp, ouTotal: storedHere.ou_total ?? shs + sas };
+          })()
+        : (homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null);
       const rawOdds = null; // Removed: Odds API matching — using ESPN pickcenter instead
       // Build gameOdds from ESPN data (already extracted in detectMissingStarters, zero extra calls)
       const gameOdds = (injuryData?.espn_spread != null || injuryData?.espn_home_ml != null) ? {
@@ -522,7 +532,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const homeRatio = heuristicTotal > 0 ? pred.homeScore / heuristicTotal : 0.5;
         const mcHome = ouBase * homeRatio + mlMarginAdj;
         const mcAway = ouBase * (1 - homeRatio) - mlMarginAdj;
-        mcResult = await mlMonteCarlo("NCAAB", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
+        mcResult = mlResult?._fromSupabase ? null : await mlMonteCarlo("NCAAB", mcHome, mcAway, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
       
       const finalPred = pred && mlResult ? (() => {
@@ -550,10 +560,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const winHome = Math.max(0.05, Math.min(0.95, mlWinProb));
         const winAway = 1 - winHome;
 
-        // Model moneylines with simulated vig (~4.5% total, split per side)
-        const VIG = 0.0225; // 2.25% juice per side
-        const homeProb = winHome + VIG;
-        const awayProb = (1 - winHome) + VIG;
+        // Model moneylines — no vig, backend probabilities are fair (isotonic calibrated)
+        const homeProb = winHome;
+        const awayProb = (1 - winHome);
         const newModelML_home = winHome >= 0.5
           ? -Math.min(ML_CAP, Math.round((homeProb / (1 - homeProb)) * 100))
           : +Math.min(ML_CAP, Math.round(((1 - homeProb) / homeProb) * 100));
@@ -591,7 +600,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const mcHomeMean = _ouBase2 * _homeRatio2 + _mlAdj2;
       const mcAwayMean = _ouBase2 * (1 - _homeRatio2) - _mlAdj2;
       
-      if (pred && !mcResult) {
+      if (pred && !mcResult && !mlResult?._fromSupabase) {
         mcResult = await mlMonteCarlo("NCAAB", mcHomeMean, mcAwayMean, 10000, gameOdds?.ouLine ?? pred.ouTotal, g.gameId);
       }
       
