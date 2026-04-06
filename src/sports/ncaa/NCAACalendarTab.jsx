@@ -1172,13 +1172,13 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
                     gap: 8,
                     marginBottom: 10
                   }}>
-                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore.toFixed(1)} — ${homeName} ${game.pred.homeScore.toFixed(1)}`} />
+                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore?.toFixed(1) ?? "—"} — ${homeName} ${game.pred.homeScore?.toFixed(1) ?? "—"}`} />
                     <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
                     <Kv k="O/U Total" v={game.pred._ouPredictedTotal
                       ? `${game.pred._ouPredictedTotal.toFixed(1)} ML${game.pred._ouEdge ? ` (${game.pred._ouEdge > 0 ? '+' : ''}${game.pred._ouEdge.toFixed(1)} vs mkt)` : ''}`
                       : game.pred.ouTotal} />
                     <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${homeName} -${game.pred.projectedSpread.toFixed(1)}` : `${awayName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
-                    <Kv k="Possessions" v={game.pred.possessions.toFixed(1)} />
+                    <Kv k="Possessions" v={game.pred.possessions?.toFixed(1) ?? "—"} />
                     {game.homeStats && (
                       <Kv k={`${homeName} Adj EM`} v={`${game.pred.homeAdjEM}${game.homeStats._kenPomRank ? ` (#${game.homeStats._kenPomRank})` : ''}`} />
                     )}
