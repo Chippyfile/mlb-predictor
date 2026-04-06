@@ -597,9 +597,27 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
 
           const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" });
 
-          // AUDIT-v3: O/U override REMOVED — sharedUtils.getBetSignals now uses
-          // point-based thresholds (4/7/10) for NBA, matching the former override.
-          // pred.ouTotal already contains ML O/U model total when available.
+          // v19: Stored predictions are single source of truth — override frontend recompute
+          if (game.pred?._fromStored) {
+            // O/U: trust stored ou_pick from triple-agreement model (84.5% at 2u)
+            if (game.pred._ouPick && game.pred._ouTier) {
+              // Backend said bet — use stored tier
+              signals.ou = {
+                ...signals.ou,
+                verdict: "GO",
+                side: game.pred._ouPick,
+                units: game.pred._ouTier,
+                edge: Math.abs(game.pred._ouEdge || 0),
+                modelTotal: game.pred._ouPredictedTotal,
+                label: `${game.pred._ouPick} ${game.pred._ouTier}u (triple agreement)`,
+              };
+            } else if (signals.ou) {
+              // Backend said no bet — suppress frontend O/U
+              signals.ou.verdict = "SKIP";
+              signals.ou.units = 0;
+              signals.ou.reason = "O/U model: no triple agreement";
+            }
+          }
 
           const isBetGame = !!signals.betSizing || (signals.ou?.verdict === "GO" && !!signals.ou?.units);
           const bannerInfo = getBannerInfo(game.pred, game.odds);
