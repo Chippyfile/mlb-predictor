@@ -4,7 +4,8 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { getBetSignals, trueImplied, EDGE_THRESHOLD, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { trueImplied, EDGE_THRESHOLD, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { buildStoredSignals } from "../../utils/buildStoredSignals.js";
 import { mlPredict, mlPredictFull, mlMonteCarlo } from "../../utils/mlApi.js";
 import { fetchNCAATeamStats, fetchNCAAGamesForDate, ncaaPredictGame, detectMissingStarters, getGameContext, calculateDynamicSigma, fetchNCAAKenPomRatings, applyKenPomRatings, computeRestDays } from "./ncaaUtils.js";
 import { ncaaAutoSync, ncaaFullBackfill, ncaaRegradeAllResults } from "./ncaaSync.js";
@@ -268,7 +269,28 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         setRefreshingGame(null);
         return;
       }
-      // Update game in state with new ML data
+      // Compute ATS signals with direction flip BEFORE updating state
+      const mktSpread = game.odds?.homeSpread ?? null;
+      const modelMargin = mlResult.ml_margin;
+      let refreshAts = { units: null, side: null, disagree: null, pickSpread: null };
+      if (mktSpread != null) {
+        const mktImplied = -mktSpread;
+        const disagree = Math.abs(modelMargin - mktImplied);
+        const dirFlip = (modelMargin > 0) !== (mktImplied > 0);
+        const threshold = dirFlip ? 3 : 4;
+        refreshAts.disagree = parseFloat(disagree.toFixed(2));
+        if (disagree >= threshold) {
+          refreshAts.side = modelMargin > mktImplied ? "HOME" : "AWAY";
+          refreshAts.pickSpread = mktSpread;
+          refreshAts.units = dirFlip
+            ? (disagree >= 7 ? 3 : disagree >= 5 ? 2 : 1)
+            : (disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1);
+        } else {
+          refreshAts.units = 0;
+        }
+      }
+
+      // Update game in state with new ML data + stored ATS
       setGames(prev => prev.map((g, i) => {
         if (g.gameId !== game.gameId) return g;
         const mlMargin = mlResult.ml_margin;
@@ -282,6 +304,19 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         pred.homeWinPct = Math.max(0.05, Math.min(0.95, mlWinProb));
         pred.awayWinPct = 1 - pred.homeWinPct;
         pred.mlEnhanced = true;
+        pred.confidence = Math.abs(mlMargin) >= 7 ? "HIGH" : Math.abs(mlMargin) >= 3 ? "MEDIUM" : "LOW";
+        pred.confScore = parseFloat(Math.abs(mlMargin).toFixed(1));
+        pred.decisiveness = parseFloat((Math.abs(pred.homeWinPct - 0.5) * 100).toFixed(1));
+        // O/U from backend
+        pred._ouPredictedTotal = mlResult.ou_predicted_total ?? null;
+        pred._ouEdge = mlResult.ou_edge ?? null;
+        pred._ouPick = mlResult.ou_pick ?? null;
+        pred._ouTier = mlResult.ou_tier ?? null;
+        // Stored ATS from computation above
+        pred._storedAtsUnits = refreshAts.units;
+        pred._storedAtsSide = refreshAts.side;
+        pred._storedAtsDisagree = refreshAts.disagree;
+        pred._storedAtsPickSpread = refreshAts.pickSpread;
         // Recalculate moneylines (no vig — backend probabilities are fair)
         const hp = pred.homeWinPct, ap = pred.awayWinPct;
         pred.modelML_home = pred.homeWinPct >= 0.5
@@ -299,8 +334,6 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         };
       }));
       // Write updated prediction back to Supabase
-      const mktSpread = game.odds?.homeSpread ?? null;
-      const modelMargin = mlResult.ml_margin;
       const patch = {
         spread_home: parseFloat(modelMargin.toFixed(1)),
         win_pct_home: parseFloat(mlResult.ml_win_prob_home.toFixed(4)),
@@ -308,22 +341,10 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         rating_synced_at: new Date().toISOString(),
       };
       if (mktSpread != null) {
-        const mktImplied = -mktSpread;
-        const disagree = Math.abs(modelMargin - mktImplied);
-        const dirFlip = (modelMargin > 0) !== (mktImplied > 0);
-        const threshold = dirFlip ? 3 : 4;
-        patch.ats_disagree = parseFloat(disagree.toFixed(2));
-        if (disagree >= threshold) {
-          patch.ats_side = modelMargin > mktImplied ? "HOME" : "AWAY";
-          patch.ats_pick_spread = mktSpread;
-          patch.ats_units = dirFlip
-            ? (disagree >= 7 ? 3 : disagree >= 5 ? 2 : 1)
-            : (disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1);
-        } else {
-          patch.ats_side = null;
-          patch.ats_units = 0;
-          patch.ats_pick_spread = null;
-        }
+        patch.ats_disagree = refreshAts.disagree;
+        patch.ats_units = refreshAts.units ?? 0;
+        patch.ats_side = refreshAts.side ?? null;
+        patch.ats_pick_spread = refreshAts.pickSpread ?? null;
       }
       await supabaseQuery(`/ncaa_predictions?game_id=eq.${game.gameId}`, "PATCH", patch).catch(() => {});
     } catch (e) {
@@ -407,7 +428,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ats_disagree,ats_units,ats_side,ats_pick_spread,ou_total,pred_home_score,pred_away_score,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,home_adj_em,away_adj_em,home_ppg,away_ppg,home_tempo,away_tempo,home_wins,away_wins,home_losses,away_losses,home_rank,away_rank,home_fgpct,away_fgpct,home_threepct,away_threepct,home_ftpct,away_ftpct,home_sos,away_sos,home_form,away_form`
+        `/ncaa_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ats_disagree,ats_units,ats_side,ats_pick_spread,ou_total,pred_home_score,pred_away_score,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,home_adj_em,away_adj_em,home_ppg,away_ppg,home_tempo,away_tempo,home_wins,away_wins,home_losses,away_losses,home_rank,away_rank,home_fgpct,away_fgpct,home_threepct,away_threepct,home_ftpct,away_ftpct,home_sos,away_sos,home_form,away_form,market_home_ml,market_away_ml`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
@@ -474,6 +495,12 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
               _ouPick: storedHere.ou_pick ?? null,
               _ouTier: storedHere.ou_tier ?? null,
               _ouResAvg: storedHere.ou_res_avg ?? null,
+              _storedAtsUnits: storedHere.ats_units ?? null,
+              _storedAtsSide: storedHere.ats_side ?? null,
+              _storedAtsDisagree: storedHere.ats_disagree ?? null,
+              _storedAtsPickSpread: storedHere.ats_pick_spread ?? null,
+              _storedHomeML: storedHere.market_home_ml ?? null,
+              _storedAwayML: storedHere.market_away_ml ?? null,
             };
           })()
         : (homeStats && awayStats ? ncaaPredictGame({ homeStats, awayStats, neutralSite: effectiveNeutral, calibrationFactor, sigma: dynamicSigma }) : null);
@@ -804,50 +831,7 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
 
           const homeName = game.homeAbbr || (game.homeTeamName || "").slice(0, 8);
           const awayName = game.awayAbbr || (game.awayTeamName || "").slice(0, 8);
-          const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "ncaa", homeName, awayName });
-
-          // v25: Override ML signal logic
-          // Only recommend ML bet when model picks the OPPOSITE team from the market favorite.
-          // Example: Duke -20000 vs Siena +3500. Model says Duke 85%. Market says 97%.
-          // The "edge" is 12% but Duke still wins — no one should bet Siena ML.
-          // ML GO only when model win% > 50% for the team the market has as underdog.
-          if (signals.ml && game.pred && game.odds) {
-            const modelWinHome = game.pred.homeWinPct ?? 0.5;
-            const mktHomeML = game.odds.homeML ?? 0;
-            const mktAwayML = game.odds.awayML ?? 0;
-            const marketFavorsHome = mktHomeML < 0 || (mktHomeML !== 0 && Math.abs(mktHomeML) < Math.abs(mktAwayML));
-            const modelFavorsHome = modelWinHome >= 0.5;
-            // Only show ML GO if model disagrees on WHO wins, or if model has strong confidence (>55%) on the dog
-            const modelPicksDog = (marketFavorsHome && !modelFavorsHome) || (!marketFavorsHome && modelFavorsHome);
-            const modelHasStrongDogEdge = modelPicksDog && (modelFavorsHome ? modelWinHome > 0.55 : (1 - modelWinHome) > 0.55);
-            if (!modelPicksDog || !modelHasStrongDogEdge) {
-              signals.ml = { ...signals.ml, verdict: "SKIP", label: `Model agrees ${marketFavorsHome ? homeName : awayName} wins — no ML edge` };
-            }
-          }
-          // v26: O/U signals — use validated O/U model (Cat+MLP→EN, 20 features)
-          // Threshold: ≥5 edge (55.6% closing, 63.7% opening)
-          // Unit sizing: ≥5 = 1u, ≥7 = 2u, ≥10 = 3u
-          if (signals.ou && game.pred?._ouPick) {
-            const ouEdge = Math.abs(game.pred._ouEdge || 0);
-            const ouSide = game.pred._ouPick; // "OVER" or "UNDER"
-            if (ouEdge >= 5) {
-              const ouUnits = ouEdge >= 10 ? 3 : ouEdge >= 7 ? 2 : 1;
-              signals.ou = {
-                ...signals.ou,
-                verdict: "GO",
-                side: ouSide,
-                label: `${ouSide} ${ouEdge.toFixed(1)}pts edge · ${ouUnits}u`,
-                edge: ouEdge,
-                units: ouUnits,
-                modelTotal: game.pred._ouPredictedTotal,
-                marketLine: game.odds?.ouLine ?? null,
-              };
-            } else {
-              signals.ou = { ...signals.ou, verdict: "SKIP", label: `O/U edge ${ouEdge.toFixed(1)} < 5` };
-            }
-          } else if (signals.ou) {
-            signals.ou = { ...signals.ou, verdict: "SKIP", label: "No O/U model data" };
-          }
+          const signals = buildStoredSignals({ pred: game.pred, odds: game.odds, sport: "ncaa", homeName, awayName });
 
           const homeRank = game.homeStats?._kenPomRank || (game.homeRank && game.homeRank < 99 ? game.homeRank : null);
           const awayRank = game.awayStats?._kenPomRank || (game.awayRank && game.awayRank < 99 ? game.awayRank : null);

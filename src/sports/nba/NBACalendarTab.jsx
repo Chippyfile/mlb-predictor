@@ -8,7 +8,8 @@ import { useState, useEffect, useCallback } from "react";
 import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, BetSignalsPanel } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { buildStoredSignals } from "../../utils/buildStoredSignals.js";
 import { supabaseQuery } from "../../utils/supabase.js";
 import { mlPredictNBAFull, mlMonteCarlo } from "../../utils/mlApi.js";
 import { nbaAutoSync, computeDaysRest } from "./nbaSync.js";
@@ -313,6 +314,14 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _ouEdge: mlResult.ou_edge ?? null,
           _ouPick: mlResult.ou_pick ?? null,
           _ouTier: mlResult.ou_tier ?? null,
+          // ATS from the patch we just saved
+          _storedAtsUnits: patch.ats_units ?? null,
+          _storedAtsSide: patch.ats_side ?? null,
+          _storedAtsDisagree: patch.ats_disagree ?? null,
+          _storedAtsPickSpread: patch.ats_pick_spread ?? null,
+          confidence: Math.abs(mlMargin) >= 7 ? "HIGH" : Math.abs(mlMargin) >= 3 ? "MEDIUM" : "LOW",
+          confScore: parseFloat(Math.abs(mlMargin).toFixed(1)),
+          decisiveness: parseFloat((Math.abs(mlWinHome - 0.5) * 100).toFixed(1)),
         };
         return {
           ...g, pred,
@@ -352,7 +361,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg`
+        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
@@ -431,6 +440,14 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           _ouPick: stored.ou_pick ?? null,
           _ouTier: stored.ou_tier ?? null,
           _ouResAvg: stored.ou_res_avg ?? null,
+          // Stored ATS signals (cron computed — single source of truth)
+          _storedAtsUnits: stored.ats_units ?? null,
+          _storedAtsSide: stored.ats_side ?? null,
+          _storedAtsDisagree: stored.ats_disagree ?? null,
+          _storedAtsPickSpread: stored.ats_pick_spread ?? null,
+          // Stored ML odds for edge calculation
+          _storedHomeML: stored.market_home_ml ?? null,
+          _storedAwayML: stored.market_away_ml ?? null,
         };
         // Build fake mlResult for SHAP panel (no SHAP from stored — need refresh for that)
         mlResult = {
@@ -595,29 +612,10 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
             );
           }
 
-          const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "nba" });
-
-          // v19: Stored predictions are single source of truth — override frontend recompute
-          if (game.pred?._fromStored) {
-            // O/U: trust stored ou_pick from triple-agreement model (84.5% at 2u)
-            if (game.pred._ouPick && game.pred._ouTier) {
-              // Backend said bet — use stored tier
-              signals.ou = {
-                ...signals.ou,
-                verdict: "GO",
-                side: game.pred._ouPick,
-                units: game.pred._ouTier,
-                edge: Math.abs(game.pred._ouEdge || 0),
-                modelTotal: game.pred._ouPredictedTotal,
-                label: `${game.pred._ouPick} ${game.pred._ouTier}u (triple agreement)`,
-              };
-            } else if (signals.ou) {
-              // Backend said no bet — suppress frontend O/U
-              signals.ou.verdict = "SKIP";
-              signals.ou.units = 0;
-              signals.ou.reason = "O/U model: no triple agreement";
-            }
-          }
+          // v19: ALL signals from stored data — Supabase is single source of truth
+          // ATS + O/U: from cron computation (stored in Supabase)
+          // ML edge: from stored win_prob vs live market odds
+          const signals = buildStoredSignals({ pred: game.pred, odds: game.odds, sport: "nba", homeName: game.homeAbbr, awayName: game.awayAbbr });
 
           const isBetGame = !!signals.betSizing || (signals.ou?.verdict === "GO" && !!signals.ou?.units);
           const bannerInfo = getBannerInfo(game.pred, game.odds);

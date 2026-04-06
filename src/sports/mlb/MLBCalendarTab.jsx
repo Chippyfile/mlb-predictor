@@ -5,7 +5,8 @@ import React, { useState, useEffect, useCallback } from "react";
 import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { getBetSignals, trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { buildStoredSignals } from "../../utils/buildStoredSignals.js";
 import { mlPredict, mlMonteCarlo, mlPredictMLBFull } from "../../utils/mlApi.js";
 import { supabaseQuery } from "../../utils/supabase.js";
 import {
@@ -291,7 +292,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ou_total,pred_home_runs,pred_away_runs,confidence,market_spread_home,market_ou_total,opening_home_ml,opening_away_ml,ml_win_prob_home`
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ou_total,pred_home_runs,pred_away_runs,confidence,market_spread_home,market_ou_total,opening_home_ml,opening_away_ml,ml_win_prob_home,ats_units,ats_side,ats_disagree,spread_home`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
@@ -439,8 +440,16 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           modelML_home: newModelML_home,
           modelML_away: newModelML_away,
           mlEnhanced: true,
-          // ML O/U model's predicted total (used by getBetSignals for O/U picks)
+          // ML O/U model's predicted total
           mlOuTotal: ouResult?.pred_total ?? null,
+          // Stored signals from Supabase
+          _ouPredictedTotal: ouResult?.pred_total ?? null,
+          _ouPick: null,  // MLB O/U not yet triple-agreement
+          _ouTier: 0,
+          _storedAtsUnits: storedPredMap.get(String(g.gamePk))?.ats_units ?? null,
+          _storedAtsSide: storedPredMap.get(String(g.gamePk))?.ats_side ?? null,
+          _storedAtsDisagree: storedPredMap.get(String(g.gamePk))?.ats_disagree ?? null,
+          _storedAtsPickSpread: storedPredMap.get(String(g.gamePk))?.market_spread_home ?? null,
           // Update predicted runs to reflect ML margin (keeps total for O/U, adjusts who wins)
           homeRuns: parseFloat(((pred.homeRuns + pred.awayRuns) / 2 + mlResult.ml_margin / 2).toFixed(1)),
           awayRuns: parseFloat(((pred.homeRuns + pred.awayRuns) / 2 - mlResult.ml_margin / 2).toFixed(1)),
@@ -592,7 +601,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
             );
           }
 
-          const signals = getBetSignals({ pred: game.pred, odds: game.odds, sport: "mlb" });
+          const signals = buildStoredSignals({ pred: game.pred, odds: game.odds, sport: "mlb", homeName, awayName });
           const isBetGame = !!signals.betSizing || (signals.ou?.verdict === "GO" && !!signals.ou?.units);
           const bannerInfo = getBannerInfo(game.pred, game.odds, game.homeStarter && game.awayStarter);
 
