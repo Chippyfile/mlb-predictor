@@ -358,8 +358,10 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     // Pre-load team stats — SKIP for games with stored predictions
     const allStatsPairs = await Promise.all(raw.map(async g => {
       const stored = storedPredMap.get(String(g.gameId));
-      if (stored?.ml_win_prob_home != null && stored?.home_ppg != null) {
-        // Build display stats from stored Supabase data — ZERO ESPN calls
+      const hasFullStored = stored?.ml_win_prob_home != null && stored?.home_ppg != null && stored?.home_pace != null;
+
+      if (hasFullStored) {
+        // ALL display stats from stored Supabase data — ZERO ESPN calls
         const hs = {
           ppg: stored.home_ppg, oppPpg: stored.home_opp_ppg,
           pace: stored.home_pace, netRtg: stored.home_net_rtg,
@@ -376,7 +378,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         const nbaRealA = { pace: as_.pace, netRtg: as_.netRtg };
         return { game: g, hs, as_, nbaRealH, nbaRealA };
       }
-      // No stored prediction — fetch from ESPN
+      // Stored prediction missing advanced stats (or no stored at all) — fetch ESPN
       const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
       const nbaRealH = hs ? { pace: hs.pace, offRtg: hs.adjOE, defRtg: hs.adjDE, netRtg: hs.netRtg } : null;
       const nbaRealA = as_ ? { pace: as_.pace, offRtg: as_.adjOE, defRtg: as_.adjDE, netRtg: as_.netRtg } : null;
