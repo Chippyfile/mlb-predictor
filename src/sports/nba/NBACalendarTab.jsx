@@ -388,7 +388,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       const awayDaysRest = as_ ? computeDaysRest(as_, d) : 2;
       const awayPrevCityAbbr = as_?.lastGameCity || null;
 
-      const rawOdds = odds?.games?.find(o => matchNBAOddsToGame(o, g)) || null;
+      const rawOdds = null; // v19: Odds API removed — use stored market data
       const gameOdds = rawOdds ? (() => {
         const normalize = s => (s || "").toLowerCase().replace(/[^a-z]/g, "");
         const oddsHome = normalize(rawOdds.homeTeam);
