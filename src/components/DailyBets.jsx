@@ -1,7 +1,7 @@
 // src/components/DailyBets.jsx — Daily Bets page with self-contained sync
 import React, { useState, useMemo, useCallback, useEffect } from "react";
 import { C } from "./Shared.jsx";
-import { getBetSignals } from "../utils/sharedUtils.js";
+// Supabase is the sole source of truth — no frontend recomputation
 import { supabaseQuery } from "../utils/supabase.js";
 
 const ML_CAP = -500, CONF_GATE = 0.70, MIN_LEGS = 3, MIN_BET_UNITS = 2;
@@ -63,10 +63,11 @@ function mapNBA(rows) { return rows.filter(r => r.pred_home_score != null).map(r
   return {
     gameId: r.game_id, homeTeam: r.home_team || r.home_team_name, awayTeam: r.away_team || r.away_team_name,
     pred: { projectedSpread: -margin, homeWinPct: parseFloat(r.win_pct_home || r.ml_win_prob_home) || 0.5,
-            _ouPick: null, _ouEdge: r.ou_total && r.market_ou_total ? Math.abs(parseFloat(r.ou_total) - parseFloat(r.market_ou_total)) : 0,
+            _ouPick: r.ou_pick || null, _ouEdge: r.ou_edge || null, _ouTier: r.ou_tier || 0,
             _ouPredictedTotal: parseFloat(r.ou_total) || null },
     odds: { homeSpread: parseFloat(r.market_spread_home) || null,
-            homeML: r.opening_home_ml || r.model_ml_home, awayML: r.opening_away_ml || r.model_ml_away,
+            homeML: r.market_home_ml || r.opening_home_ml || r.model_ml_home,
+            awayML: r.market_away_ml || r.opening_away_ml || r.model_ml_away,
             ouLine: parseFloat(r.market_ou_total) || null },
     _ats: r.ats_units > 0 ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.ats_pick_spread } : null,
     _atsComputed: r.ats_units != null,
@@ -149,28 +150,15 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
       if (!g.pred) continue;
       const h = g.homeTeam || "Home", a = g.awayTeam || "Away";
 
-      // Use pre-computed ATS from cron if available
+      // Use pre-computed ATS from cron (Supabase is sole source of truth)
       if (g._ats && g._ats.units) {
         const side = g._ats.side;
         const team = side === "HOME" ? h : a;
         const sp = g._ats.spread || (side === "HOME" ? g.odds?.homeSpread : -(g.odds?.homeSpread || 0));
         ats.push({ team, spread: sp ? parseFloat(sp) : null, units: g._ats.units, edge: parseFloat(g._ats.disagree || 0), side });
-      } else if (g.odds && !g._atsComputed) {
-        // Only fall back to getBetSignals if cron never computed ATS
-        // If _atsComputed is true, cron decided no edge — respect that
-        const sig = getBetSignals({ pred: g.pred, odds: g.odds, sport, homeName: h, awayName: a });
-        if (sig.betSizing) {
-          const side = sig.betSizing.side, team = side === "HOME" ? h : a;
-          const sp = g.odds.homeSpread; const dsp = sp != null ? (side === "HOME" ? sp : -sp) : null;
-          ats.push({ team, spread: dsp, units: sig.betSizing.units, edge: parseFloat(sig.betSizing.disagree||0), side });
-        }
-        if (sig.ou && (sig.ou.verdict === "GO" || sig.ou.verdict === "LEAN") && sig.ou.units) {
-          ou.push({ team: `${h} / ${a}`, side: sig.ou.side, edge: parseFloat(sig.ou.diff||sig.ou.edge||0), units: sig.ou.units, modelTotal: sig.ou.modelTotal });
-        }
       }
 
-      // O/U from pre-computed data
-      // If cron set _ouPick (v2 model), use it directly
+      // O/U from cron (Supabase is sole source of truth)
       if (g.pred._ouPick) {
         const side = g.pred._ouPick;
         const edge = Math.abs(parseFloat(g.pred._ouEdge) || 0);
@@ -179,24 +167,11 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         if (!ou.find(o => o.team === `${h} / ${a}`)) {
           ou.push({ team: `${h} / ${a}`, side, edge, units, modelTotal: predTotal });
         }
-      } else if (!g._atsComputed && g.pred._ouPredictedTotal && g.odds?.ouLine) {
-        // Fallback: only use % thresholds if cron never ran (no stored data)
-        const predTotal = parseFloat(g.pred._ouPredictedTotal);
-        const mktTotal = parseFloat(g.odds.ouLine);
-        const diff = Math.abs(predTotal - mktTotal);
-        const pctEdge = diff / mktTotal;
-        if (pctEdge >= 0.04) {
-          const side = predTotal > mktTotal ? "OVER" : "UNDER";
-          const units = pctEdge >= 0.12 ? 3 : pctEdge >= 0.08 ? 2 : 1;
-          if (!ou.find(o => o.team === `${h} / ${a}`)) {
-            ou.push({ team: `${h} / ${a}`, side, edge: diff, units, modelTotal: predTotal });
-          }
-        }
       }
     }
     return { 
       ats: ats.filter(p => p.units >= MIN_BET_UNITS), 
-      ou: ou.filter(p => p.units >= MIN_BET_UNITS) 
+      ou: ou.filter(p => p.units >= 1)  // O/U model thresholds are already selective (66%+) 
     };
   }
 
