@@ -230,7 +230,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
     const [raw, storedPreds] = await Promise.all([
       fetchMLBScheduleForDate(d),
       supabaseQuery(
-        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage`
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage`
       ).catch(e => { console.warn("Failed to load stored MLB predictions:", e); return []; }),
     ]);
     setOddsData(null); // v20: No Odds API on page load — stored market odds from Supabase
