@@ -78,11 +78,15 @@ function mapMLB(rows) { return rows.filter(r => r.pred_home_runs != null || r.sp
   return {
     gameId: r.game_pk, homeTeam: r.home_team, awayTeam: r.away_team,
     pred: { projectedSpread: -(hr - ar), homeWinPct: parseFloat(r.win_pct_home || r.ml_win_prob_home) || 0.5,
-            homeRuns: hr, awayRuns: ar },
-    odds: { homeSpread: parseFloat(r.run_line_home) || -1.5,
-            homeML: r.opening_home_ml || r.model_ml_home, awayML: r.opening_away_ml || r.model_ml_away,
+            homeRuns: hr, awayRuns: ar,
+            _ouPick: r.ou_pick || null, _ouEdge: r.ou_edge || null,
+            _ouTier: r.ou_tier || 0,
+            _ouPredictedTotal: parseFloat(r.pred_total || r.ou_total || r.ml_ou_pred_total) || null },
+    odds: { homeSpread: parseFloat(r.market_spread_home) || parseFloat(r.run_line_home) || -1.5,
+            homeML: r.market_home_ml || r.opening_home_ml || r.model_ml_home,
+            awayML: r.market_away_ml || r.opening_away_ml || r.model_ml_away,
             ouLine: parseFloat(r.market_ou_total) || null },
-    _ats: r.ats_units > 0 ? { side: r.ats_side, units: r.ats_units } : null,
+    _ats: r.ats_units > 0 ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.market_spread_home } : null,
     _atsComputed: r.ats_units != null,
   };
 }); }
@@ -166,7 +170,17 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
       }
 
       // O/U from pre-computed data
-      if (g.pred._ouPredictedTotal && g.odds?.ouLine) {
+      // If cron set _ouPick (v2 model), use it directly
+      if (g.pred._ouPick) {
+        const side = g.pred._ouPick;
+        const edge = Math.abs(parseFloat(g.pred._ouEdge) || 0);
+        const units = g.pred._ouTier || 1;
+        const predTotal = parseFloat(g.pred._ouPredictedTotal) || 0;
+        if (!ou.find(o => o.team === `${h} / ${a}`)) {
+          ou.push({ team: `${h} / ${a}`, side, edge, units, modelTotal: predTotal });
+        }
+      } else if (!g._atsComputed && g.pred._ouPredictedTotal && g.odds?.ouLine) {
+        // Fallback: only use % thresholds if cron never ran (no stored data)
         const predTotal = parseFloat(g.pred._ouPredictedTotal);
         const mktTotal = parseFloat(g.odds.ouLine);
         const diff = Math.abs(predTotal - mktTotal);
@@ -174,7 +188,6 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         if (pctEdge >= 0.04) {
           const side = predTotal > mktTotal ? "OVER" : "UNDER";
           const units = pctEdge >= 0.12 ? 3 : pctEdge >= 0.08 ? 2 : 1;
-          // Don't duplicate if already added via getBetSignals
           if (!ou.find(o => o.team === `${h} / ${a}`)) {
             ou.push({ team: `${h} / ${a}`, side, edge: diff, units, modelTotal: predTotal });
           }

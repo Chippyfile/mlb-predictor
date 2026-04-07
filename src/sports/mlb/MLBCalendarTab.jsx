@@ -230,7 +230,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
     const [raw, storedPreds] = await Promise.all([
       fetchMLBScheduleForDate(d),
       supabaseQuery(
-        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage`
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage`
       ).catch(e => { console.warn("Failed to load stored MLB predictions:", e); return []; }),
     ]);
     setOddsData(null); // v20: No Odds API on page load — stored market odds from Supabase
@@ -272,7 +272,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           awayWinPct: 1 - wp,
           homeRuns: stored.pred_home_runs ?? (4.5 + margin / 2),
           awayRuns: stored.pred_away_runs ?? (4.5 - margin / 2),
-          ouTotal: stored.ou_total ?? stored.ml_ou_pred_total ?? 9,
+          ouTotal: stored.pred_total ?? stored.ou_total ?? stored.ml_ou_pred_total ?? 9,
           projectedSpread: margin,
           modelML_home: wp >= 0.5
             ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
@@ -291,9 +291,9 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           aFIP: stored.away_sp_fip ?? null,
           homeWOBA: stored.home_woba ?? null,
           awayWOBA: stored.away_woba ?? null,
-          mlOuTotal: stored.ml_ou_pred_total ?? stored.ou_total ?? null,
+          mlOuTotal: stored.pred_total ?? stored.ml_ou_pred_total ?? stored.ou_total ?? null,
           // Stored O/U signals (cron computed)
-          _ouPredictedTotal: stored.ml_ou_pred_total ?? stored.ou_total ?? null,
+          _ouPredictedTotal: stored.pred_total ?? stored.ml_ou_pred_total ?? stored.ou_total ?? null,
           _ouPick: stored.ou_pick ?? null,
           _ouTier: stored.ou_tier ?? 0,
           _ouEdge: stored.ou_edge ?? null,
@@ -393,7 +393,10 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         const mktImplied = -mktSpread;
         const disagree = Math.abs(margin - mktImplied);
         const dirFlip = (margin > 0) !== (mktImplied > 0) && Math.abs(margin) > 0.25 && Math.abs(mktImplied) > 0.25;
-        const atsUnits = disagree >= 1.5 ? 3 : (disagree >= 1.0 ? 2 : (disagree >= 0.5 ? 1 : 0));
+        // Tightened thresholds: flip=1.0/1.5/2.0, same=1.5/2.0/2.5
+        const atsUnits = dirFlip
+          ? (disagree >= 2.0 ? 3 : (disagree >= 1.5 ? 2 : (disagree >= 1.0 ? 1 : 0)))
+          : (disagree >= 2.5 ? 3 : (disagree >= 2.0 ? 2 : (disagree >= 1.5 ? 1 : 0)));
         if (atsUnits > 0) {
           patch.ats_disagree = parseFloat(disagree.toFixed(2));
           patch.ats_units = atsUnits;
@@ -403,17 +406,16 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         patch.market_spread_home = mktSpread;
       }
 
-      // Compute O/U pick
-      const mktOu = game.odds?.ouLine ?? null;
-      if (mktOu && pt) {
-        const ouEdge = pt - mktOu;
-        patch.ou_edge = parseFloat(ouEdge.toFixed(2));
-        patch.market_ou_total = mktOu;
-        if (ouEdge < -2.0) { patch.ou_pick = "UNDER"; patch.ou_tier = 3; }
-        else if (ouEdge < -1.5) { patch.ou_pick = "UNDER"; patch.ou_tier = 2; }
-        else if (ouEdge < -1.0) { patch.ou_pick = "UNDER"; patch.ou_tier = 1; }
-        else if (ouEdge > 2.0) { patch.ou_pick = "OVER"; patch.ou_tier = 1; }
+      // O/U pick — use backend v2 model result directly
+      if (mlResult.ou_pick) {
+        patch.ou_pick = mlResult.ou_pick;
+        patch.ou_tier = mlResult.ou_tier;
+        patch.ou_units = mlResult.ou_units;
       }
+      if (mlResult.ou_edge != null) patch.ou_edge = mlResult.ou_edge;
+      if (mlResult.market_ou_total) patch.market_ou_total = mlResult.market_ou_total;
+      if (mlResult.sp_form_combined != null) patch.sp_form_combined = mlResult.sp_form_combined;
+      if (pt) patch.pred_total = parseFloat(pt.toFixed(2));
 
       // Compute ML edge
       const hml = game.odds?.homeML ?? null;
@@ -876,7 +878,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                     gap: 8,
                     marginBottom: 10
                   }}>
-                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayRuns.toFixed(1)} — ${homeName} ${game.pred.homeRuns.toFixed(1)}`} />
+                    <Kv k="Projected Score" v={`${awayName} ${game.pred.awayRuns?.toFixed(1) ?? '-'} — ${homeName} ${game.pred.homeRuns?.toFixed(1) ?? '-'}`} />
                     <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
                     <Kv k="O/U Total" v={`${game.pred.ouTotal}`} />
                     <Kv k="Model ML (H)" v={formatML(game.pred.modelML_home)} />
