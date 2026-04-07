@@ -2,20 +2,16 @@ import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/mlb/MLBCalendarTab.jsx
 // v2: Matched to NCAA grid layout — BetBanner, UnitBadge, confidence footer, green ML styling
 import React, { useState, useEffect, useCallback } from "react";
-import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
+import { C, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { trueImplied, EDGE_THRESHOLD, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
 import { buildStoredSignals } from "../../utils/buildStoredSignals.js";
-import { mlPredict, mlMonteCarlo, mlPredictMLBFull } from "../../utils/mlApi.js";
+import { mlPredictMLBFull } from "../../utils/mlApi.js";
 import { supabaseQuery } from "../../utils/supabase.js";
 import {
-  mlbTeamById, resolveStatTeamId,
-  fetchMLBScheduleForDate, matchMLBOddsToGame,
-  fetchTeamHitting, fetchTeamPitching, fetchStarterStats,
-  fetchRecentForm, fetchLineup, fetchBullpenFatigue,
-  fetchParkWeather, fetchStatcast,
-  mlbPredictGame,
+  mlbTeamById,
+  fetchMLBScheduleForDate,
 } from "./mlb.js";
 import { mlbAutoSync } from "./mlbSync.js";
 
@@ -226,7 +222,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
   const [oddsData, setOddsData] = useState(null);
   const [refreshingGame, setRefreshingGame] = useState(null);
 
-  // Per-game refresh: calls ML API → saves to Supabase → displays stored result
+  // Per-game refresh: calls ML API → computes ATS/O/U → saves to Supabase → displays stored result
   const refreshGame = useCallback(async (game) => {
     const gamePk = game.gamePk || game.gameId;
     setRefreshingGame(gamePk);
@@ -235,232 +231,201 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (!mlResult) { setRefreshingGame(null); return; }
       if (mlResult.error) { console.warn("[MLB refresh] API error:", mlResult.error); setRefreshingGame(null); return; }
 
+      const margin = mlResult.ml_margin ?? 0;
+      const wp = mlResult.ml_win_prob_home ?? 0.5;
+      const pt = mlResult.pred_total ?? null;
+      const ds = mlResult.data_sources ?? {};
+      const totalBase = pt || 9.0;
+
       // Save to Supabase (single source of truth)
       const patch = {
-        win_pct_home: mlResult.ml_win_prob_home ? parseFloat(mlResult.ml_win_prob_home.toFixed(4)) : null,
-        ml_win_prob_home: mlResult.ml_win_prob_home ? parseFloat(mlResult.ml_win_prob_home.toFixed(4)) : null,
-        pred_home_runs: mlResult.ml_margin != null ? parseFloat(((mlResult.ml_margin + 9) / 2).toFixed(1)) : null,
-        pred_away_runs: mlResult.ml_margin != null ? parseFloat((9 - (mlResult.ml_margin + 9) / 2).toFixed(1)) : null,
-        ou_total: mlResult.pred_total ? parseFloat(mlResult.pred_total.toFixed(1)) : null,
+        win_pct_home: parseFloat(wp.toFixed(4)),
+        ml_win_prob_home: parseFloat(wp.toFixed(4)),
+        spread_home: parseFloat(margin.toFixed(2)),
+        pred_home_runs: parseFloat((totalBase / 2 + margin / 2).toFixed(2)),
+        pred_away_runs: parseFloat((totalBase / 2 - margin / 2).toFixed(2)),
+        ou_total: pt ? parseFloat(pt.toFixed(1)) : null,
+        ml_ou_pred_total: pt ? parseFloat(pt.toFixed(2)) : null,
         ml_feature_coverage: mlResult.feature_coverage || null,
+        // Display stats
+        home_starter: mlResult.home_starter || null,
+        away_starter: mlResult.away_starter || null,
+        umpire: mlResult.umpire || null,
+        home_sp_fip: ds.home_sp_fip ?? null,
+        away_sp_fip: ds.away_sp_fip ?? null,
+        home_woba: ds.home_woba ?? null,
+        away_woba: ds.away_woba ?? null,
+        park_factor: ds.park_factor ?? null,
       };
-      if (mlResult.ml_margin != null) patch.spread_home = parseFloat(mlResult.ml_margin.toFixed(2));
+
+      // Compute ATS from current odds
+      const mktSpread = game.odds?.homeSpread ?? null;
+      if (mktSpread !== null) {
+        const mktImplied = -mktSpread;
+        const disagree = Math.abs(margin - mktImplied);
+        const dirFlip = (margin > 0) !== (mktImplied > 0) && Math.abs(margin) > 0.25 && Math.abs(mktImplied) > 0.25;
+        const atsUnits = disagree >= 1.5 ? 3 : (disagree >= 1.0 ? 2 : (disagree >= 0.5 ? 1 : 0));
+        if (atsUnits > 0) {
+          patch.ats_disagree = parseFloat(disagree.toFixed(2));
+          patch.ats_units = atsUnits;
+          patch.ats_side = margin > mktImplied ? "HOME" : "AWAY";
+          patch.ats_direction_flip = dirFlip;
+        }
+        patch.market_spread_home = mktSpread;
+      }
+
+      // Compute O/U pick
+      const mktOu = game.odds?.ouLine ?? null;
+      if (mktOu && pt) {
+        const ouEdge = pt - mktOu;
+        patch.ou_edge = parseFloat(ouEdge.toFixed(2));
+        patch.market_ou_total = mktOu;
+        if (ouEdge < -2.0) { patch.ou_pick = "UNDER"; patch.ou_tier = 3; }
+        else if (ouEdge < -1.5) { patch.ou_pick = "UNDER"; patch.ou_tier = 2; }
+        else if (ouEdge < -1.0) { patch.ou_pick = "UNDER"; patch.ou_tier = 1; }
+        else if (ouEdge > 2.0) { patch.ou_pick = "OVER"; patch.ou_tier = 1; }
+      }
+
+      // Compute ML edge
+      const hml = game.odds?.homeML ?? null;
+      const aml = game.odds?.awayML ?? null;
+      if (hml && aml) {
+        const hImp = hml < 0 ? Math.abs(hml) / (Math.abs(hml) + 100) : 100 / (hml + 100);
+        const aImp = aml < 0 ? Math.abs(aml) / (Math.abs(aml) + 100) : 100 / (aml + 100);
+        const vigT = hImp + aImp;
+        const hTrue = vigT > 0 ? hImp / vigT : 0.5;
+        const mlEdge = wp - hTrue;
+        patch.ml_edge_pct = parseFloat((Math.abs(mlEdge) * 100).toFixed(2));
+        patch.ml_bet_side = mlEdge >= 0 ? "HOME" : "AWAY";
+        patch.market_home_ml = hml;
+        patch.market_away_ml = aml;
+      }
 
       await supabaseQuery(`/mlb_predictions?game_pk=eq.${gamePk}`, "PATCH", patch).catch(e => {
         console.warn("[MLB refresh] Supabase save failed:", e);
       });
 
-      // Update local display
-      setGames(prev => prev.map(g => {
-        if ((g.gamePk || g.gameId) !== gamePk) return g;
-        const mlWinHome = Math.max(0.25, Math.min(0.75, mlResult.ml_win_prob_home ?? 0.5));
-        const mlWinAway = 1 - mlWinHome;
-        const VIG = 0.0225;
-        const hProb = mlWinHome + VIG, aProb = mlWinAway + VIG;
-        const ML_CAP = 500;
-        return {
-          ...g,
-          pred: {
-            ...(g.pred || {}),
-            homeWinPct: mlWinHome,
-            awayWinPct: mlWinAway,
-            modelML_home: mlWinHome >= 0.5
-              ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
-              : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100)),
-            modelML_away: mlWinAway >= 0.5
-              ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
-              : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100)),
-            mlEnhanced: true,
-            mlOuTotal: mlResult.pred_total ?? null,
-          },
-          mlShap: mlResult.shap ?? g.mlShap,
-          mlMeta: mlResult.model_meta ?? g.mlMeta,
-        };
-      }));
-      console.log(`[MLB REFRESH] ${game.homeAbbr}: wp=${mlResult.ml_win_prob_home?.toFixed(3)}, saved to Supabase`);
+      // Reload from Supabase to get consistent state
+      await loadGames(dateStr);
+      console.log(`[MLB REFRESH] ${game.homeAbbr}: wp=${wp.toFixed(3)}, ats=${patch.ats_units ?? 0}u, saved to Supabase`);
     } catch (e) { console.warn("[MLB refresh] error:", e); }
     setRefreshingGame(null);
-  }, [dateStr]);
+  }, [dateStr, loadGames]);
 
   const loadGames = useCallback(async (d) => {
     setLoading(true); setGames([]);
-    const [raw, odds] = await Promise.all([fetchMLBScheduleForDate(d), fetchOdds("baseball_mlb")]);
-    setOddsData(odds);
 
-    // ── Fetch stored predictions from Supabase for this date ──
-    // Final/Live games can't call ML API (stale data), so load pre-game predictions.
+    // ── v20: Supabase-only page load — ZERO ESPN/Odds API stat calls ──
+    // Step 1: ESPN schedule (game list) + Supabase stored predictions in parallel
+    const [raw, storedPreds] = await Promise.all([
+      fetchMLBScheduleForDate(d),
+      supabaseQuery(
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage`
+      ).catch(e => { console.warn("Failed to load stored MLB predictions:", e); return []; }),
+    ]);
+    setOddsData(null); // v20: No Odds API on page load — stored market odds from Supabase
+
     let storedPredMap = new Map();
-    try {
-      const storedPreds = await supabaseQuery(
-        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ou_total,pred_home_runs,pred_away_runs,confidence,market_spread_home,market_ou_total,opening_home_ml,opening_away_ml,ml_win_prob_home,ats_units,ats_side,ats_disagree,spread_home`
-      );
-      if (Array.isArray(storedPreds)) {
-        for (const sp of storedPreds) {
-          const key = sp.game_pk ? String(sp.game_pk) : `${sp.home_team}|${sp.away_team}`;
-          storedPredMap.set(key, sp);
-        }
+    if (Array.isArray(storedPreds)) {
+      for (const sp of storedPreds) {
+        const key = sp.game_pk ? String(sp.game_pk) : `${sp.home_team}|${sp.away_team}`;
+        storedPredMap.set(key, sp);
       }
-    } catch (e) { console.warn("Failed to load stored MLB predictions:", e); }
+      console.log(`[MLB] Loaded ${storedPredMap.size} stored predictions for ${d}`);
+    }
 
-    setGames(raw.map(g => ({ ...g, pred: null, loading: true })));
-    const enriched = await Promise.all(raw.map(async (g) => {
-      const homeStatId = resolveStatTeamId(g.homeTeamId, g.homeAbbr);
-      const awayStatId = resolveStatTeamId(g.awayTeamId, g.awayAbbr);
-      const [
-        homeHit, awayHit, homePitch, awayPitch,
-        homeStarter, awayStarter,
-        homeForm, awayForm,
-        homeLineup, awayLineup,
-      ] = await Promise.all([
-        fetchTeamHitting(homeStatId), fetchTeamHitting(awayStatId),
-        fetchTeamPitching(homeStatId), fetchTeamPitching(awayStatId),
-        fetchStarterStats(g.homeStarterId), fetchStarterStats(g.awayStarterId),
-        fetchRecentForm(homeStatId), fetchRecentForm(awayStatId),
-        fetchLineup(g.gamePk, homeStatId, true), fetchLineup(g.gamePk, awayStatId, false),
-      ]);
-      if (homeStarter) homeStarter.pitchHand = g.homeStarterHand;
-      if (awayStarter) awayStarter.pitchHand = g.awayStarterHand;
-      const [homeBullpen, awayBullpen] = await Promise.all([
-        fetchBullpenFatigue(g.homeTeamId), fetchBullpenFatigue(g.awayTeamId),
-      ]);
-      const [parkWeather, homeStatcast, awayStatcast] = await Promise.all([
-        fetchParkWeather(g.homeTeamId).catch(() => null),
-        fetchStatcast(homeStatId).catch(() => null),
-        fetchStatcast(awayStatId).catch(() => null),
-      ]);
-      const pred = mlbPredictGame({
-        homeTeamId: g.homeTeamId, awayTeamId: g.awayTeamId,
-        homeHit, awayHit, homePitch, awayPitch,
-        homeStarterStats: homeStarter, awayStarterStats: awayStarter,
-        homeForm, awayForm,
-        homeGamesPlayed: homeForm?.gamesPlayed || 0,
-        awayGamesPlayed: awayForm?.gamesPlayed || 0,
-        bullpenData: { [g.homeTeamId]: homeBullpen, [g.awayTeamId]: awayBullpen },
-        homeLineup, awayLineup,
-        umpire: g.umpire,
-        parkWeather,
-        homeStatcast, awayStatcast,
-        calibrationFactor,
-      });
-      const rawOdds = odds?.games?.find(o => matchMLBOddsToGame(o, g)) || null;
-      const isPreGame = g.status !== "Final" && g.status !== "Live";
+    // Step 2: Build enriched games from stored Supabase data — NO ESPN stat fetches
+    const enriched = raw.map(g => {
+      const stored = storedPredMap.get(String(g.gamePk));
 
-      // For Final/Live games, prefer stored OPENING odds (pre-game)
-      // Live API returns in-game spreads (e.g., -5.5 when team is up 8-0) which are meaningless
-      const storedOdds = (() => {
-        const stored = storedPredMap.get(String(g.gamePk));
-        if (stored?.market_spread_home != null) {
-          return {
-            homeSpread: stored.market_spread_home,
-            awaySpread: -stored.market_spread_home,
-            homeML: stored.opening_home_ml ?? null,
-            awayML: stored.opening_away_ml ?? null,
-            ouLine: stored.market_ou_total ?? null,
-            source: "stored",
-          };
-        }
-        return null;
-      })();
+      // Build odds from stored market data (no Odds API call)
+      const gameOdds = stored?.market_spread_home != null ? {
+        homeSpread: stored.market_spread_home,
+        awaySpread: -stored.market_spread_home,
+        homeML: stored.market_home_ml ?? null,
+        awayML: stored.market_away_ml ?? null,
+        ouLine: stored.market_ou_total ?? null,
+        source: "stored",
+      } : null;
 
-      const gameOdds = isPreGame
-        ? (rawOdds ? { ...rawOdds, homeSpread: rawOdds.marketSpreadHome ?? null, ouLine: rawOdds.marketTotal ?? null } : storedOdds)
-        : (storedOdds ?? (rawOdds ? { ...rawOdds, homeSpread: rawOdds.marketSpreadHome ?? null, ouLine: rawOdds.marketTotal ?? null } : null));
+      const homeName = g.homeAbbr || g.home?.abbreviation || stored?.home_team || "HOME";
+      const awayName = g.awayAbbr || g.away?.abbreviation || stored?.away_team || "AWAY";
 
-      const homeSPipPerStart = pred.homeSpAvgIP ?? 5.5;
-      const awaySPipPerStart = pred.awaySpAvgIP ?? 5.5;
-
-      let mlResult = null, mcResult = null, ouResult = null;
-      if (isPreGame) {
-        // v19: Stored prediction PRIMARY (from cron) — same data as backtesting
-        const stored = storedPredMap.get(String(g.gamePk));
-        if (stored && stored.ml_win_prob_home != null) {
-          mlResult = {
-            ml_win_prob_home: stored.ml_win_prob_home,
-            ml_win_prob_away: 1 - stored.ml_win_prob_home,
-            ml_margin: stored.pred_home_runs && stored.pred_away_runs
-              ? stored.pred_home_runs - stored.pred_away_runs : 0,
-            pred_home_runs: stored.pred_home_runs ?? null,
-            pred_away_runs: stored.pred_away_runs ?? null,
-            _fromSupabase: true,
-          };
-          if (stored.ou_total) {
-            ouResult = { pred_total: stored.ou_total };
-          }
-          console.log(`[MLB STORED] ${g.homeAbbr || g.home?.abbreviation}: wp=${stored.ml_win_prob_home?.toFixed(3)}`);
-        } else {
-          // No stored prediction — heuristic only, no ML overlay
-          // Use 🔄 refresh to generate ML prediction and save to Supabase
-          console.log(`[MLB PENDING] ${g.homeAbbr || g.home?.abbreviation}: no stored prediction — use 🔄 to generate`);
-        }
-      } else {
-        // Final/Live: reconstruct mlResult from stored Supabase prediction
-        const stored = storedPredMap.get(String(g.gamePk));
-        if (stored && stored.ml_win_prob_home != null) {
-          mlResult = {
-            ml_win_prob_home: stored.ml_win_prob_home,
-            ml_win_prob_away: 1 - stored.ml_win_prob_home,
-            ml_margin: stored.pred_home_runs && stored.pred_away_runs
-              ? stored.pred_home_runs - stored.pred_away_runs : 0,
-            _fromSupabase: true,
-          };
-        }
-      }
-      // Safety clamp: MLB win probs should be [0.25, 0.75] — baseball has high parity
-      // Even worst-vs-best matchups rarely exceed 70% pre-game probability
-      if (pred) {
-        pred.homeWinPct = Math.max(0.25, Math.min(0.75, pred.homeWinPct ?? 0.5));
-        pred.awayWinPct = 1 - pred.homeWinPct;
-        const VIG = 0.0225;
-        const hp = pred.homeWinPct + VIG, ap = pred.awayWinPct + VIG;
-        pred.modelML_home = pred.homeWinPct >= 0.5
-          ? -Math.min(ML_CAP, Math.round((hp / (1 - hp)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - hp) / hp) * 100));
-        pred.modelML_away = pred.homeWinPct < 0.5
-          ? -Math.min(ML_CAP, Math.round((ap / (1 - ap)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - ap) / ap) * 100));
-      }
-      // Recalculate modelML from ML win probability with vig for display consistency
-      const finalPred = pred && mlResult ? (() => {
-        // AUDIT FIX F-04: Use backend probability directly (Gaussian CDF, σ=4.0).
-        // No Elo override — backend already clamps to [0.20, 0.80].
-        let mlWinHome = Math.max(0.25, Math.min(0.75, mlResult.ml_win_prob_home));
-        const VIG = 0.0225;
-        const hProb = mlWinHome + VIG;
-        const aProb = (1 - mlWinHome) + VIG;
-        const newModelML_home = mlWinHome >= 0.5
-          ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100));
-        const newModelML_away = mlWinHome < 0.5
-          ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
-          : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100));
-        return {
-          ...pred,
-          homeWinPct: mlResult.ml_win_prob_home,
-          awayWinPct: mlResult.ml_win_prob_away,
-          modelML_home: newModelML_home,
-          modelML_away: newModelML_away,
+      if (stored && stored.ml_win_prob_home != null) {
+        // ═══ PRIMARY: Build pred entirely from stored Supabase data ═══
+        const wp = Math.max(0.25, Math.min(0.75, stored.ml_win_prob_home));
+        const margin = stored.spread_home ?? 0;
+        const VIG = 0;
+        const hProb = wp + VIG, aProb = (1 - wp) + VIG;
+        const pred = {
+          homeWinPct: wp,
+          awayWinPct: 1 - wp,
+          homeRuns: stored.pred_home_runs ?? (4.5 + margin / 2),
+          awayRuns: stored.pred_away_runs ?? (4.5 - margin / 2),
+          ouTotal: stored.ou_total ?? stored.ml_ou_pred_total ?? 9,
+          projectedSpread: margin,
+          modelML_home: wp >= 0.5
+            ? -Math.min(ML_CAP, Math.round((hProb / (1 - hProb)) * 100))
+            : +Math.min(ML_CAP, Math.round(((1 - hProb) / hProb) * 100)),
+          modelML_away: wp < 0.5
+            ? -Math.min(ML_CAP, Math.round((aProb / (1 - aProb)) * 100))
+            : +Math.min(ML_CAP, Math.round(((1 - aProb) / aProb) * 100)),
+          confidence: stored.confidence || "HIGH",
+          confScore: parseFloat(Math.abs(margin).toFixed(1)),
+          decisiveness: parseFloat((Math.abs(wp - 0.5) * 100).toFixed(1)),
           mlEnhanced: true,
-          // ML O/U model's predicted total
-          mlOuTotal: ouResult?.pred_total ?? null,
-          // Stored signals from Supabase
-          _ouPredictedTotal: ouResult?.pred_total ?? null,
-          _ouPick: null,  // MLB O/U not yet triple-agreement
-          _ouTier: 0,
-          _storedAtsUnits: storedPredMap.get(String(g.gamePk))?.ats_units ?? null,
-          _storedAtsSide: storedPredMap.get(String(g.gamePk))?.ats_side ?? null,
-          _storedAtsDisagree: storedPredMap.get(String(g.gamePk))?.ats_disagree ?? null,
-          _storedAtsPickSpread: storedPredMap.get(String(g.gamePk))?.market_spread_home ?? null,
-          // Update predicted runs to reflect ML margin (keeps total for O/U, adjusts who wins)
-          homeRuns: parseFloat(((pred.homeRuns + pred.awayRuns) / 2 + mlResult.ml_margin / 2).toFixed(1)),
-          awayRuns: parseFloat(((pred.homeRuns + pred.awayRuns) / 2 - mlResult.ml_margin / 2).toFixed(1)),
+          _fromStored: true,
+          _featureCoverage: stored.ml_feature_coverage,
+          // Display stats from stored data
+          hFIP: stored.home_sp_fip ?? null,
+          aFIP: stored.away_sp_fip ?? null,
+          homeWOBA: stored.home_woba ?? null,
+          awayWOBA: stored.away_woba ?? null,
+          mlOuTotal: stored.ml_ou_pred_total ?? stored.ou_total ?? null,
+          // Stored O/U signals (cron computed)
+          _ouPredictedTotal: stored.ml_ou_pred_total ?? stored.ou_total ?? null,
+          _ouPick: stored.ou_pick ?? null,
+          _ouTier: stored.ou_tier ?? 0,
+          _ouEdge: stored.ou_edge ?? null,
+          // Stored ATS signals (cron computed — single source of truth)
+          _storedAtsUnits: stored.ats_units ?? null,
+          _storedAtsSide: stored.ats_side ?? null,
+          _storedAtsDisagree: stored.ats_disagree ?? null,
+          _storedAtsPickSpread: stored.market_spread_home ?? null,
+          _storedAtsDirectionFlip: stored.ats_direction_flip ?? false,
+          // Stored ML odds for edge calculation
+          _storedHomeML: stored.market_home_ml ?? null,
+          _storedAwayML: stored.market_away_ml ?? null,
         };
-      })() : pred;
-      // If no ML margin override but O/U model returned, still attach it
-      if (finalPred && ouResult?.pred_total && !finalPred.mlOuTotal) {
-        finalPred.mlOuTotal = ouResult.pred_total;
+        console.log(`[MLB STORED] ${homeName}: wp=${wp.toFixed(3)}, margin=${margin.toFixed?.(1) ?? margin}, ats=${stored.ats_units ?? 0}u`);
+        return {
+          ...g, pred, loading: false, odds: gameOdds,
+          mlShap: null, mlMeta: null, mc: null,
+          // Carry through stored starters/umpire for display
+          homeStarter: stored.home_starter || g.homeStarter,
+          awayStarter: stored.away_starter || g.awayStarter,
+          umpire: stored.umpire ? { name: stored.umpire } : g.umpire,
+          venue: g.venue,
+        };
       }
-      return { ...g, pred: finalPred, loading: false, odds: gameOdds, mlShap: mlResult?.shap ?? null, mlMeta: mlResult?.model_meta ?? null, mc: mcResult, ouModel: ouResult };
-    }));
+
+      // ═══ No stored prediction — PENDING state ═══
+      console.log(`[MLB PENDING] ${homeName}: no stored prediction — use 🔄 to generate`);
+      return {
+        ...g,
+        pred: {
+          homeWinPct: 0.5, awayWinPct: 0.5,
+          homeRuns: null, awayRuns: null,
+          ouTotal: null, projectedSpread: 0,
+          modelML_home: 100, modelML_away: 100,
+          confidence: "PENDING", confScore: 0, decisiveness: 0,
+          mlEnhanced: false, _notYetPredicted: true,
+          hFIP: null, aFIP: null, homeWOBA: null, awayWOBA: null,
+        },
+        loading: false, odds: gameOdds,
+        mlShap: null, mlMeta: null, mc: null,
+      };
+    });
 
     // ── Sort: Finals sink to bottom, rest by start time ──
     enriched.sort((a, b) => {
@@ -473,9 +438,9 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
     setGames(enriched);
     onGamesLoaded?.(enriched);
     setLoading(false);
-  }, [calibrationFactor]);
+  }, []);
 
-  useEffect(() => { loadGames(dateStr); }, [dateStr, calibrationFactor]);
+  useEffect(() => { loadGames(dateStr); }, [dateStr]);
 
   const getBannerInfo = (pred, odds, hasStarter) => {
     if (!pred) return { color: "yellow", label: "⚠ No prediction" };
@@ -561,7 +526,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
           const homeName = home.abbr;
           const awayName = away.abbr;
 
-          if (!game.pred || game.loading) {
+          if (!game.pred || game.loading || game.pred._notYetPredicted) {
             return (
               <div
                 key={game.gamePk}
@@ -593,8 +558,17 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
                       {game.homeStarter && <div style={{ fontSize: 10, color: C.muted }}>{game.homeStarter.split(" ").pop()}{game.homeStarterHand ? ` (${game.homeStarterHand})` : ""}</div>}
                     </div>
                   </div>
-                  <div style={{ color: C.dim, fontSize: 11 }}>
-                    {game.loading ? "Calculating…" : "⚠ Data unavailable"}
+                  <div style={{ color: C.dim, fontSize: 11, display: "flex", alignItems: "center", gap: 8 }}>
+                    {game.loading ? "Calculating…" : game.pred?._notYetPredicted ? "PENDING" : "⚠ Data unavailable"}
+                    {game.pred?._notYetPredicted && (
+                      <span
+                        style={{ cursor: "pointer", fontSize: 14, opacity: refreshingGame === game.gamePk ? 0.5 : 1 }}
+                        onClick={(e) => { e.stopPropagation(); refreshGame(game); }}
+                        title="Generate ML prediction"
+                      >
+                        {refreshingGame === game.gamePk ? "⏳" : "🔄"}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
