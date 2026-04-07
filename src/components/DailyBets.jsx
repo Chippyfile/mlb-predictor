@@ -4,19 +4,12 @@ import { C } from "./Shared.jsx";
 // Supabase is the sole source of truth — no frontend recomputation
 import { supabaseQuery } from "../utils/supabase.js";
 
-const ML_CAP = -500, CONF_GATE = 0.70, MIN_LEGS = 3, MIN_BET_UNITS = 2;
+const PARLAY_ML_FLOOR = -250, PARLAY_ML_CEIL = 250, PARLAY_CONF_GATE = 62, PARLAY_BET = 100, MIN_LEGS = 3, MAX_LEGS = 5, MIN_BET_UNITS = 2;
 const getToday = () => { const d = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
-function getStrategyMode() {
-  const m = new Date().getMonth() + 1, d = new Date().getDate();
-  if (m === 1 && d <= 7) return "skip";
-  if (m === 1 || m === 2) return "3only";
-  return "full";
-}
+function getStrategyMode() { return "active"; }
 const STRAT = {
-  skip:   { label: "🚫 NO BETS — Jan W1 (conference chaos)", color: "#f85149", sub: "Historical −23.6% ROI. Skip this week." },
-  "3only":{ label: "🛡 SAFE MODE — 3-Leg Only @ $75",        color: "#d29922", sub: "Jan/Feb: 5-leg historically unprofitable. Consolidate to 3-leg." },
-  full:   { label: "🎯 FULL — $50 on 3-Leg + $25 on 5-Leg",  color: "#2ea043", sub: "Nov/Dec/Mar: Both legs profitable. 44.6% ROI across 6 seasons." },
+  active: { label: "🎯 ML PARLAY — $100 on 3-5 Flex (±250 cap, 62% conf)", color: "#2ea043", sub: "Walk-forward: 91.5% ROI, 40.4% hit rate, $900 max drawdown over 3.5 seasons." },
 };
 
 function spreadToML(sp) {
@@ -93,7 +86,7 @@ function mapMLB(rows) { return rows.filter(r => r.pred_home_runs != null || r.sp
 }); }
 
 // ── Colors ──
-function unitColor(u) { return u >= 4 ? "#2ea043" : u >= 2 ? "#d29922" : "#8b949e"; }
+function unitColor(u) { return u >= 3 ? "#2ea043" : u >= 2 ? "#58a6ff" : "#6e7681"; }
 function confColor(c) { return c >= 80 ? "#2ea043" : c >= 70 ? "#58a6ff" : c >= 60 ? "#d29922" : "#8b949e"; }
 
 export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
@@ -122,26 +115,54 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
 
   useEffect(() => { syncAll(); }, []);
 
-  // ── NCAA Parlay Picks ──
+  // ── Multi-Sport Parlay Picks (top ML picks across all sports) ──
   const parlayPicks = useMemo(() => {
     if (mode === "skip") return [];
-    return games.ncaa
-      .filter(g => g.pred && g.odds)
-      .map(g => {
-        const wp = parseFloat(g.pred.homeWinPct) || 0.5;
-        const conf = Math.max(wp, 1 - wp);
-        const spread = g.odds.homeSpread ?? 0;
-        
-        // Model says which team wins. wp > 0.5 = home_team wins. That's the pick.
-        const pickHome = wp > 0.5;
-        const ml = spreadToML(pickHome ? spread : -spread);
-        return { team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(spread), gameId: g.gameId };
-      })
-      .filter(p => p.conf >= CONF_GATE*100 && p.ml > ML_CAP)
-      .sort((a,b) => b.conf - a.conf);
-  }, [games.ncaa, mode]);
+    const allPicks = [];
 
-  const p3 = parlayPicks.slice(0, 3), p5 = parlayPicks.slice(0, Math.min(5, parlayPicks.length));
+    // NCAA picks
+    for (const g of (games.ncaa || [])) {
+      if (!g.pred || !g.odds) continue;
+      const wp = parseFloat(g.pred.homeWinPct) || 0.5;
+      const conf = Math.max(wp, 1 - wp);
+      const spread = g.odds.homeSpread ?? 0;
+      const pickHome = wp > 0.5;
+      const ml = spreadToML(pickHome ? spread : -spread);
+      allPicks.push({ team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(spread), sport: "🏀", gameId: g.gameId });
+    }
+
+    // NBA picks
+    for (const g of (games.nba || [])) {
+      if (!g.pred || !g.odds) continue;
+      const wp = parseFloat(g.pred.homeWinPct) || 0.5;
+      const conf = Math.max(wp, 1 - wp);
+      const spread = g.odds.homeSpread ?? 0;
+      const pickHome = wp > 0.5;
+      const ml = spreadToML(pickHome ? spread : -spread);
+      allPicks.push({ team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(spread), sport: "🏀", gameId: g.gameId });
+    }
+
+    // MLB picks — use stored market moneylines when available
+    for (const g of (games.mlb || [])) {
+      if (!g.pred) continue;
+      const wp = parseFloat(g.pred.homeWinPct) || 0.5;
+      const conf = Math.max(wp, 1 - wp);
+      const pickHome = wp > 0.5;
+      // Prefer real market ML, fall back to spread conversion
+      let ml;
+      if (pickHome && g.odds?.homeML) ml = g.odds.homeML;
+      else if (!pickHome && g.odds?.awayML) ml = g.odds.awayML;
+      else ml = spreadToML(pickHome ? (g.odds?.homeSpread ?? 0) : -(g.odds?.homeSpread ?? 0));
+      allPicks.push({ team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(g.pred.projectedSpread || 0), sport: "⚾", gameId: g.gameId });
+    }
+
+    return allPicks
+      .filter(p => p.conf >= PARLAY_CONF_GATE && p.ml >= PARLAY_ML_FLOOR && p.ml <= PARLAY_ML_CEIL)
+      .sort((a,b) => b.conf - a.conf)
+      .slice(0, MAX_LEGS);
+  }, [games.ncaa, games.nba, games.mlb, mode]);
+
+  const parlayActive = parlayPicks.length >= MIN_LEGS;
 
   // ── Sport picks ──
   function buildPicks(gameList, sport) {
@@ -220,38 +241,38 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         <div style={{ fontSize: 11, color: C.dim }}>{strat.sub}</div>
       </div>
 
-      {/* ── PARLAYS ── */}
-      {mode !== "skip" && parlayPicks.length >= MIN_LEGS && [
-        { picks: p3, legs: 3, bet: mode === "3only" ? 75 : 50, color: "#2ea043", show: p3.length >= 3 },
-        { picks: p5, legs: 5, bet: 25, color: "#58a6ff", show: mode === "full" && p5.length >= 5 },
-      ].filter(p => p.show).map(({ picks, legs, bet, color }) => (
-        <div key={legs} style={{ background: "linear-gradient(135deg, #0d1117, #161b22)",
+      {/* ── PARLAY ── */}
+      {parlayActive && (
+        <div style={{ background: "linear-gradient(135deg, #0d1117, #161b22)",
           border: "1px solid #30363d", borderRadius: 10, padding: "14px 18px", marginBottom: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <span style={{ fontSize: 14, fontWeight: 800, color: "#e6edf3" }}>🏀 {legs}-Leg Parlay</span>
-            <span style={{ fontSize: 10, fontWeight: 800, color: "#fff", background: color,
-              borderRadius: 5, padding: "3px 10px", letterSpacing: 1 }}>${bet}</span>
+            <span style={{ fontSize: 14, fontWeight: 800, color: "#e6edf3" }}>🎯 {parlayPicks.length}-Leg ML Parlay</span>
+            <span style={{ fontSize: 10, fontWeight: 800, color: "#fff", background: "#2ea043",
+              borderRadius: 5, padding: "3px 10px", letterSpacing: 1 }}>${PARLAY_BET}</span>
           </div>
-          {picks.map((p, i) => (
+          {parlayPicks.map((p, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "8px 0", borderBottom: i === picks.length-1 ? "none" : "1px solid #21262d" }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>{p.team} ML</span>
+              padding: "8px 0", borderBottom: i === parlayPicks.length-1 ? "none" : "1px solid #21262d" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>{p.sport} {p.team} ML</span>
               <span style={{ fontSize: 12, color: C.muted, width: 60, textAlign: "right" }}>{p.ml > 0 ? `+${p.ml}` : p.ml}</span>
               <span style={{ fontSize: 11, width: 50, textAlign: "right", color: confColor(p.conf) }}>{p.conf.toFixed(0)}%</span>
             </div>
           ))}
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: C.dim }}>
-            <span>Odds: {parlayOdds(picks).toFixed(2)}x</span>
-            <span>Potential: ${(bet * parlayOdds(picks)).toFixed(0)}</span>
+            <span>Odds: {parlayOdds(parlayPicks).toFixed(2)}x · {parlayPicks.length} legs</span>
+            <span>Potential: ${(PARLAY_BET * parlayOdds(parlayPicks)).toFixed(0)}</span>
+          </div>
+          <div style={{ fontSize: 9, color: "#484f58", marginTop: 4 }}>
+            Filter: ±250 ML cap · ≥62% conf · 3-5 flex legs · WF: 91.5% ROI
           </div>
         </div>
-      ))}
+      )}
 
-      {mode !== "skip" && games.ncaa.length > 0 && parlayPicks.length < MIN_LEGS && (
-        <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0" }}>
+      {!parlayActive && (games.ncaa.length + games.nba.length + games.mlb.length) > 0 && (
+        <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0", textAlign: "center" }}>
           {parlayPicks.length > 0
-            ? `Only ${parlayPicks.length} qualifying NCAA picks (need ${MIN_LEGS})`
-            : `${games.ncaa.length} NCAA games loaded — none pass ≥70% + ML cap -500 filter`}
+            ? `Only ${parlayPicks.length} qualifying picks (need ${MIN_LEGS}) — no parlay today`
+            : `No picks pass ±250 ML cap + 62% confidence filter — sit today out`}
         </div>
       )}
 
@@ -275,11 +296,11 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
             {!has && sp.count === 0 && <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0" }}>Tap 🔄 to load</div>}
 
             {sp.ats.length > 0 && <>
-              <div style={{ fontSize: 10, fontWeight: 800, color: C.dim, letterSpacing: 2, marginTop: 14, marginBottom: 6 }}>ATS / SPREAD</div>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#8b949e", letterSpacing: 2, marginTop: 14, marginBottom: 6 }}>ATS / SPREAD</div>
               {sp.ats.sort((a,b) => b.units - a.units || b.edge - a.edge).map((p,i) => (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
-                  background: "#0d1117", borderRadius: 8, marginBottom: 6, border: "1px solid #21262d", maxWidth: 480 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>{p.team}</span>
+                  background: "#161b22", borderRadius: 8, marginBottom: 6, border: "1px solid #30363d", maxWidth: 480 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#c9d1d9", flex: 1 }}>{p.team}</span>
                   <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>
                     {p.spread != null ? (p.spread > 0 ? `+${p.spread.toFixed(1)}` : p.spread.toFixed(1)) : "—"}
                   </span>
@@ -301,7 +322,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
                   <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>{p.modelTotal?.toFixed?.(1) ?? "—"}</span>
                   <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.edge.toFixed(1)} pts</span>
                   <span style={{ fontSize: 10, fontWeight: 900, color: "#fff",
-                    background: p.side === "OVER" ? "#2ea043" : "#58a6ff",
+                    background: unitColor(p.units),
                     borderRadius: 4, padding: "2px 8px", minWidth: 30, textAlign: "center" }}>{p.units}u</span>
                 </div>
               ))}
@@ -318,7 +339,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
       )}
 
       <div style={{ fontSize: 10, color: "#484f58", textAlign: "center", marginTop: 20 }}>
-        {lastSync ? `Synced ${lastSync}` : "Not synced"} · {mode} mode · ML cap {ML_CAP}
+        {lastSync ? `Synced ${lastSync}` : "Not synced"} · ±250 cap · ≥62% conf
       </div>
     </div>
   );
