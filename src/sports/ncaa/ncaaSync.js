@@ -146,7 +146,7 @@ async function ncaaBuildPredictionRow(game, dateStr) {
   if (injuryData && (injuryData.home_injury_penalty > 0 || injuryData.away_injury_penalty > 0)) {
     adjSpread = pred.projectedSpread - injuryData.home_injury_penalty + injuryData.away_injury_penalty;
     adjWinPct = Math.min(0.97, Math.max(0.03,
-      1 / (1 + Math.pow(10, -adjSpread / dynamicSigma))
+      1 / (1 + Math.exp(-adjSpread / dynamicSigma))
     ));
   }
 

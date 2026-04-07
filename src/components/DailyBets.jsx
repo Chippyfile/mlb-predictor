@@ -32,11 +32,10 @@ async function fetchSport(table, date) {
 function mapNCAA(rows) { return rows.filter(r => r.win_pct_home != null).map(r => {
   const predH = parseFloat(r.pred_home_score) || 0, predA = parseFloat(r.pred_away_score) || 0;
   let margin = predH - predA;
-  // If pred scores are null, derive margin from win_pct and spread
-  if (margin === 0 && r.win_pct_home) {
-    const wp = parseFloat(r.win_pct_home);
-    // Convert probability to approximate margin (inverse sigmoid, σ=10)
-    if (wp > 0.01 && wp < 0.99) margin = -10 * Math.log(1/wp - 1);
+  // If pred scores are null, use stored spread_home from Supabase (single source of truth)
+  // Previously used inverse sigmoid with wrong σ=10 (should be 6.5) — eliminated entirely
+  if (margin === 0 && r.spread_home != null) {
+    margin = parseFloat(r.spread_home) || 0;
   }
   return {
     gameId: r.game_id, homeTeam: r.home_team || r.home_team_name, awayTeam: r.away_team || r.away_team_name,
