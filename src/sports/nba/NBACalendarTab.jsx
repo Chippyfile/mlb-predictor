@@ -8,7 +8,7 @@ import { useState, useEffect, useCallback } from "react";
 import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, BetSignalsPanel } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
-import { trueImplied, EDGE_THRESHOLD, fetchOdds, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
+import { trueImplied, EDGE_THRESHOLD, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
 import { buildStoredSignals } from "../../utils/buildStoredSignals.js";
 import { supabaseQuery } from "../../utils/supabase.js";
 import { mlPredictNBAFull, mlMonteCarlo } from "../../utils/mlApi.js";
@@ -335,33 +335,15 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
 
   const load = useCallback(async (d) => {
     setLoading(true); setGames([]);
-    const [raw, odds] = await Promise.all([fetchNBAGamesForDate(d), fetchOdds("basketball_nba")]);
-    setOddsInfo(odds);
+    const raw = await fetchNBAGamesForDate(d);
+    setOddsInfo(null); // v19: No Odds API on page load — stored market odds from Supabase
     setGames(raw.map(g => ({ ...g, loading: true })));
-    // Pre-load all team stats and compute dynamic league averages
-    const allStatsPairs = await Promise.all(raw.map(async g => {
-      const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
-      const nbaRealH = hs ? { pace: hs.pace, offRtg: hs.adjOE, defRtg: hs.adjDE, netRtg: hs.netRtg } : null;
-      const nbaRealA = as_ ? { pace: as_.pace, offRtg: as_.adjOE, defRtg: as_.adjDE, netRtg: as_.netRtg } : null;
-      return { game: g, hs, as_, nbaRealH, nbaRealA };
-    }));
-    // Compute league averages from all unique teams loaded today
-    const uniqueNbaStats = [];
-    const seenNba = new Set();
-    for (const { hs, as_ } of allStatsPairs) {
-      if (hs && !seenNba.has(hs.abbr)) { seenNba.add(hs.abbr); uniqueNbaStats.push(hs); }
-      if (as_ && !seenNba.has(as_.abbr)) { seenNba.add(as_.abbr); uniqueNbaStats.push(as_); }
-    }
-    // v19: computeLeagueAverages removed — was only needed by heuristic predictor
-    // Team stats are still fetched above for display (pace, netRtg)
 
-    // ── v19: Fetch stored predictions from Supabase (single source of truth) ──
-    // The cron already called /predict/nba/full and stored the result.
-    // Frontend just displays it — no recomputation, no parity concerns.
+    // ── v19: Fetch stored predictions FIRST (single source of truth) ──
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side`
+        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side,home_ppg,away_ppg,home_opp_ppg,away_opp_ppg,home_net_rtg,away_net_rtg,home_pace,away_pace,home_wins,away_wins,home_losses,away_losses`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
@@ -372,6 +354,34 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     } catch (e) {
       console.warn("[NBA] Failed to load stored predictions:", e);
     }
+
+    // Pre-load team stats — SKIP for games with stored predictions
+    const allStatsPairs = await Promise.all(raw.map(async g => {
+      const stored = storedPredMap.get(String(g.gameId));
+      if (stored?.ml_win_prob_home != null && stored?.home_ppg != null) {
+        // Build display stats from stored Supabase data — ZERO ESPN calls
+        const hs = {
+          ppg: stored.home_ppg, oppPpg: stored.home_opp_ppg,
+          pace: stored.home_pace, netRtg: stored.home_net_rtg,
+          wins: stored.home_wins, losses: stored.home_losses,
+          abbr: g.homeAbbr,
+        };
+        const as_ = {
+          ppg: stored.away_ppg, oppPpg: stored.away_opp_ppg,
+          pace: stored.away_pace, netRtg: stored.away_net_rtg,
+          wins: stored.away_wins, losses: stored.away_losses,
+          abbr: g.awayAbbr,
+        };
+        const nbaRealH = { pace: hs.pace, netRtg: hs.netRtg };
+        const nbaRealA = { pace: as_.pace, netRtg: as_.netRtg };
+        return { game: g, hs, as_, nbaRealH, nbaRealA };
+      }
+      // No stored prediction — fetch from ESPN
+      const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);
+      const nbaRealH = hs ? { pace: hs.pace, offRtg: hs.adjOE, defRtg: hs.adjDE, netRtg: hs.netRtg } : null;
+      const nbaRealA = as_ ? { pace: as_.pace, offRtg: as_.adjOE, defRtg: as_.adjDE, netRtg: as_.netRtg } : null;
+      return { game: g, hs, as_, nbaRealH, nbaRealA };
+    }));
 
     const enriched = await Promise.all(allStatsPairs.map(async ({ game: g, hs, as_, nbaRealH, nbaRealA }) => {
       const homeDaysRest = hs ? computeDaysRest(hs, d) : 2;
@@ -396,7 +406,21 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
           ouLine: rawOdds.marketTotal ?? null,
           _swapped: isSwapped,
         };
-      })() : null;
+      })() : (() => {
+        // v19: No live odds — use stored market data from Supabase
+        const stored = storedPredMap.get(String(g.gameId));
+        if (stored?.market_spread_home != null) {
+          return {
+            homeSpread: stored.market_spread_home,
+            awaySpread: -stored.market_spread_home,
+            homeML: stored.market_home_ml ?? null,
+            awayML: stored.market_away_ml ?? null,
+            ouLine: stored.market_ou_total ?? null,
+            source: "stored",
+          };
+        }
+        return null;
+      })();
 
       // ═══ v19: STORED PREDICTION PRIMARY — no recomputation ═══
       let mlResult = null, mcResult = null;

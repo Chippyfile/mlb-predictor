@@ -447,28 +447,51 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     for (let bi = 0; bi < rankedGames.length; bi += BATCH) {
       const slice = rankedGames.slice(bi, bi + BATCH);
       const batchResults = await Promise.all(slice.map(async (g) => {
-      const [homeStats, awayStats] = await Promise.all([
-        fetchNCAATeamStats(g.homeTeamId).catch(() => null),
-        fetchNCAATeamStats(g.awayTeamId).catch(() => null)
-      ]);
-      
-      if (kenPomMap && kenPomMap.size > 100) {
-        if (homeStats) applyKenPomRatings(homeStats, kenPomMap);
-        if (awayStats) applyKenPomRatings(awayStats, kenPomMap);
+      // v19: Check for stored prediction FIRST — skip ESPN if available
+      const storedHere = storedPredMap.get(String(g.gameId));
+      const hasStored = storedHere?.ml_win_prob_home != null;
+
+      let homeStats = null, awayStats = null, injuryData = null, gameContext = null;
+      let homeRestDays = 3, awayRestDays = 3, dynamicSigma = 6.5;
+
+      if (hasStored) {
+        // BUILD display stats from stored Supabase data — ZERO ESPN calls
+        homeStats = {
+          wins: storedHere.home_wins, losses: storedHere.home_losses,
+          ppg: storedHere.home_ppg, oppPpg: storedHere.home_opp_ppg,
+          fgpct: storedHere.home_fgpct, threepct: storedHere.home_threepct,
+          ftpct: storedHere.home_ftpct, tempo: storedHere.home_tempo,
+          _kenPomRank: storedHere.home_rank,
+        };
+        awayStats = {
+          wins: storedHere.away_wins, losses: storedHere.away_losses,
+          ppg: storedHere.away_ppg, oppPpg: storedHere.away_opp_ppg,
+          fgpct: storedHere.away_fgpct, threepct: storedHere.away_threepct,
+          ftpct: storedHere.away_ftpct, tempo: storedHere.away_tempo,
+          _kenPomRank: storedHere.away_rank,
+        };
+        gameContext = getGameContext(d, g.neutralSite);
+      } else {
+        // No stored prediction — fetch from ESPN (heuristic path)
+        [homeStats, awayStats] = await Promise.all([
+          fetchNCAATeamStats(g.homeTeamId).catch(() => null),
+          fetchNCAATeamStats(g.awayTeamId).catch(() => null)
+        ]);
+        if (kenPomMap && kenPomMap.size > 100) {
+          if (homeStats) applyKenPomRatings(homeStats, kenPomMap);
+          if (awayStats) applyKenPomRatings(awayStats, kenPomMap);
+        }
+        [injuryData, gameContext, homeRestDays, awayRestDays] = await Promise.all([
+          detectMissingStarters(g.gameId, g.homeTeamId, g.awayTeamId).catch(() => null),
+          Promise.resolve(getGameContext(d, g.neutralSite)),
+          computeRestDays(g.homeTeamId, d).catch(() => 3),
+          computeRestDays(g.awayTeamId, d).catch(() => 3),
+        ]);
+        dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 6.5;
       }
       
-      const [injuryData, gameContext, homeRestDays, awayRestDays] = await Promise.all([
-        detectMissingStarters(g.gameId, g.homeTeamId, g.awayTeamId).catch(() => null),
-        Promise.resolve(getGameContext(d, g.neutralSite)),
-        computeRestDays(g.homeTeamId, d).catch(() => 3),
-        computeRestDays(g.awayTeamId, d).catch(() => 3),
-      ]);
-      
-      const dynamicSigma = homeStats && awayStats ? calculateDynamicSigma(homeStats, awayStats, d) : 6.5;
       const effectiveNeutral = (gameContext?.override_neutral || g.neutralSite);
-      // v19: Only compute heuristic if no stored prediction — stored predictions are primary
-      const storedHere = storedPredMap.get(String(g.gameId));
-      const pred = storedHere?.ml_win_prob_home != null
+      const pred = hasStored
         ? (() => {
             // v19: Build FULL pred from Supabase stored prediction — no ESPN needed
             const sm = storedHere.spread_home ?? 0;
@@ -520,6 +543,8 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
           return {
             homeSpread: stored.market_spread_home,
             awaySpread: -stored.market_spread_home,
+            homeML: stored.market_home_ml ?? null,
+            awayML: stored.market_away_ml ?? null,
             ouLine: stored.market_ou_total ?? null,
             source: "stored",
           };
