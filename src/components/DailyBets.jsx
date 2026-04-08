@@ -102,6 +102,9 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
   const [games, setGames] = useState({ ncaa: [], nba: [], mlb: [] });
   const [syncing, setSyncing] = useState({});
   const [lastSync, setLastSync] = useState(null);
+  const [parlayHistory, setParlayHistory] = useState([]);
+  const [todayLocked, setTodayLocked] = useState(false);
+  const [grading, setGrading] = useState(false);
 
   const syncSport = useCallback(async (sport) => {
     setSyncing(s => ({ ...s, [sport]: true }));
@@ -122,6 +125,88 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
   }, [syncSport]);
 
   useEffect(() => { syncAll(); }, []);
+
+  // ── Parlay History: load from Supabase ──
+  const loadHistory = useCallback(async () => {
+    try {
+      const rows = await supabaseQuery("/parlay_bets?order=bet_date.desc&limit=60");
+      setParlayHistory(rows || []);
+      const todayRow = (rows || []).find(r => r.bet_date === today);
+      setTodayLocked(!!todayRow);
+    } catch(e) { console.error("[DailyBets] parlay history:", e); }
+  }, [today]);
+
+  useEffect(() => { loadHistory(); }, [loadHistory]);
+
+  // ── Lock in today's parlay ──
+  const lockInParlay = useCallback(async (picks) => {
+    if (!picks.length || todayLocked) return;
+    const odds = parlayOdds(picks);
+    const row = {
+      bet_date: today,
+      legs: picks.map(p => ({ team: p.team, ml: p.ml, conf: p.conf, sport: p.sport, gameId: p.gameId, side: p.side || "ML" })),
+      num_legs: picks.length,
+      combined_odds: parseFloat(odds.toFixed(4)),
+      bet_amount: PARLAY_BET,
+      potential_payout: parseFloat((PARLAY_BET * odds).toFixed(2)),
+      result: "PENDING",
+      legs_won: 0,
+      ml_cap: PARLAY_ML_CEIL,
+      conf_gate: PARLAY_CONF_GATE,
+    };
+    try {
+      await supabaseQuery("/parlay_bets", "POST", row);
+      setTodayLocked(true);
+      await loadHistory();
+    } catch(e) { console.error("[DailyBets] lock-in:", e); }
+  }, [today, todayLocked, loadHistory]);
+
+  // ── Grade pending parlays ──
+  const gradeParlays = useCallback(async () => {
+    setGrading(true);
+    try {
+      const pending = parlayHistory.filter(p => p.result === "PENDING");
+      for (const bet of pending) {
+        const legs = bet.legs || [];
+        let won = 0, decided = 0, anyLoss = false;
+        for (const leg of legs) {
+          // Check each leg against the appropriate prediction table
+          const gid = leg.gameId;
+          if (!gid) continue;
+          let row = null;
+          // Try all prediction tables
+          for (const table of ["mlb_predictions", "ncaa_predictions", "nba_predictions"]) {
+            try {
+              const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ml_correct,result_entered&limit=1`);
+              if (res?.length) { row = res[0]; break; }
+            } catch { /* try next table */ }
+            // MLB uses game_pk
+            if (table === "mlb_predictions") {
+              try {
+                const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=ml_correct,result_entered&limit=1`);
+                if (res?.length) { row = res[0]; break; }
+              } catch { /* continue */ }
+            }
+          }
+          if (row?.result_entered) {
+            decided++;
+            if (row.ml_correct) won++;
+            else anyLoss = true;
+          }
+        }
+        // Only grade if all legs have results
+        if (decided === legs.length) {
+          const result = anyLoss ? "LOSS" : "WIN";
+          const payout = result === "WIN" ? bet.potential_payout : 0;
+          await supabaseQuery(`/parlay_bets?id=eq.${bet.id}`, "PATCH", {
+            result, legs_won: won, actual_payout: payout, graded_at: new Date().toISOString(),
+          });
+        }
+      }
+      await loadHistory();
+    } catch(e) { console.error("[DailyBets] grading:", e); }
+    setGrading(false);
+  }, [parlayHistory, loadHistory]);
 
   // ── Multi-Sport Parlay Picks (top ML picks across all sports) ──
   const parlayPicks = useMemo(() => {
@@ -273,6 +358,13 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
           <div style={{ fontSize: 9, color: "#484f58", marginTop: 4 }}>
             Filter: ±325 ML cap · ≥68% conf · 4-5 flex legs · WF: 72.0% ROI
           </div>
+          <button onClick={() => lockInParlay(parlayPicks)} disabled={todayLocked}
+            style={{ marginTop: 10, width: "100%", padding: "10px 0", borderRadius: 8,
+              border: todayLocked ? "1px solid #30363d" : "1px solid #2ea043",
+              background: todayLocked ? "#161b22" : "linear-gradient(135deg, #2ea04322, #2ea04311)",
+              color: todayLocked ? "#484f58" : "#2ea043", fontSize: 13, fontWeight: 800,
+              cursor: todayLocked ? "default" : "pointer", letterSpacing: 1,
+            }}>{todayLocked ? "✅ LOCKED IN" : "🔒 LOCK IN TODAY'S PARLAY"}</button>
         </div>
       )}
 
@@ -345,6 +437,96 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
           <div style={{ fontSize: 14 }}>Hit "Sync All" to load today's picks</div>
         </div>
       )}
+
+      {/* ── PARLAY HISTORY ── */}
+      {parlayHistory.length > 0 && (() => {
+        const graded = parlayHistory.filter(p => p.result !== "PENDING");
+        const wins = graded.filter(p => p.result === "WIN").length;
+        const losses = graded.filter(p => p.result === "LOSS").length;
+        const pending = parlayHistory.filter(p => p.result === "PENDING").length;
+        const totalWagered = graded.reduce((s, p) => s + (p.bet_amount || 0), 0);
+        const totalReturned = graded.reduce((s, p) => s + (p.actual_payout || 0), 0);
+        const profit = totalReturned - totalWagered;
+        const roi = totalWagered > 0 ? (profit / totalWagered * 100) : 0;
+        const winRate = graded.length > 0 ? (wins / graded.length * 100) : 0;
+        // Current streak
+        let streak = 0, streakType = "";
+        for (const p of graded) {
+          if (!streakType) { streakType = p.result; streak = 1; }
+          else if (p.result === streakType) streak++;
+          else break;
+        }
+
+        return (
+          <div style={{ marginTop: 32 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, paddingBottom: 8, borderBottom: "1px solid #21262d" }}>
+              <span style={{ fontSize: 18, fontWeight: 900, color: "#e6edf3" }}>📊 Parlay Tracker</span>
+              <span style={{ fontSize: 11, color: C.dim, marginLeft: "auto" }}>
+                {graded.length} graded · {pending} pending
+              </span>
+              {pending > 0 && (
+                <button onClick={gradeParlays} disabled={grading} style={{
+                  padding: "3px 10px", borderRadius: 6, border: "1px solid #58a6ff55",
+                  background: "#58a6ff11", color: "#58a6ff", fontSize: 10, fontWeight: 700, cursor: "pointer",
+                }}>{grading ? "⏳" : "Grade"}</button>
+              )}
+            </div>
+
+            {/* Summary stats */}
+            {graded.length > 0 && (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                {[
+                  { label: "Record", value: `${wins}W - ${losses}L`, color: wins > losses ? "#2ea043" : "#f85149" },
+                  { label: "Win %", value: `${winRate.toFixed(1)}%`, color: winRate >= 35 ? "#2ea043" : "#d29922" },
+                  { label: "P&L", value: `${profit >= 0 ? "+" : ""}$${profit.toFixed(0)}`, color: profit >= 0 ? "#2ea043" : "#f85149" },
+                  { label: "ROI", value: `${roi >= 0 ? "+" : ""}${roi.toFixed(1)}%`, color: roi >= 0 ? "#2ea043" : "#f85149" },
+                  { label: "Streak", value: `${streak}${streakType === "WIN" ? "W" : "L"}`, color: streakType === "WIN" ? "#2ea043" : "#f85149" },
+                ].map(s => (
+                  <div key={s.label} style={{ background: "#0d1117", border: "1px solid #21262d", borderRadius: 8,
+                    padding: "8px 14px", minWidth: 70, textAlign: "center" }}>
+                    <div style={{ fontSize: 9, color: C.dim, letterSpacing: 1, marginBottom: 2 }}>{s.label}</div>
+                    <div style={{ fontSize: 16, fontWeight: 900, color: s.color }}>{s.value}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Recent bets */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {parlayHistory.slice(0, 20).map(bet => {
+                const isWin = bet.result === "WIN";
+                const isLoss = bet.result === "LOSS";
+                const isPending = bet.result === "PENDING";
+                const legs = bet.legs || [];
+                return (
+                  <div key={bet.id} style={{ display: "flex", alignItems: "center", gap: 8,
+                    padding: "8px 12px", background: "#0d1117", borderRadius: 8,
+                    border: `1px solid ${isWin ? "#2ea04333" : isLoss ? "#f8514933" : "#21262d"}` }}>
+                    <span style={{ fontSize: 16, width: 24, textAlign: "center" }}>
+                      {isWin ? "✅" : isLoss ? "❌" : "⏳"}
+                    </span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#c9d1d9" }}>
+                        {bet.bet_date} · {bet.num_legs}-leg · {bet.combined_odds?.toFixed(2)}x
+                      </div>
+                      <div style={{ fontSize: 10, color: C.dim, marginTop: 2 }}>
+                        {legs.map(l => l.team).join(" · ")}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 13, fontWeight: 800,
+                        color: isWin ? "#2ea043" : isLoss ? "#f85149" : "#8b949e" }}>
+                        {isWin ? `+$${(bet.actual_payout - bet.bet_amount).toFixed(0)}` : isLoss ? `-$${bet.bet_amount}` : "PENDING"}
+                      </div>
+                      {!isPending && <div style={{ fontSize: 9, color: C.dim }}>{bet.legs_won}/{bet.num_legs} legs</div>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       <div style={{ fontSize: 10, color: "#484f58", textAlign: "center", marginTop: 20 }}>
         {lastSync ? `Synced ${lastSync}` : "Not synced"} · ±325 cap · ≥68% conf
