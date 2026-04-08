@@ -733,7 +733,7 @@ export function BetSignalsPanel({ signals, pred, odds, sport, homeName, awayName
               ))}
             </div>
             <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.6 }}>
-              <span style={{ color: szColor, fontWeight: 700 }}>{sz.disagree} pts</span> model vs market disagreement
+              <span style={{ color: szColor, fontWeight: 700 }}>{sz.disagree} pts</span> edge vs market
               <br />
               → Bet <span style={{ color: szColor, fontWeight: 700 }}>{sz.sideLabel || sz.side}</span> ATS
               <br />
