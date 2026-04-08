@@ -66,10 +66,19 @@ function mapNBA(rows) { return rows.filter(r => r.pred_home_score != null).map(r
   };
 }); }
 
+// MLB abbreviation → display name (Supabase only stores abbreviations)
+const MLB_NAMES = {
+  ARI:"D-backs",ATL:"Braves",BAL:"Orioles",BOS:"Red Sox",CHC:"Cubs",CWS:"White Sox",CIN:"Reds",CLE:"Guardians",
+  COL:"Rockies",DET:"Tigers",HOU:"Astros",KC:"Royals",LAA:"Angels",LAD:"Dodgers",MIA:"Marlins",MIL:"Brewers",
+  MIN:"Twins",NYM:"Mets",NYY:"Yankees",OAK:"Athletics",PHI:"Phillies",PIT:"Pirates",SD:"Padres",SF:"Giants",
+  SEA:"Mariners",STL:"Cardinals",TB:"Rays",TEX:"Rangers",TOR:"Blue Jays",WSH:"Nationals",
+};
+const mlbName = (abbr) => MLB_NAMES[abbr] || abbr || "TBD";
+
 function mapMLB(rows) { return rows.filter(r => r.pred_home_runs != null || r.spread_home != null).map(r => {
   const hr = parseFloat(r.pred_home_runs) || 0, ar = parseFloat(r.pred_away_runs) || 0;
   return {
-    gameId: r.game_pk, homeTeam: r.home_team, awayTeam: r.away_team,
+    gameId: r.game_pk, homeTeam: mlbName(r.home_team), awayTeam: mlbName(r.away_team),
     pred: { projectedSpread: -(hr - ar), homeWinPct: parseFloat(r.win_pct_home || r.ml_win_prob_home) || 0.5,
             homeRuns: hr, awayRuns: ar,
             _ouPick: r.ou_pick || null, _ouEdge: r.ou_edge || null,
