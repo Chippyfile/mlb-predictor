@@ -262,25 +262,18 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (mlResult.ou_tier != null) patch.ou_tier = mlResult.ou_tier;
       if (mlResult.ou_res_avg != null) patch.ou_res_avg = parseFloat(mlResult.ou_res_avg.toFixed(3));
 
-      // ATS signals with direction flip
-      const mktSpread = game.odds?.homeSpread;
-      if (mktSpread != null) {
-        const mktImplied = -mktSpread;
-        const disagree = Math.abs(mlMargin - mktImplied);
-        const dirFlip = (mlMargin > 0) !== (mktImplied > 0);
-        const threshold = dirFlip ? 3 : 4;
-        patch.ats_disagree = parseFloat(disagree.toFixed(2));
-        if (disagree >= threshold) {
-          patch.ats_side = mlMargin > mktImplied ? "HOME" : "AWAY";
-          patch.ats_pick_spread = mktSpread;
-          patch.ats_units = dirFlip
-            ? (disagree >= 7 ? 3 : disagree >= 5 ? 2 : 1)
-            : (disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1);
-        } else {
-          patch.ats_side = null;
-          patch.ats_units = 0;
-          patch.ats_pick_spread = null;
-        }
+      // v28 ATS — read from residual model (Supabase = sole truth)
+      if (mlResult.ats_units != null) {
+        patch.ats_side = mlResult.ats_side || null;
+        patch.ats_units = mlResult.ats_units || 0;
+        patch.ats_pick_spread = mlResult.ats_pick_spread || (game.odds?.homeSpread ?? null);
+        patch.ats_disagree = Math.abs(mlResult.ats_residual_blend || 0);
+        if (mlResult.ats_residual_blend != null) patch.ats_residual_blend = mlResult.ats_residual_blend;
+        if (mlResult.ats_residual_cb != null) patch.ats_residual_cb = mlResult.ats_residual_cb;
+        if (mlResult.ats_residual_lasso != null) patch.ats_residual_lasso = mlResult.ats_residual_lasso;
+        if (mlResult.ats_models_agree != null) patch.ats_models_agree = mlResult.ats_models_agree;
+      } else {
+        patch.ats_units = 0;
       }
 
       await supabaseQuery(`/nba_predictions?game_id=eq.${game.gameId}`, "PATCH", patch).catch(e => {
@@ -343,7 +336,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side,home_ppg,away_ppg,home_opp_ppg,away_opp_ppg,home_net_rtg,away_net_rtg,home_pace,away_pace,home_wins,away_wins,home_losses,away_losses`
+        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ats_residual_blend,ats_residual_cb,ats_residual_lasso,ats_models_agree,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,ml_edge_pct,ml_bet_side,home_ppg,away_ppg,home_opp_ppg,away_opp_ppg,home_net_rtg,away_net_rtg,home_pace,away_pace,home_wins,away_wins,home_losses,away_losses,impact_adjustment,home_out_players,away_out_players`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
