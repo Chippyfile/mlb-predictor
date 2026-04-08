@@ -499,6 +499,35 @@ export function HistoryTab({ table, refreshKey }) {
 }
 
 // ── PARLAY BUILDER ────────────────────────────────────────────
+// NBA/NFL abbreviation → display name (these get mixed into ncaaGames prop from App.jsx)
+const _NBA_NAMES = {
+  ATL:"Hawks",BOS:"Celtics",BKN:"Nets",CHA:"Hornets",CHI:"Bulls",CLE:"Cavaliers",
+  DAL:"Mavericks",DEN:"Nuggets",DET:"Pistons",GSW:"Warriors",HOU:"Rockets",IND:"Pacers",
+  LAC:"Clippers",LAL:"Lakers",MEM:"Grizzlies",MIA:"Heat",MIL:"Bucks",MIN:"Timberwolves",
+  NOP:"Pelicans",NYK:"Knicks",OKC:"Thunder",ORL:"Magic",PHI:"76ers",PHX:"Suns",
+  POR:"Blazers",SAC:"Kings",SAS:"Spurs",TOR:"Raptors",UTA:"Jazz",WAS:"Wizards",
+};
+const _NFL_NAMES = {
+  ARI:"Cardinals",ATL:"Falcons",BAL:"Ravens",BUF:"Bills",CAR:"Panthers",CHI:"Bears",
+  CIN:"Bengals",CLE:"Browns",DAL:"Cowboys",DEN:"Broncos",DET:"Lions",GB:"Packers",
+  HOU:"Texans",IND:"Colts",JAX:"Jaguars",KC:"Chiefs",LAC:"Chargers",LAR:"Rams",
+  LV:"Raiders",MIA:"Dolphins",MIN:"Vikings",NE:"Patriots",NO:"Saints",NYG:"Giants",
+  NYJ:"Jets",PHI:"Eagles",PIT:"Steelers",SEA:"Seahawks",SF:"49ers",TB:"Buccaneers",
+  TEN:"Titans",WAS:"Commanders",
+};
+const _resolveTeamName = (raw) => {
+  if (!raw) return "TBD";
+  const s = typeof raw === "string" ? raw : raw?.abbr || raw?.name || "TBD";
+  return _NBA_NAMES[s] || _NFL_NAMES[s] || s;
+};
+const _detectSport = (g) => {
+  // Heuristic: NBA/NFL games have short abbreviation homeTeam (2-3 chars), NCAA has full names
+  const ht = typeof g.homeTeam === "string" ? g.homeTeam : "";
+  if (_NBA_NAMES[ht]) return "NBA";
+  if (_NFL_NAMES[ht]) return "NFL";
+  return "NCAA";
+};
+
 export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
   const [sportFilter, setSportFilter] = useState("ALL");
   const [legCount, setLegCount] = useState(3);
@@ -510,26 +539,26 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
     const mlbLegs = mlbGames.filter(g => g.pred).map(g => {
       const pickHome = g.pred.homeWinPct >= 0.5;
       const ml = pickHome ? (g.odds?.homeML || g.pred.modelML_home) : (g.odds?.awayML || g.pred.modelML_away);
-      const hName = (g.homeAbbr || (typeof g.homeTeam === "string" ? g.homeTeam : g.homeTeam?.abbr) || g.homeTeamName || "HOME").slice(0, 8);
-      const aName = (g.awayAbbr || (typeof g.awayTeam === "string" ? g.awayTeam : g.awayTeam?.abbr) || g.awayTeamName || "AWAY").slice(0, 8);
+      const hName = (g.homeAbbr || (typeof g.homeTeam === "string" ? g.homeTeam : g.homeTeam?.abbr) || g.homeTeamName || "HOME").slice(0, 12);
+      const aName = (g.awayAbbr || (typeof g.awayTeam === "string" ? g.awayTeam : g.awayTeam?.abbr) || g.awayTeamName || "AWAY").slice(0, 12);
       const wp = g.pred.homeWinPct ?? 0.5;
       return { sport: "MLB", gamePk: g.gamePk || g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
     const ncaaLegs = ncaaGames.filter(g => g.pred).map(g => {
       const pickHome = g.pred.homeWinPct >= 0.5;
       const ml = pickHome ? (g.odds?.homeML || g.pred.modelML_home) : (g.odds?.awayML || g.pred.modelML_away);
-      const hName = (g.homeAbbr || (typeof g.homeTeam === "string" ? g.homeTeam : null) || g.homeTeamName || "HOME").slice(0, 8);
-      const aName = (g.awayAbbr || (typeof g.awayTeam === "string" ? g.awayTeam : null) || g.awayTeamName || "AWAY").slice(0, 8);
+      const sport = _detectSport(g);
+      const hName = _resolveTeamName(g.homeAbbr || g.homeTeam || g.homeTeamName).slice(0, 12);
+      const aName = _resolveTeamName(g.awayAbbr || g.awayTeam || g.awayTeamName).slice(0, 12);
       const wp = g.pred.homeWinPct ?? 0.5;
-      return { sport: "NCAA", gamePk: g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
+      return { sport, gamePk: g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
     return [...mlbLegs, ...ncaaLegs].sort((a, b) => b.prob - a.prob);
   }, [mlbGames, ncaaGames]);
 
   const filteredLegs = useMemo(() => {
-    if (sportFilter === "MLB") return allGameLegs.filter(l => l.sport === "MLB");
-    if (sportFilter === "NCAA") return allGameLegs.filter(l => l.sport === "NCAA");
-    return allGameLegs;
+    if (sportFilter === "ALL") return allGameLegs;
+    return allGameLegs.filter(l => l.sport === sportFilter);
   }, [allGameLegs, sportFilter]);
 
   const autoParlay = useMemo(() => filteredLegs.slice(0, legCount), [filteredLegs, legCount]);
@@ -544,19 +573,22 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
     else setCustomLegs([...customLegs, leg]);
   };
 
-  const sportColor = s => s === "MLB" ? C.blue : C.orange;
-  const sportBadge = s => (
-    <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: s === "MLB" ? "#0d1a2e" : "#2a1a0a", color: sportColor(s), marginLeft: 4 }}>
-      {s === "MLB" ? "⚾" : "🏀"}
+  const sportColor = s => ({ MLB: C.blue, NBA: "#58a6ff", NFL: "#f97316", NCAAF: "#22c55e" }[s] || C.orange);
+  const sportBadge = s => {
+    const icon = { MLB: "⚾", NBA: "🏀", NFL: "🏈", NCAAF: "🏈" }[s] || "🏀";
+    return (
+    <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: s === "MLB" ? "#0d1a2e" : s === "NBA" ? "#0d1a2e" : s === "NFL" ? "#1a0f00" : "#2a1a0a", color: sportColor(s), marginLeft: 4 }}>
+      {icon}
     </span>
-  );
+    );
+  };
 
   return (
     <div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         <h2 style={{ margin: 0, fontSize: 14, color: C.blue, letterSpacing: 2, textTransform: "uppercase" }}>🎯 Parlay Builder</h2>
         <div style={{ display: "flex", gap: 3, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3 }}>
-          {[["ALL", "⚾+🏀"], ["MLB", "⚾"], ["NCAA", "🏀"]].map(([v, l]) => (
+          {[["ALL", "All"], ["MLB", "⚾"], ["NCAA", "🏀"], ["NBA", "🏀"], ["NFL", "🏈"]].map(([v, l]) => (
             <button key={v} onClick={() => setSportFilter(v)} style={{ padding: "3px 10px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, background: sportFilter === v ? C.blue : "transparent", color: sportFilter === v ? C.bg : C.dim }}>{l}</button>
           ))}
         </div>

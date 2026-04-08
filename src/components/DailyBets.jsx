@@ -4,12 +4,12 @@ import { C } from "./Shared.jsx";
 // Supabase is the sole source of truth — no frontend recomputation
 import { supabaseQuery } from "../utils/supabase.js";
 
-const PARLAY_ML_FLOOR = -250, PARLAY_ML_CEIL = 250, PARLAY_CONF_GATE = 62, PARLAY_BET = 100, MIN_LEGS = 3, MAX_LEGS = 5, MIN_BET_UNITS = 2;
+const PARLAY_ML_FLOOR = -325, PARLAY_ML_CEIL = 325, PARLAY_CONF_GATE = 68, PARLAY_BET = 100, MIN_LEGS = 4, MAX_LEGS = 5, MIN_BET_UNITS = 2;
 const getToday = () => { const d = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
 function getStrategyMode() { return "active"; }
 const STRAT = {
-  active: { label: "🎯 ML PARLAY — $100 on 3-5 Flex (±250 cap, 62% conf)", color: "#2ea043", sub: "Walk-forward: 91.5% ROI, 40.4% hit rate, $900 max drawdown over 3.5 seasons." },
+  active: { label: "🎯 ML PARLAY — $100 on 4-5 Flex (±325 cap, 68% conf)", color: "#2ea043", sub: "Walk-forward: 72.0% ROI, 39.2% hit rate, $600 max drawdown over 3.5 seasons." },
 };
 
 function spreadToML(sp) {
@@ -271,7 +271,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
             <span>Potential: ${(PARLAY_BET * parlayOdds(parlayPicks)).toFixed(0)}</span>
           </div>
           <div style={{ fontSize: 9, color: "#484f58", marginTop: 4 }}>
-            Filter: ±250 ML cap · ≥62% conf · 3-5 flex legs · WF: 91.5% ROI
+            Filter: ±325 ML cap · ≥68% conf · 4-5 flex legs · WF: 72.0% ROI
           </div>
         </div>
       )}
@@ -280,7 +280,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0", textAlign: "center" }}>
           {parlayPicks.length > 0
             ? `Only ${parlayPicks.length} qualifying picks (need ${MIN_LEGS}) — no parlay today`
-            : `No picks pass ±250 ML cap + 62% confidence filter — sit today out`}
+            : `No picks pass ±325 ML cap + 68% confidence filter — sit today out`}
         </div>
       )}
 
@@ -347,7 +347,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
       )}
 
       <div style={{ fontSize: 10, color: "#484f58", textAlign: "center", marginTop: 20 }}>
-        {lastSync ? `Synced ${lastSync}` : "Not synced"} · ±250 cap · ≥62% conf
+        {lastSync ? `Synced ${lastSync}` : "Not synced"} · ±325 cap · ≥68% conf
       </div>
     </div>
   );
