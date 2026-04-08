@@ -510,16 +510,18 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
     const mlbLegs = mlbGames.filter(g => g.pred).map(g => {
       const pickHome = g.pred.homeWinPct >= 0.5;
       const ml = pickHome ? (g.odds?.homeML || g.pred.modelML_home) : (g.odds?.awayML || g.pred.modelML_away);
-      const hName = (g.homeAbbr || g.homeTeam?.abbr || g.homeTeamName || "HOME").slice(0, 8);
-      const aName = (g.awayAbbr || g.awayTeam?.abbr || g.awayTeamName || "AWAY").slice(0, 8);
-      return { sport: "MLB", gamePk: g.gamePk || g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? g.pred.homeWinPct : g.pred.awayWinPct, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
+      const hName = (g.homeAbbr || (typeof g.homeTeam === "string" ? g.homeTeam : g.homeTeam?.abbr) || g.homeTeamName || "HOME").slice(0, 8);
+      const aName = (g.awayAbbr || (typeof g.awayTeam === "string" ? g.awayTeam : g.awayTeam?.abbr) || g.awayTeamName || "AWAY").slice(0, 8);
+      const wp = g.pred.homeWinPct ?? 0.5;
+      return { sport: "MLB", gamePk: g.gamePk || g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
     const ncaaLegs = ncaaGames.filter(g => g.pred).map(g => {
       const pickHome = g.pred.homeWinPct >= 0.5;
       const ml = pickHome ? (g.odds?.homeML || g.pred.modelML_home) : (g.odds?.awayML || g.pred.modelML_away);
-      const hName = (g.homeAbbr || g.homeTeamName || "HOME").slice(0, 8);
-      const aName = (g.awayAbbr || g.awayTeamName || "AWAY").slice(0, 8);
-      return { sport: "NCAA", gamePk: g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? g.pred.homeWinPct : g.pred.awayWinPct, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
+      const hName = (g.homeAbbr || (typeof g.homeTeam === "string" ? g.homeTeam : null) || g.homeTeamName || "HOME").slice(0, 8);
+      const aName = (g.awayAbbr || (typeof g.awayTeam === "string" ? g.awayTeam : null) || g.awayTeamName || "AWAY").slice(0, 8);
+      const wp = g.pred.homeWinPct ?? 0.5;
+      return { sport: "NCAA", gamePk: g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
     return [...mlbLegs, ...ncaaLegs].sort((a, b) => b.prob - a.prob);
   }, [mlbGames, ncaaGames]);
