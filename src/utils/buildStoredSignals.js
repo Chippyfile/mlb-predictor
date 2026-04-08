@@ -67,9 +67,9 @@ export function buildStoredSignals({ pred, odds, sport = "nba", homeName = "Home
     const unitLabel = isMLB ? "run" : "pt";
     const sideLabel = storedSide === "HOME" ? homeName : awayName;
     const tierLabels = {
-      3: { label: "MAX (3u)", color: "green", verdict: "GO", acc: sport === "ncaa" ? "~97%" : sport === "nba" ? "~69%" : "~67%" },
-      2: { label: "STRONG (2u)", color: "yellow", verdict: "GO", acc: sport === "ncaa" ? "~90%" : sport === "nba" ? "~65%" : "~64%" },
-      1: { label: "BET (1u)", color: "muted", verdict: storedDisagree >= 4 ? "GO" : "LEAN", acc: sport === "ncaa" ? "~74%" : sport === "nba" ? "~64%" : "~61%" },
+      3: { label: "MAX (3u)", color: "green", verdict: "GO", acc: sport === "ncaa" ? "~97%" : sport === "nba" ? "~75%" : "~67%" },
+      2: { label: "STRONG (2u)", color: "yellow", verdict: "GO", acc: sport === "ncaa" ? "~90%" : sport === "nba" ? "~74%" : "~64%" },
+      1: { label: "BET (1u)", color: "muted", verdict: storedDisagree >= 4 ? "GO" : "LEAN", acc: sport === "ncaa" ? "~74%" : sport === "nba" ? "~70%" : "~61%" },
     };
     const tl = tierLabels[storedUnits] || tierLabels[1];
     spreadSignal = {
@@ -77,7 +77,7 @@ export function buildStoredSignals({ pred, odds, sport = "nba", homeName = "Home
       side: storedSide,
       diff: storedDisagree?.toFixed?.(1) ?? "0",
       atsExpected: tl.acc,
-      reason: `Model vs market — ${storedDisagree?.toFixed?.(1) ?? "?"} ${unitLabel} gap (${tl.acc} ATS)`,
+      reason: `Model vs market — ${storedDisagree?.toFixed?.(1) ?? "?"} ${unitLabel} edge (${tl.acc} ATS)`,
     };
     betSizing = {
       units: storedUnits,
@@ -87,7 +87,7 @@ export function buildStoredSignals({ pred, odds, sport = "nba", homeName = "Home
       sideLabel,
       disagree: storedDisagree ?? 0,
       atsHistorical: tl.acc,
-      reason: `${storedDisagree?.toFixed?.(1) ?? "?"} ${unitLabel}s disagreement → ${storedUnits}u (validated ${tl.acc})`,
+      reason: `${storedDisagree?.toFixed?.(1) ?? "?"} ${unitLabel}s edge → ${storedUnits}u (validated ${tl.acc})`,
     };
   } else if (storedUnits === 0) {
     // Cron says NO BET

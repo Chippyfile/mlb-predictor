@@ -191,7 +191,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
               )}
             </div>
             <span style={{ fontSize: 10, color: C.muted }}>
-              {parseFloat(sz.disagree) % 1 === 0 ? parseInt(sz.disagree) : sz.disagree} pts disagreement · {sz.atsHistorical} ATS
+              {parseFloat(sz.disagree) % 1 === 0 ? parseInt(sz.disagree) : sz.disagree} pts edge · {sz.atsHistorical} ATS
               {hasOu && ` · O/U ${parseFloat(ou.diff).toFixed(1)} pts edge`}
             </span>
           </div>
