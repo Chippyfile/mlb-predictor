@@ -229,7 +229,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           if (!gid) continue;
           let row = null;
           // MLB uses game_pk, NBA/NCAA use game_id
-          const sportKey = (leg.sportKey || "").toLowerCase();
+          const sportKey = (leg.sportKey || (leg.sport === "⚾" ? "mlb" : "")).toLowerCase();
           if (sportKey === "mlb") {
             try {
               const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
@@ -260,7 +260,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           const gid = pick.gameId;
           if (!gid) continue;
           let row = null;
-          const sportKey = (pick.sport || pick.sportKey || "").toLowerCase();
+          const sportKey = (pick.sportKey || (pick.sport === "⚾" ? "mlb" : (pick.sport === "mlb" ? "mlb" : ""))).toLowerCase();
           if (sportKey === "mlb") {
             try {
               const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
@@ -289,7 +289,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           const gid = pick.gameId;
           if (!gid) continue;
           let row = null;
-          const sportKey = (pick.sport || pick.sportKey || "").toLowerCase();
+          const sportKey = (pick.sportKey || (pick.sport === "⚾" ? "mlb" : (pick.sport === "mlb" ? "mlb" : ""))).toLowerCase();
           if (sportKey === "mlb") {
             try {
               const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=ou_correct,result_entered&limit=1`);
@@ -761,8 +761,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
                               fontSize: 12, color: legLost ? "#484f58" : "#c9d1d9",
                               textDecoration: legLost ? "line-through" : "none",
-                              opacity: legLost ? 0.5 : 1 }}>
-                              <span style={{ width: 18, fontSize: 12 }}>{legWon ? "✅" : legLost ? "❌" : "⏳"}</span>
+                              opacity: 1 }}>
+                              <span style={{ width: 18, fontSize: 12, fontSize: 12 }}>{legWon ? "✅" : legLost ? "❌" : "⏳"}</span>
                               <span style={{ flex: 1, fontWeight: 600 }}>
                                 {l.sport || ""} {l.team} {l.spread != null ? (l.spread > 0 ? `+${parseFloat(l.spread).toFixed(1)}` : parseFloat(l.spread).toFixed(1)) : "ATS"}
                               </span>
@@ -797,8 +797,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
                               fontSize: 12, color: aLost ? "#484f58" : "#c9d1d9",
                               textDecoration: aLost ? "line-through" : "none",
-                              opacity: aLost ? 0.5 : 1 }}>
-                              <span style={{ width: 18, fontSize: 12 }}>{aWon ? "✅" : aLost ? "❌" : "⏳"}</span>
+                              opacity: 1 }}>
+                              <span style={{ width: 18, fontSize: 12, fontSize: 12 }}>{aWon ? "✅" : aLost ? "❌" : "⏳"}</span>
                               <span style={{ flex: 1, fontWeight: 600 }}>
                                 {a.sport === "mlb" ? "⚾" : a.sport === "nba" ? "🏀" : "🏀"} {a.team}
                               </span>
@@ -834,8 +834,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
                               fontSize: 12, color: oLost ? "#484f58" : "#c9d1d9",
                               textDecoration: oLost ? "line-through" : "none",
-                              opacity: oLost ? 0.5 : 1 }}>
-                              <span style={{ width: 18, fontSize: 12 }}>{oWon ? "✅" : oLost ? "❌" : "⏳"}</span>
+                              opacity: 1 }}>
+                              <span style={{ width: 18, fontSize: 12, fontSize: 12 }}>{oWon ? "✅" : oLost ? "❌" : "⏳"}</span>
                               <span style={{ flex: 1, fontWeight: 600 }}>
                                 {o.side === "OVER" ? "▲" : "▼"} {o.side} {o.team}
                               </span>
