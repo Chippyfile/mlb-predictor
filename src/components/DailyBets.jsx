@@ -10,7 +10,7 @@ const getToday = () => { const d = new Date(new Date().toLocaleString("en-US", {
 
 function getStrategyMode() { return "active"; }
 const STRAT = {
-  active: { label: "🎯 ATS PARLAY — $100 on 2-3 Legs (55%+ hit, +102% EV)", color: "#2ea043", sub: "ATS legs at -110 each. 2-leg: 55% hit, 3.64x pay. Dog ML flagged as bonus." },
+  active: { label: "🎯 ATS PARLAY — $100 on 2-3 Legs (MLB first)", color: "#2ea043", sub: "Sport-weighted: MLB 75%+ → NBA/NCAA filler. ATS @ -110. Dog ML flagged as bonus." },
 };
 
 function spreadToML(sp) {
@@ -248,10 +248,13 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
     setGrading(false);
   }, [parlayHistory, loadHistory]);
 
-  // ── ATS Parlay Picks (top ATS picks across all sports) ──
+  // ── ATS Parlay Picks (sport-weighted: MLB > NBA > NCAA) ──
   const { parlayPicks, mlDogPicks } = useMemo(() => {
     const atsLegs = [];
     const dogs = [];
+
+    // Sport priority: MLB validated at 75%+ ATS, NBA ~70%, NCAA ~74%
+    const SPORT_PRIORITY = { mlb: 1, nba: 2, ncaa: 3 };
 
     // Collect all ATS picks from cron-computed data
     for (const [sport, icon, list] of [["ncaa", "🏀", games.ncaa], ["nba", "🏀", games.nba], ["mlb", "⚾", games.mlb]]) {
@@ -267,11 +270,12 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         atsLegs.push({
           team, spread: sp ? parseFloat(sp) : null, edge, units, side,
           sport: icon, sportKey: sport, gameId: g.gameId,
-          ml: -110, // ATS legs are always -110
+          ml: -110,
           matchup: `${a} @ ${h}`,
+          priority: SPORT_PRIORITY[sport] || 3,
         });
 
-        // ML dog detection: if the model's side has positive ML odds
+        // ML dog detection
         const pickedML = side === "HOME" ? g.odds?.homeML : g.odds?.awayML;
         if (pickedML && parseInt(pickedML) > 0) {
           dogs.push({
@@ -284,8 +288,10 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
       }
     }
 
-    // Sort by edge (highest first), take top MAX_LEGS
-    const sorted = atsLegs.sort((a, b) => b.edge - a.edge).slice(0, MAX_LEGS);
+    // Sort: MLB first, then by edge within each sport tier
+    const sorted = atsLegs
+      .sort((a, b) => a.priority !== b.priority ? a.priority - b.priority : b.edge - a.edge)
+      .slice(0, MAX_LEGS);
     return { parlayPicks: sorted, mlDogPicks: dogs };
   }, [games.ncaa, games.nba, games.mlb]);
 
