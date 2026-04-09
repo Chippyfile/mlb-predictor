@@ -256,18 +256,31 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
         // Helper: find prediction by team name when gameId is missing
         const betDate = bet.bet_date;
         const _teamMatchCache = {};
+        const _MLB_NAME_TO_ABBR = {
+          "angels":"LAA","diamondbacks":"ARI","d-backs":"ARI","orioles":"BAL","red sox":"BOS",
+          "cubs":"CHC","reds":"CIN","guardians":"CLE","indians":"CLE","rockies":"COL",
+          "tigers":"DET","astros":"HOU","royals":"KC","dodgers":"LAD","nationals":"WSH",
+          "mets":"NYM","athletics":"OAK","pirates":"PIT","padres":"SD","mariners":"SEA",
+          "giants":"SF","cardinals":"STL","rays":"TB","rangers":"TEX","blue jays":"TOR",
+          "twins":"MIN","phillies":"PHI","braves":"ATL","white sox":"CWS","marlins":"MIA",
+          "yankees":"NYY","brewers":"MIL",
+        };
+        function mlbNameToAbbr(name) {
+          const n = (name || "").toLowerCase();
+          return _MLB_NAME_TO_ABBR[n] || Object.entries(_MLB_NAME_TO_ABBR).find(([k]) => n.includes(k) || k.includes(n))?.[1] || n;
+        }
         async function findByTeamName(teamName, sport) {
           const cacheKey = `${sport}|${teamName}`;
           if (cacheKey in _teamMatchCache) return _teamMatchCache[cacheKey];
           const tn = (teamName || "").toLowerCase();
           let row = null;
           if (sport === "mlb") {
+            const abbr = mlbNameToAbbr(tn).toUpperCase();
             try {
               const all = await supabaseQuery(`/mlb_predictions?game_date=eq.${betDate}&result_entered=eq.true&select=game_pk,home_team,away_team,rl_correct,ou_correct`);
               for (const r of (all || [])) {
-                if ((r.home_team||"").toLowerCase().includes(tn) || (r.away_team||"").toLowerCase().includes(tn) || tn.includes((r.home_team||"").toLowerCase()) || tn.includes((r.away_team||"").toLowerCase())) {
-                  row = r; break;
-                }
+                const h = (r.home_team||"").toUpperCase(), a = (r.away_team||"").toUpperCase();
+                if (h === abbr || a === abbr) { row = r; break; }
               }
             } catch {}
           } else {
