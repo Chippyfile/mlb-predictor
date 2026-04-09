@@ -163,9 +163,12 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
+  const [saving, setSaving] = useState(false);
+
   // ── Save/update today's picks (allowed until first game starts) ──
   const saveParlay = useCallback(async (picks, allSports) => {
-    if (todayLocked) return;
+    if (todayLocked || saving) return;
+    setSaving(true);
     const odds = picks.length ? Math.pow(ATS_PARLAY_PAY, picks.length) : 0;
     // Collect all ATS and O/U signals across sports
     const allAts = [], allOu = [];
@@ -188,10 +191,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
     };
     try {
       if (todaySavedId) {
-        // Update existing row
         await supabaseQuery(`/parlay_bets?id=eq.${todaySavedId}`, "PATCH", data);
       } else {
-        // Insert new row
         data.legs_won = 0;
         data.actual_payout = 0;
         data.ats_record = {};
@@ -200,7 +201,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
       }
       await loadHistory();
     } catch(e) { console.error("[DailyBets] save:", e); }
-  }, [today, todayLocked, todaySavedId, loadHistory]);
+    setSaving(false);
+  }, [today, todayLocked, todaySavedId, loadHistory, saving]);
 
   // ── Grade pending parlays ──
   const gradeParlays = useCallback(async () => {
@@ -220,17 +222,19 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           const gid = leg.gameId;
           if (!gid) continue;
           let row = null;
-          for (const table of ["mlb_predictions", "ncaa_predictions", "nba_predictions"]) {
+          // MLB uses game_pk, NBA/NCAA use game_id
+          const sportKey = (leg.sportKey || "").toLowerCase();
+          if (sportKey === "mlb") {
             try {
-              const atsCol = table === "mlb_predictions" ? "rl_correct" : "ats_correct";
-              const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=${atsCol},result_entered&limit=1`);
-              if (res?.length) { row = { ...res[0], _atsCorrect: res[0][atsCol] }; break; }
-            } catch { /* try next table */ }
-            if (table === "mlb_predictions") {
+              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
+              if (res?.length) row = { ...res[0], _atsCorrect: res[0].rl_correct };
+            } catch {}
+          } else {
+            for (const table of ["ncaa_predictions", "nba_predictions"]) {
               try {
-                const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
-                if (res?.length) { row = { ...res[0], _atsCorrect: res[0].rl_correct }; break; }
-              } catch { /* continue */ }
+                const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ats_correct,result_entered&limit=1`);
+                if (res?.length) { row = { ...res[0], _atsCorrect: res[0].ats_correct }; break; }
+              } catch {}
             }
           }
           if (row?.result_entered) {
@@ -250,16 +254,17 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           const gid = pick.gameId;
           if (!gid) continue;
           let row = null;
-          for (const table of ["mlb_predictions", "ncaa_predictions", "nba_predictions"]) {
+          const sportKey = (pick.sport || pick.sportKey || "").toLowerCase();
+          if (sportKey === "mlb") {
             try {
-              const atsCol = table === "mlb_predictions" ? "rl_correct" : "ats_correct";
-              const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=${atsCol},result_entered&limit=1`);
-              if (res?.length) { row = { ...res[0], _atsCorrect: res[0][atsCol] }; break; }
+              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
+              if (res?.length) row = { ...res[0], _atsCorrect: res[0].rl_correct };
             } catch {}
-            if (table === "mlb_predictions") {
+          } else {
+            for (const table of ["ncaa_predictions", "nba_predictions"]) {
               try {
-                const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
-                if (res?.length) { row = { ...res[0], _atsCorrect: res[0].rl_correct }; break; }
+                const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ats_correct,result_entered&limit=1`);
+                if (res?.length) { row = { ...res[0], _atsCorrect: res[0].ats_correct }; break; }
               } catch {}
             }
           }
@@ -278,14 +283,16 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           const gid = pick.gameId;
           if (!gid) continue;
           let row = null;
-          for (const table of ["mlb_predictions", "ncaa_predictions", "nba_predictions"]) {
+          const sportKey = (pick.sport || pick.sportKey || "").toLowerCase();
+          if (sportKey === "mlb") {
             try {
-              const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ou_correct,result_entered&limit=1`);
-              if (res?.length) { row = res[0]; break; }
+              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=ou_correct,result_entered&limit=1`);
+              if (res?.length) row = res[0];
             } catch {}
-            if (table === "mlb_predictions") {
+          } else {
+            for (const table of ["ncaa_predictions", "nba_predictions"]) {
               try {
-                const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=ou_correct,result_entered&limit=1`);
+                const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ou_correct,result_entered&limit=1`);
                 if (res?.length) { row = res[0]; break; }
               } catch {}
             }
@@ -508,13 +515,13 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           <div style={{ fontSize: 9, color: "#484f58", marginTop: 4 }}>
             ATS legs · {parlayPicks.length === 2 ? "55% hit, +102% EV" : "41% hit, +188% EV"} · Top {parlayPicks.length} by edge
           </div>
-          <button onClick={() => saveParlay(parlayPicks, sports)} disabled={todayLocked}
+          <button onClick={() => saveParlay(parlayPicks, sports)} disabled={todayLocked || saving}
             style={{ marginTop: 10, width: "100%", padding: "10px 0", borderRadius: 8,
               border: todayLocked ? "1px solid #30363d" : "1px solid #2ea043",
               background: todayLocked ? "#161b22" : "linear-gradient(135deg, #2ea04322, #2ea04311)",
               color: todayLocked ? "#484f58" : "#2ea043", fontSize: 13, fontWeight: 800,
-              cursor: todayLocked ? "default" : "pointer", letterSpacing: 1,
-            }}>{todayLocked ? "🔒 LOCKED — games started" : todaySavedId ? "💾 UPDATE PICKS" : "💾 SAVE TODAY'S PICKS"}</button>
+              cursor: (todayLocked || saving) ? "default" : "pointer", letterSpacing: 1,
+            }}>{todayLocked ? "🔒 LOCKED — games started" : saving ? "⏳ SAVING..." : todaySavedId ? "💾 UPDATE PICKS" : "💾 SAVE TODAY'S PICKS"}</button>
         </div>
       )}
 
