@@ -249,7 +249,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
   }, [parlayHistory, loadHistory]);
 
   // ── ATS Parlay Picks (sport-weighted: MLB > NBA > NCAA) ──
-  const { parlayPicks, mlDogPicks } = useMemo(() => {
+  const { parlayPicks, mlDogPicks, mlSignals } = useMemo(() => {
     const atsLegs = [];
     const dogs = [];
     const mlSignals = [];
