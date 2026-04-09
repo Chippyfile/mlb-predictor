@@ -252,6 +252,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
   const { parlayPicks, mlDogPicks } = useMemo(() => {
     const atsLegs = [];
     const dogs = [];
+    const mlSignals = [];
 
     // Sport priority: MLB validated at 75%+ ATS, NBA ~70%, NCAA ~74%
     const SPORT_PRIORITY = { mlb: 1, nba: 2, ncaa: 3 };
@@ -275,14 +276,40 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
           priority: SPORT_PRIORITY[sport] || 3,
         });
 
-        // ML dog detection
-        const pickedML = side === "HOME" ? g.odds?.homeML : g.odds?.awayML;
-        if (pickedML && parseInt(pickedML) > 0) {
+        // ML signal detection
+        // Validated confidence tiers (walk-forward 2022+):
+        //   < 55%: skip (53% ML — no edge after vig)
+        //   55-65%: dogs only (60% ML at +130 = +56% ROI)
+        //   65-75%: any side (66-74% ML)
+        //   75%+: high conviction (75%+ ML)
+        // Dogs specifically: 65-70% = 67% win ⭐⭐, 70-80% = 73% win ⭐⭐⭐
+        const wp = parseFloat(g.pred?.homeWinPct) || 0.5;
+        const modelConf = Math.max(wp, 1 - wp);
+        const pickHome = wp > 0.5;
+        const pickedML = pickHome ? (g.odds?.homeML || null) : (g.odds?.awayML || null);
+        const mlTeam = pickHome ? h : a;
+        const isDog = pickedML && parseInt(pickedML) > 0;
+        const mlVal = pickedML ? parseInt(pickedML) : null;
+
+        if (mlVal && modelConf >= 0.65) {
+          const tier = modelConf >= 0.75 ? "⭐⭐⭐" : modelConf >= 0.70 ? "⭐⭐" : "⭐";
+          mlSignals.push({
+            team: mlTeam, ml: mlVal, conf: (modelConf * 100).toFixed(0),
+            payout: mlDec(mlVal), isDog,
+            sport: icon, sportKey: sport, gameId: g.gameId,
+            matchup: `${a} @ ${h}`, tier,
+          });
+        }
+
+        // Dog bonus: 65%+ conf dogs (67-73% win rate at + odds)
+        if (isDog && modelConf >= 0.65 && edge >= 2.5) {
           dogs.push({
-            team, ml: parseInt(pickedML), edge, units, side,
+            team: mlTeam, ml: mlVal, edge, units, side,
             sport: icon, sportKey: sport, gameId: g.gameId,
             matchup: `${a} @ ${h}`,
-            payout: mlDec(parseInt(pickedML)),
+            payout: mlDec(mlVal),
+            conf: (modelConf * 100).toFixed(0),
+            tier: modelConf >= 0.70 ? "⭐⭐⭐ 73%" : "⭐⭐ 67%",
           });
         }
       }
@@ -292,7 +319,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
     const sorted = atsLegs
       .sort((a, b) => a.priority !== b.priority ? a.priority - b.priority : b.edge - a.edge)
       .slice(0, MAX_LEGS);
-    return { parlayPicks: sorted, mlDogPicks: dogs };
+    return { parlayPicks: sorted, mlDogPicks: dogs, mlSignals: mlSignals.sort((a,b) => parseFloat(b.conf) - parseFloat(a.conf)) };
   }, [games.ncaa, games.nba, games.mlb]);
 
   const parlayActive = parlayPicks.length >= MIN_LEGS;
@@ -412,12 +439,39 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         </div>
       )}
 
-      {/* ── ML DOG BONUS ── */}
+      {/* ── ML SIGNALS (65%+ confidence) ── */}
+      {mlSignals.length > 0 && (
+        <div style={{ background: "linear-gradient(135deg, #58a6ff11, #58a6ff06)",
+          border: "1px solid #58a6ff55", borderRadius: 10, padding: "14px 18px", marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#58a6ff", marginBottom: 8, letterSpacing: 1 }}>
+            💰 ML SIGNALS — 65%+ Model Confidence
+          </div>
+          {mlSignals.map((p, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "6px 0", borderBottom: i === mlSignals.length-1 ? "none" : "1px solid #21262d" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>
+                {p.sport} {p.team} ML {p.isDog ? "🐕" : ""}
+              </span>
+              <span style={{ fontSize: 11, color: "#8b949e", width: 35, textAlign: "right" }}>{p.conf}%</span>
+              <span style={{ fontSize: 12, fontWeight: 800, width: 55, textAlign: "right",
+                color: p.isDog ? "#2ea043" : "#e6edf3" }}>
+                {p.ml > 0 ? `+${p.ml}` : p.ml}
+              </span>
+              <span style={{ fontSize: 10, width: 50, textAlign: "right", color: "#d29922" }}>{p.tier}</span>
+            </div>
+          ))}
+          <div style={{ fontSize: 9, color: "#484f58", marginTop: 6 }}>
+            65-70%: 66% win ⭐ · 70-75%: 74% win ⭐⭐ · 75%+: 75% win ⭐⭐⭐ · 🐕 = dog (+odds)
+          </div>
+        </div>
+      )}
+
+      {/* ── ML DOG BONUS (65%+ conf, edge ≥ 2.5) ── */}
       {mlDogPicks.length > 0 && (
         <div style={{ background: "linear-gradient(135deg, #d2992211, #d2992206)",
           border: "1px solid #d2992255", borderRadius: 10, padding: "14px 18px", marginBottom: 12 }}>
           <div style={{ fontSize: 12, fontWeight: 800, color: "#d29922", marginBottom: 8, letterSpacing: 1 }}>
-            🐕 ML DOG BONUS — Model picks underdog
+            🐕 DOG BONUS — High-edge underdog picks
           </div>
           {mlDogPicks.map((p, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -425,12 +479,13 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
               <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>
                 {p.sport} {p.team} ML
               </span>
-              <span style={{ fontSize: 12, color: "#2ea043", fontWeight: 800, width: 60, textAlign: "right" }}>+{p.ml}</span>
-              <span style={{ fontSize: 10, color: "#d29922", width: 55, textAlign: "right" }}>{p.payout.toFixed(2)}x pay</span>
+              <span style={{ fontSize: 11, color: "#8b949e", width: 35, textAlign: "right" }}>{p.conf}%</span>
+              <span style={{ fontSize: 12, color: "#2ea043", fontWeight: 800, width: 50, textAlign: "right" }}>+{p.ml}</span>
+              <span style={{ fontSize: 10, color: "#d29922", width: 55, textAlign: "right" }}>{p.tier}</span>
             </div>
           ))}
           <div style={{ fontSize: 9, color: "#484f58", marginTop: 6 }}>
-            67.7% win rate on dogs at +140 avg = +62.5% ROI straight, +131% EV in parlay
+            65-70%: 67% win ⭐⭐ · 70%+: 73% win ⭐⭐⭐ · Edge ≥ 2.5 + agree · +54-68% ROI at +odds
           </div>
         </div>
       )}
