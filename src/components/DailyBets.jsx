@@ -253,27 +253,73 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
         }
 
         // Grade ATS picks
+        // Helper: find prediction by team name when gameId is missing
+        const betDate = bet.bet_date;
+        const _teamMatchCache = {};
+        async function findByTeamName(teamName, sport) {
+          const cacheKey = `${sport}|${teamName}`;
+          if (cacheKey in _teamMatchCache) return _teamMatchCache[cacheKey];
+          const tn = (teamName || "").toLowerCase();
+          let row = null;
+          if (sport === "mlb") {
+            try {
+              const all = await supabaseQuery(`/mlb_predictions?game_date=eq.${betDate}&result_entered=eq.true&select=game_pk,home_team,away_team,rl_correct,ou_correct`);
+              for (const r of (all || [])) {
+                if ((r.home_team||"").toLowerCase().includes(tn) || (r.away_team||"").toLowerCase().includes(tn) || tn.includes((r.home_team||"").toLowerCase()) || tn.includes((r.away_team||"").toLowerCase())) {
+                  row = r; break;
+                }
+              }
+            } catch {}
+          } else {
+            for (const table of ["nba_predictions", "ncaa_predictions"]) {
+              try {
+                const all = await supabaseQuery(`/${table}?game_date=eq.${betDate}&result_entered=eq.true&select=game_id,home_team,away_team,ats_correct,ou_correct`);
+                for (const r of (all || [])) {
+                  if ((r.home_team||"").toLowerCase().includes(tn) || (r.away_team||"").toLowerCase().includes(tn) || tn.includes((r.home_team||"").toLowerCase()) || tn.includes((r.away_team||"").toLowerCase())) {
+                    row = r; break;
+                  }
+                }
+                if (row) break;
+              } catch {}
+            }
+          }
+          _teamMatchCache[cacheKey] = row;
+          return row;
+        }
+
         let atsW = 0, atsL = 0;
         const updatedAts = [...ats];
         for (let ai = 0; ai < updatedAts.length; ai++) {
           const pick = updatedAts[ai];
           const gid = pick.gameId;
-          if (!gid) continue;
           let row = null;
           const sportKey = (pick.sportKey || (pick.sport === "⚾" ? "mlb" : (pick.sport === "mlb" ? "mlb" : ""))).toLowerCase();
-          if (sportKey === "mlb") {
-            try {
-              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
-              if (res?.length) row = { ...res[0], _atsCorrect: res[0].rl_correct };
-            } catch {}
-          } else {
-            for (const table of ["ncaa_predictions", "nba_predictions"]) {
+
+          if (gid) {
+            // Direct lookup by gameId
+            if (sportKey === "mlb") {
               try {
-                const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ats_correct,result_entered&limit=1`);
-                if (res?.length) { row = { ...res[0], _atsCorrect: res[0].ats_correct }; break; }
+                const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
+                if (res?.length) row = { ...res[0], _atsCorrect: res[0].rl_correct };
               } catch {}
+            } else {
+              for (const table of ["ncaa_predictions", "nba_predictions"]) {
+                try {
+                  const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ats_correct,result_entered&limit=1`);
+                  if (res?.length) { row = { ...res[0], _atsCorrect: res[0].ats_correct }; break; }
+                } catch {}
+              }
             }
           }
+
+          // Fallback: match by team name + date
+          if (!row && pick.team) {
+            const fallback = await findByTeamName(pick.team, sportKey || (pick.sport === "nba" ? "nba" : pick.sport === "ncaa" ? "ncaa" : "mlb"));
+            if (fallback) {
+              row = { result_entered: true, _atsCorrect: fallback.rl_correct ?? fallback.ats_correct };
+            }
+          }
+
           if (row?.result_entered) {
             const correct = !!row._atsCorrect;
             updatedAts[ai] = { ...pick, correct };
@@ -287,21 +333,31 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
         for (let oi = 0; oi < updatedOu.length; oi++) {
           const pick = updatedOu[oi];
           const gid = pick.gameId;
-          if (!gid) continue;
           let row = null;
           const sportKey = (pick.sportKey || (pick.sport === "⚾" ? "mlb" : (pick.sport === "mlb" ? "mlb" : ""))).toLowerCase();
-          if (sportKey === "mlb") {
-            try {
-              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=ou_correct,result_entered&limit=1`);
-              if (res?.length) row = res[0];
-            } catch {}
-          } else {
-            for (const table of ["ncaa_predictions", "nba_predictions"]) {
+
+          if (gid) {
+            if (sportKey === "mlb") {
               try {
-                const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ou_correct,result_entered&limit=1`);
-                if (res?.length) { row = res[0]; break; }
+                const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=ou_correct,result_entered&limit=1`);
+                if (res?.length) row = res[0];
               } catch {}
+            } else {
+              for (const table of ["ncaa_predictions", "nba_predictions"]) {
+                try {
+                  const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ou_correct,result_entered&limit=1`);
+                  if (res?.length) { row = res[0]; break; }
+                } catch {}
+              }
             }
+          }
+
+          // Fallback: match by team name + date (team is "Home / Away")
+          if (!row && pick.team) {
+            const firstTeam = pick.team.split("/")[0].trim().toLowerCase();
+            const sp = sportKey || (pick.sport === "nba" ? "nba" : pick.sport === "ncaa" ? "ncaa" : "mlb");
+            const fallback = await findByTeamName(firstTeam, sp);
+            if (fallback) row = { result_entered: true, ou_correct: fallback.ou_correct };
           }
           if (row?.result_entered && row.ou_correct) {
             const pickSide = pick.side?.toUpperCase();
