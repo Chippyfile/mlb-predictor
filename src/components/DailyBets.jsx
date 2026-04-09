@@ -266,8 +266,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
         const h = g.homeTeam || "Home", a = g.awayTeam || "Away";
         const side = g._ats.side;
         const team = side === "HOME" ? h : a;
-        // Spread from the bet team's perspective (home spread must be negated for away picks)
-        const rawSp = g._ats.spread ?? g.odds?.homeSpread ?? null;
+        // Spread from the bet team's perspective — prefer CURRENT market over stored pick spread
+        const rawSp = g.odds?.homeSpread ?? g._ats.spread ?? null;
         const sp = rawSp != null ? (side === "HOME" ? parseFloat(rawSp) : -parseFloat(rawSp)) : null;
         const edge = parseFloat(g._ats.disagree || 0);
         const units = g._ats.units;
@@ -340,8 +340,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
       if (g._ats && g._ats.units) {
         const side = g._ats.side;
         const team = side === "HOME" ? h : a;
-        // Spread from the bet team's perspective (home spread must be negated for away picks)
-        const rawSp = g._ats.spread ?? g.odds?.homeSpread ?? null;
+        // Spread from the bet team's perspective — prefer CURRENT market over stored pick spread
+        const rawSp = g.odds?.homeSpread ?? g._ats.spread ?? null;
         const sp = rawSp != null ? (side === "HOME" ? parseFloat(rawSp) : -parseFloat(rawSp)) : null;
         ats.push({ team, spread: sp, units: g._ats.units, edge: parseFloat(g._ats.disagree || 0), side });
       }
