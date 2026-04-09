@@ -67,9 +67,9 @@ export function buildStoredSignals({ pred, odds, sport = "nba", homeName = "Home
     const unitLabel = isMLB ? "run" : "pt";
     const sideLabel = storedSide === "HOME" ? homeName : awayName;
     const tierLabels = {
-      3: { label: "MAX (3u)", color: "green", verdict: "GO", acc: sport === "ncaa" ? "~97%" : sport === "nba" ? "~75%" : "~71%" },
-      2: { label: "STRONG (2u)", color: "yellow", verdict: "GO", acc: sport === "ncaa" ? "~90%" : sport === "nba" ? "~74%" : "~71%" },
-      1: { label: "BET (1u)", color: "muted", verdict: "GO", acc: sport === "ncaa" ? "~74%" : sport === "nba" ? "~70%" : "~68%" },
+      3: { label: "MAX (3u)", color: "green", verdict: "GO", acc: sport === "ncaa" ? "~97%" : sport === "nba" ? "~75%" : "~79%" },
+      2: { label: "STRONG (2u)", color: "yellow", verdict: "GO", acc: sport === "ncaa" ? "~90%" : sport === "nba" ? "~74%" : "~79%" },
+      1: { label: "BET (1u)", color: "muted", verdict: "GO", acc: sport === "ncaa" ? "~74%" : sport === "nba" ? "~70%" : "~76%" },
     };
     const tl = tierLabels[storedUnits] || tierLabels[1];
     spreadSignal = {
