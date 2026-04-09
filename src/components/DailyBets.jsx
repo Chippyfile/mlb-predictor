@@ -181,7 +181,6 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
       result: "PENDING",
       ml_cap: 0,
       conf_gate: 0,
-      parlay_type: "ATS",
       ats_picks: allAts,
       ou_picks: allOu,
     };
