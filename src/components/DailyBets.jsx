@@ -264,7 +264,9 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         const h = g.homeTeam || "Home", a = g.awayTeam || "Away";
         const side = g._ats.side;
         const team = side === "HOME" ? h : a;
-        const sp = g._ats.spread || (side === "HOME" ? g.odds?.homeSpread : -(g.odds?.homeSpread || 0));
+        // Spread from the bet team's perspective (home spread must be negated for away picks)
+        const rawSp = g._ats.spread ?? g.odds?.homeSpread ?? null;
+        const sp = rawSp != null ? (side === "HOME" ? parseFloat(rawSp) : -parseFloat(rawSp)) : null;
         const edge = parseFloat(g._ats.disagree || 0);
         const units = g._ats.units;
 
@@ -336,8 +338,10 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
       if (g._ats && g._ats.units) {
         const side = g._ats.side;
         const team = side === "HOME" ? h : a;
-        const sp = g._ats.spread || (side === "HOME" ? g.odds?.homeSpread : -(g.odds?.homeSpread || 0));
-        ats.push({ team, spread: sp ? parseFloat(sp) : null, units: g._ats.units, edge: parseFloat(g._ats.disagree || 0), side });
+        // Spread from the bet team's perspective (home spread must be negated for away picks)
+        const rawSp = g._ats.spread ?? g.odds?.homeSpread ?? null;
+        const sp = rawSp != null ? (side === "HOME" ? parseFloat(rawSp) : -parseFloat(rawSp)) : null;
+        ats.push({ team, spread: sp, units: g._ats.units, edge: parseFloat(g._ats.disagree || 0), side });
       }
 
       // O/U from cron (Supabase is sole source of truth)
