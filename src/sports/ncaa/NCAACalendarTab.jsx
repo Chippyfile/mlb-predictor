@@ -339,13 +339,28 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
         win_pct_home: parseFloat(mlResult.ml_win_prob_home.toFixed(4)),
         ml_win_prob_home: parseFloat(mlResult.ml_win_prob_home.toFixed(4)),
         rating_synced_at: new Date().toISOString(),
+        refreshed_at: new Date().toISOString(),
+        ml_feature_coverage: mlResult.feature_coverage || null,
       };
-      if (mktSpread != null) {
+      // ATS: prefer backend-computed values (server-side CatBoost), fall back to local
+      if (mlResult.ats_units != null) {
+        patch.ats_units = mlResult.ats_units || 0;
+        patch.ats_side = mlResult.ats_side || null;
+        patch.ats_disagree = mlResult.ats_disagree ?? refreshAts.disagree;
+        patch.ats_pick_spread = mlResult.ats_pick_spread ?? refreshAts.pickSpread;
+      } else if (mktSpread != null) {
         patch.ats_disagree = refreshAts.disagree;
         patch.ats_units = refreshAts.units ?? 0;
         patch.ats_side = refreshAts.side ?? null;
         patch.ats_pick_spread = refreshAts.pickSpread ?? null;
       }
+      // O/U from backend
+      if (mlResult.ou_pick != null) patch.ou_pick = mlResult.ou_pick;
+      if (mlResult.ou_tier != null) patch.ou_tier = mlResult.ou_tier;
+      if (mlResult.ou_predicted_total != null) patch.ou_predicted_total = parseFloat(mlResult.ou_predicted_total.toFixed(1));
+      if (mlResult.ou_edge != null) patch.ou_edge = parseFloat(mlResult.ou_edge.toFixed(1));
+      if (mlResult.ou_res_avg != null) patch.ou_res_avg = parseFloat(mlResult.ou_res_avg.toFixed(3));
+      if (mktSpread != null) patch.market_spread_home = mktSpread;
       await supabaseQuery(`/ncaa_predictions?game_id=eq.${game.gameId}`, "PATCH", patch).catch(() => {});
     } catch (e) {
       console.warn("refreshGame error:", e);

@@ -161,19 +161,11 @@ export async function nbaAutoSync(onProgress) {
     const f = await nbaFillFinalScores(pending);
     if (f) onProgress?.(`🏀 ${f} NBA result(s) recorded`);
   }
-  const allDates = [];
-  const cur = new Date(_nbaSeason);
-  while (cur.toISOString().split("T")[0] <= today) {
-    allDates.push(cur.toISOString().split("T")[0]);
-    cur.setDate(cur.getDate() + 1);
-  }
-  const todayOdds = (await fetchOdds("basketball_nba"))?.games || [];
-  let newPred = 0;
-  for (const dateStr of allDates) {
-    const games = await fetchNBAGamesForDate(dateStr);
-    if (!games.length) { await _sleep(50); continue; }
-    const unsaved = games.filter(g => !savedKeys.has(g.gameId || `${dateStr}|${g.homeAbbr}|${g.awayAbbr}`));
-    if (!unsaved.length) { await _sleep(50); continue; }
+  // ── New predictions are created by the server-side cron only ──
+  // Frontend refresh (CalendarTab) PATCHes existing rows with updated data.
+  // This prevents dual-write issues and ensures v28 ATS pipeline always runs.
+  onProgress?.("🏀 NBA sync complete");
+}    if (!unsaved.length) { await _sleep(50); continue; }
     const isToday = dateStr === today;
     const rows = (await Promise.all(unsaved.map(async g => {
       const [hs, as_] = await Promise.all([fetchNBATeamStats(g.homeAbbr), fetchNBATeamStats(g.awayAbbr)]);

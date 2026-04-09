@@ -493,57 +493,10 @@ export async function ncaaAutoSync(onProgress) {
     const filled = await ncaaFillFinalScores(pendingResults);
     if (filled) onProgress?.(`🏀 ${filled} NCAA result(s) recorded`);
   }
-  const allDates = [];
-  const cur = new Date(_ncaaSeasonStart);
-  const todayDate = new Date(today);
-
-  // Optimization: find the latest date with saved predictions — only scan from there
-  // This avoids 100+ ESPN scoreboard calls for dates already fully covered
-  const existingDates = new Set((existing || []).map(r => r.game_date));
-  let scanStart = _ncaaSeasonStart;
-  if (existingDates.size > 0) {
-    const sortedDates = [...existingDates].sort();
-    // Start scanning 2 days before the latest existing date (catch stragglers)
-    const latestExisting = new Date(sortedDates[sortedDates.length - 1]);
-    latestExisting.setDate(latestExisting.getDate() - 2);
-    const candidateStart = latestExisting.toISOString().split("T")[0];
-    if (candidateStart > _ncaaSeasonStart) scanStart = candidateStart;
-  }
-  const scanCur = new Date(scanStart);
-  while (scanCur <= todayDate) { allDates.push(scanCur.toISOString().split("T")[0]); scanCur.setDate(scanCur.getDate() + 1); }
-  let newPred = 0, datesChecked = 0;
-  for (const dateStr of allDates) {
-    const games = await fetchNCAAGamesForDate(dateStr);
-    datesChecked++;
-    if (datesChecked % 14 === 0) onProgress?.(`🏀 Scanning ${dateStr} (${datesChecked}/${allDates.length})… ${newPred} new`);
-    if (!games.length) { await _sleep(80); continue; }
-    const unsaved = games.filter(g => !savedKeys.has(g.gameId || `${dateStr}|${g.homeTeamId}|${g.awayTeamId}`));
-    if (!unsaved.length) { await _sleep(80); continue; }
-    // v18: Use batchProcess for parallel game processing
-    // ESPN odds come from detectMissingStarters inside ncaaBuildPredictionRow — no separate fetch needed
-    const rows = await batchProcess(unsaved, (g) => {
-      return ncaaBuildPredictionRow(g, dateStr);
-    }, 5, 100);
-    if (rows.length) {
-      // Normalize keys across all rows for batch insert
-      const allKeys = new Set();
-      rows.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
-      const normalizedRows = rows.map(r => {
-        const normalized = {};
-        for (const k of allKeys) normalized[k] = r[k] !== undefined ? r[k] : null;
-        return normalized;
-      });
-      await supabaseQuery("/ncaa_predictions", "UPSERT", normalizedRows, "game_id");
-      newPred += rows.length;
-      const ns = await supabaseQuery(
-        `/ncaa_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_id,home_team_id,away_team_id,ou_total,ou_predicted_total,ou_pick,ou_tier,ou_res_avg,market_ou_total,market_spread_home,result_entered,game_date,win_pct_home,spread_home,pred_home_score,pred_away_score,ats_units,ats_side`
-      );
-      if (ns?.length) await ncaaFillFinalScores(ns);
-      rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
-    }
-    await _sleep(250);
-  }
-  onProgress?.(newPred ? `🏀 NCAA sync complete — ${newPred} new predictions` : "🏀 NCAA up to date");
+  // ── New predictions are created by the server-side cron only ──
+  // Frontend refresh (CalendarTab) PATCHes existing rows with updated data.
+  // This prevents dual-write issues and ensures server-side ATS pipeline always runs.
+  onProgress?.("🏀 NCAA sync complete");
 }
 
 export async function ncaaFullBackfill(onProgress, signal) {

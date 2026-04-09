@@ -387,23 +387,19 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
         park_factor: ds.park_factor ?? null,
       };
 
-      // Compute ATS from current odds
+      // ATS: use v9 sniper from backend (full pipeline with lineup + ump features)
       const mktSpread = game.odds?.homeSpread ?? null;
       if (mktSpread !== null) {
-        const mktImplied = -mktSpread;
-        const disagree = Math.abs(margin - mktImplied);
-        const dirFlip = (margin > 0) !== (mktImplied > 0) && Math.abs(margin) > 0.25 && Math.abs(mktImplied) > 0.25;
-        // Tightened thresholds: flip=1.0/1.5/2.0, same=1.5/2.0/2.5
-        const atsUnits = dirFlip
-          ? (disagree >= 2.0 ? 3 : (disagree >= 1.5 ? 2 : (disagree >= 1.0 ? 1 : 0)))
-          : (disagree >= 2.5 ? 3 : (disagree >= 2.0 ? 2 : (disagree >= 1.5 ? 1 : 0)));
-        if (atsUnits > 0) {
-          patch.ats_disagree = parseFloat(disagree.toFixed(2));
-          patch.ats_units = atsUnits;
-          patch.ats_side = margin > mktImplied ? "HOME" : "AWAY";
-          patch.ats_direction_flip = dirFlip;
-        }
         patch.market_spread_home = mktSpread;
+      }
+      if (mlResult.ats_v9_units > 0) {
+        patch.ats_side = mlResult.ats_v9_side;
+        patch.ats_units = mlResult.ats_v9_units;
+        patch.ats_models_agree = mlResult.ats_v9_models_agree ?? null;
+        patch.ats_model_version = "v9.1";
+        patch.ats_disagree = mlResult.ats_v9_edge ?? null;
+      } else {
+        patch.ats_units = 0;
       }
 
       // O/U pick — use backend v2 model result directly
@@ -416,6 +412,10 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
       if (mlResult.market_ou_total) patch.market_ou_total = mlResult.market_ou_total;
       if (mlResult.sp_form_combined != null) patch.sp_form_combined = mlResult.sp_form_combined;
       if (pt) patch.pred_total = parseFloat(pt.toFixed(2));
+
+      // Metadata
+      patch.refreshed_at = new Date().toISOString();
+      patch.lineup_available = mlResult.lineup_available ?? false;
 
       // Compute ML edge
       const hml = game.odds?.homeML ?? null;

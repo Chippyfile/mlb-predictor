@@ -597,40 +597,8 @@ export async function mlbAutoSync(onProgress) {
     if (filled) onProgress?.(`⚾ ${filled} MLB result(s) recorded`);
   }
 
-  let newPred = 0;
-  for (const dateStr of allDates) {
-    const schedule = await fetchMLBScheduleForDate(dateStr);
-    if (!schedule.length) continue;
-    const unsaved = schedule.filter(g => {
-      const ha = normAbbr(g.homeAbbr || mlbTeamById(g.homeTeamId)?.abbr);
-      const aa = normAbbr(g.awayAbbr || mlbTeamById(g.awayTeamId)?.abbr);
-      // Only predict games that haven't started — predictions for Final/Live
-      // games use post-game stats and produce misleading results
-      const isPreGame = g.status !== "Final" && g.status !== "Live";
-      return isPreGame && !savedKeys.has(`${dateStr}|${aa}@${ha}`);
-    });
-    if (!unsaved.length) continue;
-    const rows = [];
-    for (const g of unsaved) {
-      const row = await mlbBuildPredictionRow(g, dateStr, oddsData).catch(() => null);
-      if (row) rows.push(row);
-    }
-    if (rows.length) {
-      // Normalize keys across all rows (Supabase batch POST requires identical keys)
-      const allKeys = new Set();
-      rows.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
-      const normalizedRows = rows.map(r => {
-        const normalized = {};
-        for (const k of allKeys) normalized[k] = r[k] !== undefined ? r[k] : null;
-        return normalized;
-      });
-      await supabaseQuery("/mlb_predictions", "POST", normalizedRows);
-      newPred += rows.length;
-      const ns = await supabaseQuery(
-        `/mlb_predictions?game_date=eq.${dateStr}&result_entered=eq.false&select=id,game_pk,home_team,away_team,ou_total,result_entered,game_date`
-      );
-      if (ns?.length) await mlbFillFinalScores(ns, oddsData);
-    }
-  }
-  onProgress?.(newPred ? `⚾ MLB sync complete — ${newPred} new` : "⚾ MLB up to date");
+  // ── New predictions are created by the server-side cron only ──
+  // Frontend refresh (CalendarTab) PATCHes existing rows with updated data.
+  // This prevents dual-write issues and ensures v9 ATS pipeline always runs.
+  onProgress?.("⚾ MLB sync complete");
 }

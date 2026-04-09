@@ -276,6 +276,10 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         patch.ats_units = 0;
       }
 
+      // Metadata
+      patch.refreshed_at = new Date().toISOString();
+      if (game.odds?.homeSpread != null) patch.market_spread_home = game.odds.homeSpread;
+
       await supabaseQuery(`/nba_predictions?game_id=eq.${game.gameId}`, "PATCH", patch).catch(e => {
         console.warn("[NBA refresh] Supabase save failed:", e);
       });
