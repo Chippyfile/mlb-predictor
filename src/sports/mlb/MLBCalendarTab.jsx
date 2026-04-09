@@ -213,7 +213,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
   );
 };
 
-export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
+export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) {
   const todayStr = pstTodayStr();
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
@@ -438,10 +438,11 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded }) {
 
       // Reload from Supabase to get consistent state
       await loadGames(dateStr);
+      onRefresh?.();
       console.log(`[MLB REFRESH] ${game.homeAbbr}: wp=${wp.toFixed(3)}, ats=${patch.ats_units ?? 0}u, saved to Supabase`);
     } catch (e) { console.warn("[MLB refresh] error:", e); }
     setRefreshingGame(null);
-  }, [dateStr, loadGames]);
+  }, [dateStr, loadGames, onRefresh]);
   useEffect(() => { loadGames(dateStr); }, [dateStr]);
 
   const getBannerInfo = (pred, odds, hasStarter) => {
@@ -928,7 +929,7 @@ export function MLBSection({ mlbGames, setMlbGames, calibrationMLB, setCalibrati
           style={{ marginLeft: "auto", background: "#161b22", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 14px", cursor: "pointer", fontSize: 10 }}
         >⟳ Auto Sync</button>
       </div>
-      {tab === "calendar" && <MLBCalendarTab calibrationFactor={calibrationMLB} onGamesLoaded={setMlbGames} />}
+      {tab === "calendar" && <MLBCalendarTab calibrationFactor={calibrationMLB} onGamesLoaded={setMlbGames} onRefresh={() => setRefreshKey(k => k + 1)} />}
       {tab === "accuracy" && <AccuracyDashboard table="mlb_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationMLB} spreadLabel="Run Line" />}
       {tab === "history" && <HistoryTab table="mlb_predictions" refreshKey={refreshKey} />}
       {tab === "parlay" && <ParlayBuilder mlbGames={mlbGames} ncaaGames={[]} />}

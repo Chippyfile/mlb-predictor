@@ -98,7 +98,7 @@ function mapMLB(rows) { return rows.filter(r => r.pred_home_runs != null || r.sp
 function unitColor(u) { return u >= 3 ? "#2ea043" : u >= 2 ? "#58a6ff" : "#6e7681"; }
 function confColor(c) { return c >= 80 ? "#2ea043" : c >= 70 ? "#58a6ff" : c >= 60 ? "#d29922" : "#8b949e"; }
 
-export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
+export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refreshKey }) {
   const today = getToday(), mode = getStrategyMode(), strat = STRAT[mode];
   const [games, setGames] = useState({ ncaa: [], nba: [], mlb: [] });
   const [syncing, setSyncing] = useState({});
@@ -127,6 +127,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
   }, [syncSport]);
 
   useEffect(() => { syncAll(); }, []);
+  // Re-fetch from Supabase when CalendarTab refreshes a game (bumps refreshKey)
+  useEffect(() => { if (refreshKey) syncAll(); }, [refreshKey]);
 
   // ── Parlay History: load from Supabase ──
   const loadHistory = useCallback(async () => {
@@ -397,6 +399,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
           </button>
         ))}
         {lastSync && <span style={{ fontSize: 9, color: "#484f58" }}>Last: {lastSync}</span>}
+        <button onClick={syncAll} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: "2px 6px" }} title="Refresh all">🔄</button>
       </div>
 
       {/* Strategy card */}

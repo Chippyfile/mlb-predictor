@@ -171,6 +171,7 @@ export default function App() {
             setNcaaGames={setNcaaGames}
             setNbaGames={setNbaGames}
             setMlbGames={setMlbGames}
+            refreshKey={refreshKey}
           />
         )}
 

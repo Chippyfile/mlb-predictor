@@ -225,7 +225,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
 // ─────────────────────────────────────────────────────────────
 // NBACalendarTab
 // ─────────────────────────────────────────────────────────────
-export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
+export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) {
   const todayStr = pstTodayStr();
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
@@ -327,8 +327,9 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded }) {
         };
       }));
     } catch (e) { console.warn("NBA refreshGame error:", e); }
+    onRefresh?.();
     setRefreshingGame(null);
-  }, [dateStr]);
+  }, [dateStr, onRefresh]);
 
   const load = useCallback(async (d) => {
     setLoading(true); setGames([]);
@@ -1006,7 +1007,7 @@ export function NBASection({ nbaGames, setNbaGames, calibrationNBA, setCalibrati
         </div>
       </div>
       {syncMsg && <div style={{ background: "#0d1a10", border: "1px solid #1a3a1a", borderRadius: 7, padding: "8px 14px", marginBottom: 12, fontSize: 11, color: C.green, fontFamily: "monospace" }}>{syncMsg}</div>}
-      {tab === "calendar" && <NBACalendarTab calibrationFactor={calibrationNBA} onGamesLoaded={setNbaGames} />}
+      {tab === "calendar" && <NBACalendarTab calibrationFactor={calibrationNBA} onGamesLoaded={setNbaGames} onRefresh={() => setRefreshKey(k => k + 1)} />}
       {tab === "accuracy" && <AccuracyDashboard table="nba_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNBA} spreadLabel="Spread" />}
       {tab === "history" && <HistoryTab table="nba_predictions" refreshKey={refreshKey} />}
       {tab === "parlay" && <ParlayBuilder mlbGames={[]} ncaaGames={[]} nbaGames={nbaGames} />}

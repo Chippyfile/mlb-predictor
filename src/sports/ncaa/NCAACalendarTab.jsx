@@ -249,7 +249,7 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
   );
 };
 
-export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
+export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) {
   const todayStr = pstTodayStr();
   const [dateStr, setDateStr] = useState(todayStr);
   const [games, setGames] = useState([]);
@@ -365,8 +365,9 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded }) {
     } catch (e) {
       console.warn("refreshGame error:", e);
     }
+    onRefresh?.();
     setRefreshingGame(null);
-  }, [dateStr]);
+  }, [dateStr, onRefresh]);
 
   const loadGames = useCallback(async (d) => {
     setLoading(true);
@@ -1454,7 +1455,7 @@ export function NCAASection({ ncaaGames, setNcaaGames, calibrationNCAA, setCalib
           NCAA Men's Basketball · Season starts {_ncaaSeasonStart} · ESPN API (free, no key)
         </div>
       )}
-      {tab === "calendar" && <NCAACalendarTab calibrationFactor={calibrationNCAA} onGamesLoaded={setNcaaGames} />}
+      {tab === "calendar" && <NCAACalendarTab calibrationFactor={calibrationNCAA} onGamesLoaded={setNcaaGames} onRefresh={() => setRefreshKey(k => k + 1)} />}
       {tab === "madness" && <MarchMadnessPanel />}
       {tab === "accuracy" && <AccuracyDashboard table="ncaa_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNCAA} spreadLabel="Spread" isNCAA={true} />}
       {tab === "history" && <HistoryTab table="ncaa_predictions" refreshKey={refreshKey} />}
