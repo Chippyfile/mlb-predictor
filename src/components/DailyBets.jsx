@@ -437,7 +437,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
         // Spread from the bet team's perspective — prefer CURRENT market over stored pick spread
         const rawSp = g.odds?.homeSpread ?? g._ats.spread ?? null;
         const sp = rawSp != null ? (side === "HOME" ? parseFloat(rawSp) : -parseFloat(rawSp)) : null;
-        ats.push({ team, spread: sp, units: g._ats.units, edge: parseFloat(g._ats.disagree || 0), side });
+        ats.push({ team, spread: sp, units: g._ats.units, edge: parseFloat(g._ats.disagree || 0), side, gameId: g.gameId });
       }
 
       // O/U from cron (Supabase is sole source of truth)
@@ -447,7 +447,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
         const units = g.pred._ouTier || 1;
         const predTotal = parseFloat(g.pred._ouPredictedTotal) || 0;
         if (!ou.find(o => o.team === `${h} / ${a}`)) {
-          ou.push({ team: `${h} / ${a}`, side, edge, units, modelTotal: predTotal });
+          ou.push({ team: `${h} / ${a}`, side, edge, units, modelTotal: predTotal, gameId: g.gameId });
         }
       }
     }
