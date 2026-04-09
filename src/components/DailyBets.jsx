@@ -209,20 +209,23 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
       const pending = parlayHistory.filter(p => p.result === "PENDING");
       for (const bet of pending) {
         const legs = bet.legs || [];
+        const ats = bet.ats_picks || [];
+        const ou = bet.ou_picks || [];
         let won = 0, decided = 0, anyLoss = false;
-        for (const leg of legs) {
-          // Check each leg against the appropriate prediction table
+        const updatedLegs = [...legs];
+
+        // Grade parlay legs
+        for (let li = 0; li < updatedLegs.length; li++) {
+          const leg = updatedLegs[li];
           const gid = leg.gameId;
           if (!gid) continue;
           let row = null;
-          // Try all prediction tables — check ats_correct for ATS parlays
           for (const table of ["mlb_predictions", "ncaa_predictions", "nba_predictions"]) {
             try {
               const atsCol = table === "mlb_predictions" ? "rl_correct" : "ats_correct";
               const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=${atsCol},result_entered&limit=1`);
               if (res?.length) { row = { ...res[0], _atsCorrect: res[0][atsCol] }; break; }
             } catch { /* try next table */ }
-            // MLB uses game_pk
             if (table === "mlb_predictions") {
               try {
                 const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
@@ -232,16 +235,85 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           }
           if (row?.result_entered) {
             decided++;
-            if (row._atsCorrect) won++;
+            const correct = !!row._atsCorrect;
+            updatedLegs[li] = { ...leg, correct };
+            if (correct) won++;
             else anyLoss = true;
           }
         }
-        // Only grade if all legs have results
+
+        // Grade ATS picks
+        let atsW = 0, atsL = 0;
+        const updatedAts = [...ats];
+        for (let ai = 0; ai < updatedAts.length; ai++) {
+          const pick = updatedAts[ai];
+          const gid = pick.gameId;
+          if (!gid) continue;
+          let row = null;
+          for (const table of ["mlb_predictions", "ncaa_predictions", "nba_predictions"]) {
+            try {
+              const atsCol = table === "mlb_predictions" ? "rl_correct" : "ats_correct";
+              const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=${atsCol},result_entered&limit=1`);
+              if (res?.length) { row = { ...res[0], _atsCorrect: res[0][atsCol] }; break; }
+            } catch {}
+            if (table === "mlb_predictions") {
+              try {
+                const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
+                if (res?.length) { row = { ...res[0], _atsCorrect: res[0].rl_correct }; break; }
+              } catch {}
+            }
+          }
+          if (row?.result_entered) {
+            const correct = !!row._atsCorrect;
+            updatedAts[ai] = { ...pick, correct };
+            if (correct) atsW++; else atsL++;
+          }
+        }
+
+        // Grade O/U picks
+        let ouW = 0, ouL = 0;
+        const updatedOu = [...ou];
+        for (let oi = 0; oi < updatedOu.length; oi++) {
+          const pick = updatedOu[oi];
+          const gid = pick.gameId;
+          if (!gid) continue;
+          let row = null;
+          for (const table of ["mlb_predictions", "ncaa_predictions", "nba_predictions"]) {
+            try {
+              const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ou_correct,result_entered&limit=1`);
+              if (res?.length) { row = res[0]; break; }
+            } catch {}
+            if (table === "mlb_predictions") {
+              try {
+                const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=ou_correct,result_entered&limit=1`);
+                if (res?.length) { row = res[0]; break; }
+              } catch {}
+            }
+          }
+          if (row?.result_entered && row.ou_correct) {
+            const pickSide = pick.side?.toUpperCase();
+            const correct = row.ou_correct === pickSide;
+            updatedOu[oi] = { ...pick, correct };
+            if (correct) ouW++; else ouL++;
+          }
+        }
+
+        // Only grade parlay if all legs have results
         if (decided === legs.length) {
           const result = anyLoss ? "LOSS" : "WIN";
           const payout = result === "WIN" ? bet.potential_payout : 0;
           await supabaseQuery(`/parlay_bets?id=eq.${bet.id}`, "PATCH", {
             result, legs_won: won, actual_payout: payout, graded_at: new Date().toISOString(),
+            legs: updatedLegs, ats_picks: updatedAts, ou_picks: updatedOu,
+            ats_record: { wins: atsW, losses: atsL },
+            ou_record: { wins: ouW, losses: ouL },
+          });
+        } else if (updatedLegs.some(l => l.correct !== undefined) || updatedAts.some(a => a.correct !== undefined)) {
+          // Partial grading — save per-leg results even if parlay isn't fully decided
+          await supabaseQuery(`/parlay_bets?id=eq.${bet.id}`, "PATCH", {
+            legs: updatedLegs, ats_picks: updatedAts, ou_picks: updatedOu,
+            ats_record: { wins: atsW, losses: atsL },
+            ou_record: { wins: ouW, losses: ouL },
           });
         }
       }
@@ -657,11 +729,18 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                         <div style={{ marginTop: 10 }}>
                           <div style={{ fontSize: 9, fontWeight: 800, color: "#58a6ff", letterSpacing: 2, marginBottom: 6 }}>
                             ATS PARLAY · {day.combined_odds?.toFixed(2)}x · ${day.bet_amount}
+                            {day.legs_won != null && legs.length > 0 && ` · ${day.legs_won}/${legs.length} legs`}
                           </div>
-                          {legs.map((l, i) => (
+                          {legs.map((l, i) => {
+                            const legWon = l.correct === true;
+                            const legLost = l.correct === false;
+                            const legPending = l.correct === undefined || l.correct === null;
+                            return (
                             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
-                              fontSize: 12, color: "#c9d1d9" }}>
-                              <span style={{ width: 18, fontSize: 10, color: C.dim }}>{i+1}.</span>
+                              fontSize: 12, color: legLost ? "#484f58" : "#c9d1d9",
+                              textDecoration: legLost ? "line-through" : "none",
+                              opacity: legLost ? 0.5 : 1 }}>
+                              <span style={{ width: 18, fontSize: 12 }}>{legWon ? "✅" : legLost ? "❌" : "⏳"}</span>
                               <span style={{ flex: 1, fontWeight: 600 }}>
                                 {l.sport || ""} {l.team} {l.spread != null ? (l.spread > 0 ? `+${parseFloat(l.spread).toFixed(1)}` : parseFloat(l.spread).toFixed(1)) : "ATS"}
                               </span>
@@ -673,17 +752,31 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                                 </span>
                               )}
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
 
                       {/* ATS picks */}
-                      {ats.length > 0 && (
+                      {ats.length > 0 && (() => {
+                        const atsW = ats.filter(a => a.correct === true).length;
+                        const atsL = ats.filter(a => a.correct === false).length;
+                        const atsP = ats.length - atsW - atsL;
+                        const atsRecord = (atsW + atsL) > 0 ? ` · ${atsW}-${atsL} ${(atsW/(atsW+atsL)*100).toFixed(0)}%` : "";
+                        return (
                         <div style={{ marginTop: 10 }}>
-                          <div style={{ fontSize: 9, fontWeight: 800, color: "#8b949e", letterSpacing: 2, marginBottom: 6 }}>ATS PICKS</div>
-                          {ats.map((a, i) => (
+                          <div style={{ fontSize: 9, fontWeight: 800, color: "#8b949e", letterSpacing: 2, marginBottom: 6 }}>
+                            ATS PICKS{atsRecord}{atsP > 0 ? ` · ${atsP} pending` : ""}
+                          </div>
+                          {ats.map((a, i) => {
+                            const aWon = a.correct === true;
+                            const aLost = a.correct === false;
+                            return (
                             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
-                              fontSize: 12, color: "#c9d1d9" }}>
+                              fontSize: 12, color: aLost ? "#484f58" : "#c9d1d9",
+                              textDecoration: aLost ? "line-through" : "none",
+                              opacity: aLost ? 0.5 : 1 }}>
+                              <span style={{ width: 18, fontSize: 12 }}>{aWon ? "✅" : aLost ? "❌" : "⏳"}</span>
                               <span style={{ flex: 1, fontWeight: 600 }}>
                                 {a.sport === "mlb" ? "⚾" : a.sport === "nba" ? "🏀" : "🏀"} {a.team}
                               </span>
@@ -695,17 +788,32 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                                 {a.units}u
                               </span>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
-                      )}
+                        );
+                      })()}
 
                       {/* O/U picks */}
-                      {ou.length > 0 && (
+                      {ou.length > 0 && (() => {
+                        const ouW = ou.filter(o => o.correct === true).length;
+                        const ouL = ou.filter(o => o.correct === false).length;
+                        const ouP = ou.length - ouW - ouL;
+                        const ouRecord = (ouW + ouL) > 0 ? ` · ${ouW}-${ouL} ${(ouW/(ouW+ouL)*100).toFixed(0)}%` : "";
+                        return (
                         <div style={{ marginTop: 10 }}>
-                          <div style={{ fontSize: 9, fontWeight: 800, color: "#8b949e", letterSpacing: 2, marginBottom: 6 }}>O/U PICKS</div>
-                          {ou.map((o, i) => (
+                          <div style={{ fontSize: 9, fontWeight: 800, color: "#8b949e", letterSpacing: 2, marginBottom: 6 }}>
+                            O/U PICKS{ouRecord}{ouP > 0 ? ` · ${ouP} pending` : ""}
+                          </div>
+                          {ou.map((o, i) => {
+                            const oWon = o.correct === true;
+                            const oLost = o.correct === false;
+                            return (
                             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
-                              fontSize: 12, color: "#c9d1d9" }}>
+                              fontSize: 12, color: oLost ? "#484f58" : "#c9d1d9",
+                              textDecoration: oLost ? "line-through" : "none",
+                              opacity: oLost ? 0.5 : 1 }}>
+                              <span style={{ width: 18, fontSize: 12 }}>{oWon ? "✅" : oLost ? "❌" : "⏳"}</span>
                               <span style={{ flex: 1, fontWeight: 600 }}>
                                 {o.side === "OVER" ? "▲" : "▼"} {o.side} {o.team}
                               </span>
@@ -717,9 +825,11 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                                 {o.units}u
                               </span>
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
-                      )}
+                        );
+                      })()}
 
                       {legs.length === 0 && ats.length === 0 && ou.length === 0 && (
                         <div style={{ fontSize: 11, color: C.dim, padding: "10px 0", fontStyle: "italic" }}>No signals — sat out</div>
