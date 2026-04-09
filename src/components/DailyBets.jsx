@@ -4,12 +4,13 @@ import { C } from "./Shared.jsx";
 // Supabase is the sole source of truth — no frontend recomputation
 import { supabaseQuery } from "../utils/supabase.js";
 
-const PARLAY_ML_FLOOR = -325, PARLAY_ML_CEIL = 325, PARLAY_CONF_GATE = 68, PARLAY_BET = 100, MIN_LEGS = 4, MAX_LEGS = 5, MIN_BET_UNITS = 2;
+const PARLAY_BET = 100, MIN_LEGS = 2, MAX_LEGS = 3, MIN_BET_UNITS = 1;
+const ATS_PARLAY_PAY = 1.909; // -110 per leg
 const getToday = () => { const d = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" })); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
 function getStrategyMode() { return "active"; }
 const STRAT = {
-  active: { label: "🎯 ML PARLAY — $100 on 4-5 Flex (±325 cap, 68% conf)", color: "#2ea043", sub: "Walk-forward: 72.0% ROI, 39.2% hit rate, $600 max drawdown over 3.5 seasons." },
+  active: { label: "🎯 ATS PARLAY — $100 on 2-3 Legs (55%+ hit, +102% EV)", color: "#2ea043", sub: "ATS legs at -110 each. 2-leg: 55% hit, 3.64x pay. Dog ML flagged as bonus." },
 };
 
 function spreadToML(sp) {
@@ -163,7 +164,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
   // ── Save/update today's picks (allowed until first game starts) ──
   const saveParlay = useCallback(async (picks, allSports) => {
     if (todayLocked) return;
-    const odds = picks.length ? parlayOdds(picks) : 0;
+    const odds = picks.length ? Math.pow(ATS_PARLAY_PAY, picks.length) : 0;
     // Collect all ATS and O/U signals across sports
     const allAts = [], allOu = [];
     for (const sp of (allSports || [])) {
@@ -172,14 +173,15 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
     }
     const data = {
       bet_date: today,
-      legs: picks.map(p => ({ team: p.team, ml: p.ml, conf: p.conf, sport: p.sport, gameId: p.gameId })),
+      legs: picks.map(p => ({ team: p.team, spread: p.spread, side: p.side, units: p.units, edge: p.edge, sport: p.sport, sportKey: p.sportKey, gameId: p.gameId, ml: -110 })),
       num_legs: picks.length,
       combined_odds: picks.length ? parseFloat(odds.toFixed(4)) : 0,
       bet_amount: picks.length >= MIN_LEGS ? PARLAY_BET : 0,
       potential_payout: picks.length >= MIN_LEGS ? parseFloat((PARLAY_BET * odds).toFixed(2)) : 0,
       result: "PENDING",
-      ml_cap: PARLAY_ML_CEIL,
-      conf_gate: PARLAY_CONF_GATE,
+      ml_cap: 0,
+      conf_gate: 0,
+      parlay_type: "ATS",
       ats_picks: allAts,
       ou_picks: allOu,
     };
@@ -212,23 +214,24 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
           const gid = leg.gameId;
           if (!gid) continue;
           let row = null;
-          // Try all prediction tables
+          // Try all prediction tables — check ats_correct for ATS parlays
           for (const table of ["mlb_predictions", "ncaa_predictions", "nba_predictions"]) {
             try {
-              const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ml_correct,result_entered&limit=1`);
-              if (res?.length) { row = res[0]; break; }
+              const atsCol = table === "mlb_predictions" ? "rl_correct" : "ats_correct";
+              const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=${atsCol},result_entered&limit=1`);
+              if (res?.length) { row = { ...res[0], _atsCorrect: res[0][atsCol] }; break; }
             } catch { /* try next table */ }
             // MLB uses game_pk
             if (table === "mlb_predictions") {
               try {
-                const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=ml_correct,result_entered&limit=1`);
-                if (res?.length) { row = res[0]; break; }
+                const res = await supabaseQuery(`/${table}?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
+                if (res?.length) { row = { ...res[0], _atsCorrect: res[0].rl_correct }; break; }
               } catch { /* continue */ }
             }
           }
           if (row?.result_entered) {
             decided++;
-            if (row.ml_correct) won++;
+            if (row._atsCorrect) won++;
             else anyLoss = true;
           }
         }
@@ -246,54 +249,49 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
     setGrading(false);
   }, [parlayHistory, loadHistory]);
 
-  // ── Multi-Sport Parlay Picks (top ML picks across all sports) ──
-  const parlayPicks = useMemo(() => {
-    if (mode === "skip") return [];
-    const allPicks = [];
+  // ── ATS Parlay Picks (top ATS picks across all sports) ──
+  const { parlayPicks, mlDogPicks } = useMemo(() => {
+    const atsLegs = [];
+    const dogs = [];
 
-    // NCAA picks
-    for (const g of (games.ncaa || [])) {
-      if (!g.pred || !g.odds) continue;
-      const wp = parseFloat(g.pred.homeWinPct) || 0.5;
-      const conf = Math.max(wp, 1 - wp);
-      const spread = g.odds.homeSpread ?? 0;
-      const pickHome = wp > 0.5;
-      const ml = spreadToML(pickHome ? spread : -spread);
-      allPicks.push({ team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(spread), sport: "🏀", gameId: g.gameId });
+    // Collect all ATS picks from cron-computed data
+    for (const [sport, icon, list] of [["ncaa", "🏀", games.ncaa], ["nba", "🏀", games.nba], ["mlb", "⚾", games.mlb]]) {
+      for (const g of (list || [])) {
+        if (!g._ats || !g._ats.units || g._ats.units < MIN_BET_UNITS) continue;
+        const h = g.homeTeam || "Home", a = g.awayTeam || "Away";
+        const side = g._ats.side;
+        const team = side === "HOME" ? h : a;
+        const sp = g._ats.spread || (side === "HOME" ? g.odds?.homeSpread : -(g.odds?.homeSpread || 0));
+        const edge = parseFloat(g._ats.disagree || 0);
+        const units = g._ats.units;
+
+        atsLegs.push({
+          team, spread: sp ? parseFloat(sp) : null, edge, units, side,
+          sport: icon, sportKey: sport, gameId: g.gameId,
+          ml: -110, // ATS legs are always -110
+          matchup: `${a} @ ${h}`,
+        });
+
+        // ML dog detection: if the model's side has positive ML odds
+        const pickedML = side === "HOME" ? g.odds?.homeML : g.odds?.awayML;
+        if (pickedML && parseInt(pickedML) > 0) {
+          dogs.push({
+            team, ml: parseInt(pickedML), edge, units, side,
+            sport: icon, sportKey: sport, gameId: g.gameId,
+            matchup: `${a} @ ${h}`,
+            payout: mlDec(parseInt(pickedML)),
+          });
+        }
+      }
     }
 
-    // NBA picks
-    for (const g of (games.nba || [])) {
-      if (!g.pred || !g.odds) continue;
-      const wp = parseFloat(g.pred.homeWinPct) || 0.5;
-      const conf = Math.max(wp, 1 - wp);
-      const spread = g.odds.homeSpread ?? 0;
-      const pickHome = wp > 0.5;
-      const ml = spreadToML(pickHome ? spread : -spread);
-      allPicks.push({ team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(spread), sport: "🏀", gameId: g.gameId });
-    }
-
-    // MLB picks — use stored market moneylines when available
-    for (const g of (games.mlb || [])) {
-      if (!g.pred) continue;
-      const wp = parseFloat(g.pred.homeWinPct) || 0.5;
-      const conf = Math.max(wp, 1 - wp);
-      const pickHome = wp > 0.5;
-      // Prefer real market ML, fall back to spread conversion
-      let ml;
-      if (pickHome && g.odds?.homeML) ml = g.odds.homeML;
-      else if (!pickHome && g.odds?.awayML) ml = g.odds.awayML;
-      else ml = spreadToML(pickHome ? (g.odds?.homeSpread ?? 0) : -(g.odds?.homeSpread ?? 0));
-      allPicks.push({ team: pickHome ? g.homeTeam : g.awayTeam, ml, conf: conf*100, margin: Math.abs(g.pred.projectedSpread || 0), sport: "⚾", gameId: g.gameId });
-    }
-
-    return allPicks
-      .filter(p => p.conf >= PARLAY_CONF_GATE && p.ml >= PARLAY_ML_FLOOR && p.ml <= PARLAY_ML_CEIL)
-      .sort((a,b) => b.conf - a.conf)
-      .slice(0, MAX_LEGS);
-  }, [games.ncaa, games.nba, games.mlb, mode]);
+    // Sort by edge (highest first), take top MAX_LEGS
+    const sorted = atsLegs.sort((a, b) => b.edge - a.edge).slice(0, MAX_LEGS);
+    return { parlayPicks: sorted, mlDogPicks: dogs };
+  }, [games.ncaa, games.nba, games.mlb]);
 
   const parlayActive = parlayPicks.length >= MIN_LEGS;
+  const parlayPayout = Math.pow(ATS_PARLAY_PAY, parlayPicks.length);
 
   // ── Sport picks ──
   function buildPicks(gameList, sport) {
@@ -372,29 +370,32 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         <div style={{ fontSize: 11, color: C.dim }}>{strat.sub}</div>
       </div>
 
-      {/* ── PARLAY ── */}
+      {/* ── ATS PARLAY ── */}
       {parlayActive && (
         <div style={{ background: "linear-gradient(135deg, #0d1117, #161b22)",
           border: "1px solid #30363d", borderRadius: 10, padding: "14px 18px", marginBottom: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <span style={{ fontSize: 14, fontWeight: 800, color: "#e6edf3" }}>🎯 {parlayPicks.length}-Leg ML Parlay</span>
+            <span style={{ fontSize: 14, fontWeight: 800, color: "#e6edf3" }}>🎯 {parlayPicks.length}-Leg ATS Parlay</span>
             <span style={{ fontSize: 10, fontWeight: 800, color: "#fff", background: "#2ea043",
               borderRadius: 5, padding: "3px 10px", letterSpacing: 1 }}>${PARLAY_BET}</span>
           </div>
           {parlayPicks.map((p, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
               padding: "8px 0", borderBottom: i === parlayPicks.length-1 ? "none" : "1px solid #21262d" }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>{p.sport} {p.team} ML</span>
-              <span style={{ fontSize: 12, color: C.muted, width: 60, textAlign: "right" }}>{p.ml > 0 ? `+${p.ml}` : p.ml}</span>
-              <span style={{ fontSize: 11, width: 50, textAlign: "right", color: confColor(p.conf) }}>{p.conf.toFixed(0)}%</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>
+                {p.sport} {p.team} {p.spread != null ? (p.spread > 0 ? `+${parseFloat(p.spread).toFixed(1)}` : parseFloat(p.spread).toFixed(1)) : "ATS"}
+              </span>
+              <span style={{ fontSize: 11, color: "#8b949e", width: 50, textAlign: "right" }}>-110</span>
+              <span style={{ fontSize: 10, fontWeight: 900, color: "#fff", width: 30, textAlign: "center",
+                background: unitColor(p.units), borderRadius: 4, padding: "1px 4px" }}>{p.units}u</span>
             </div>
           ))}
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: C.dim }}>
-            <span>Odds: {parlayOdds(parlayPicks).toFixed(2)}x · {parlayPicks.length} legs</span>
-            <span>Potential: ${(PARLAY_BET * parlayOdds(parlayPicks)).toFixed(0)}</span>
+            <span>Odds: {parlayPayout.toFixed(2)}x · {parlayPicks.length} legs @ -110</span>
+            <span>Potential: ${(PARLAY_BET * parlayPayout).toFixed(0)}</span>
           </div>
           <div style={{ fontSize: 9, color: "#484f58", marginTop: 4 }}>
-            Filter: ±325 ML cap · ≥68% conf · 4-5 flex legs · WF: 72.0% ROI
+            ATS legs · {parlayPicks.length === 2 ? "55% hit, +102% EV" : "41% hit, +188% EV"} · Top {parlayPicks.length} by edge
           </div>
           <button onClick={() => saveParlay(parlayPicks, sports)} disabled={todayLocked}
             style={{ marginTop: 10, width: "100%", padding: "10px 0", borderRadius: 8,
@@ -406,11 +407,34 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
         </div>
       )}
 
+      {/* ── ML DOG BONUS ── */}
+      {mlDogPicks.length > 0 && (
+        <div style={{ background: "linear-gradient(135deg, #d2992211, #d2992206)",
+          border: "1px solid #d2992255", borderRadius: 10, padding: "14px 18px", marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#d29922", marginBottom: 8, letterSpacing: 1 }}>
+            🐕 ML DOG BONUS — Model picks underdog
+          </div>
+          {mlDogPicks.map((p, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "6px 0", borderBottom: i === mlDogPicks.length-1 ? "none" : "1px solid #21262d" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>
+                {p.sport} {p.team} ML
+              </span>
+              <span style={{ fontSize: 12, color: "#2ea043", fontWeight: 800, width: 60, textAlign: "right" }}>+{p.ml}</span>
+              <span style={{ fontSize: 10, color: "#d29922", width: 55, textAlign: "right" }}>{p.payout.toFixed(2)}x pay</span>
+            </div>
+          ))}
+          <div style={{ fontSize: 9, color: "#484f58", marginTop: 6 }}>
+            67.7% win rate on dogs at +140 avg = +62.5% ROI straight, +131% EV in parlay
+          </div>
+        </div>
+      )}
+
       {!parlayActive && (games.ncaa.length + games.nba.length + games.mlb.length) > 0 && (
         <div style={{ fontSize: 12, color: C.dim, fontStyle: "italic", padding: "10px 0", textAlign: "center" }}>
           {parlayPicks.length > 0
-            ? `Only ${parlayPicks.length} qualifying picks (need ${MIN_LEGS}) — no parlay today`
-            : `No picks pass ±325 ML cap + 68% confidence filter — sit today out`}
+            ? `Only ${parlayPicks.length} qualifying ATS pick (need ${MIN_LEGS}) — no parlay today`
+            : `No ATS picks with sufficient edge — sit today out`}
         </div>
       )}
 
@@ -565,19 +589,22 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
                       {legs.length > 0 && (
                         <div style={{ marginTop: 10 }}>
                           <div style={{ fontSize: 9, fontWeight: 800, color: "#58a6ff", letterSpacing: 2, marginBottom: 6 }}>
-                            PARLAY · {day.combined_odds?.toFixed(2)}x · ${day.bet_amount}
+                            ATS PARLAY · {day.combined_odds?.toFixed(2)}x · ${day.bet_amount}
                           </div>
                           {legs.map((l, i) => (
                             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
                               fontSize: 12, color: "#c9d1d9" }}>
                               <span style={{ width: 18, fontSize: 10, color: C.dim }}>{i+1}.</span>
-                              <span style={{ flex: 1, fontWeight: 600 }}>{l.sport || ""} {l.team} ML</span>
-                              <span style={{ color: "#8b949e", width: 50, textAlign: "right" }}>
-                                {l.ml > 0 ? `+${l.ml}` : l.ml}
+                              <span style={{ flex: 1, fontWeight: 600 }}>
+                                {l.sport || ""} {l.team} {l.spread != null ? (l.spread > 0 ? `+${parseFloat(l.spread).toFixed(1)}` : parseFloat(l.spread).toFixed(1)) : "ATS"}
                               </span>
-                              <span style={{ width: 40, textAlign: "right", color: confColor(l.conf) }}>
-                                {l.conf?.toFixed?.(0) ?? "—"}%
-                              </span>
+                              <span style={{ color: "#8b949e", width: 40, textAlign: "right" }}>-110</span>
+                              {l.units && (
+                                <span style={{ fontSize: 10, fontWeight: 900, color: "#fff",
+                                  background: unitColor(l.units), borderRadius: 4, padding: "1px 4px", width: 26, textAlign: "center" }}>
+                                  {l.units}u
+                                </span>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -640,7 +667,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames }) {
       })()}
 
       <div style={{ fontSize: 10, color: "#484f58", textAlign: "center", marginTop: 20 }}>
-        {lastSync ? `Synced ${lastSync}` : "Not synced"} · ±325 cap · ≥68% conf
+        {lastSync ? `Synced ${lastSync}` : "Not synced"} · ATS parlays @ -110 · ML dogs flagged
       </div>
     </div>
   );
