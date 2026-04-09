@@ -208,8 +208,14 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
   const gradeParlays = useCallback(async () => {
     setGrading(true);
     try {
-      const pending = parlayHistory.filter(p => p.result === "PENDING");
-      for (const bet of pending) {
+      // Grade pending + re-grade already-graded that are missing per-leg results
+      const needsGrading = parlayHistory.filter(p => 
+        p.result === "PENDING" || 
+        (p.legs || []).some(l => l.correct === undefined || l.correct === null) ||
+        (p.ats_picks || []).some(a => a.correct === undefined || a.correct === null) ||
+        (p.ou_picks || []).some(o => o.correct === undefined || o.correct === null)
+      );
+      for (const bet of needsGrading) {
         const legs = bet.legs || [];
         const ats = bet.ats_picks || [];
         const ou = bet.ou_picks || [];
@@ -305,23 +311,32 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           }
         }
 
-        // Only grade parlay if all legs have results
-        if (decided === legs.length) {
+        // Save results
+        const alreadyGraded = bet.result !== "PENDING";
+        const patchData = {
+          legs: updatedLegs, ats_picks: updatedAts, ou_picks: updatedOu,
+          ats_record: { wins: atsW, losses: atsL },
+          ou_record: { wins: ouW, losses: ouL },
+        };
+
+        if (!alreadyGraded && decided === legs.length) {
+          // All legs decided — set overall parlay result
           const result = anyLoss ? "LOSS" : "WIN";
-          const payout = result === "WIN" ? bet.potential_payout : 0;
-          await supabaseQuery(`/parlay_bets?id=eq.${bet.id}`, "PATCH", {
-            result, legs_won: won, actual_payout: payout, graded_at: new Date().toISOString(),
-            legs: updatedLegs, ats_picks: updatedAts, ou_picks: updatedOu,
-            ats_record: { wins: atsW, losses: atsL },
-            ou_record: { wins: ouW, losses: ouL },
-          });
-        } else if (updatedLegs.some(l => l.correct !== undefined) || updatedAts.some(a => a.correct !== undefined)) {
-          // Partial grading — save per-leg results even if parlay isn't fully decided
-          await supabaseQuery(`/parlay_bets?id=eq.${bet.id}`, "PATCH", {
-            legs: updatedLegs, ats_picks: updatedAts, ou_picks: updatedOu,
-            ats_record: { wins: atsW, losses: atsL },
-            ou_record: { wins: ouW, losses: ouL },
-          });
+          patchData.result = result;
+          patchData.legs_won = won;
+          patchData.actual_payout = result === "WIN" ? bet.potential_payout : 0;
+          patchData.graded_at = new Date().toISOString();
+        } else if (!alreadyGraded) {
+          // Partial — just save legs_won so far
+          patchData.legs_won = won;
+        }
+
+        // Always save if any leg has been graded
+        const anyGraded = updatedLegs.some(l => l.correct !== undefined) ||
+                          updatedAts.some(a => a.correct !== undefined) ||
+                          updatedOu.some(o => o.correct !== undefined);
+        if (anyGraded || decided === legs.length) {
+          await supabaseQuery(`/parlay_bets?id=eq.${bet.id}`, "PATCH", patchData);
         }
       }
       await loadHistory();
