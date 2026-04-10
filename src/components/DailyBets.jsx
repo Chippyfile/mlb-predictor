@@ -91,6 +91,7 @@ function mapMLB(rows) { return rows.filter(r => r.pred_home_runs != null || r.sp
             ouLine: parseFloat(r.market_ou_total) || null },
     _ats: r.ats_units > 0 ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.market_spread_home } : null,
     _atsComputed: r.ats_units != null,
+    _mlBet: r.ml_bet_units > 0 ? { side: r.ml_bet_side, units: r.ml_bet_units } : null,
   };
 }); }
 
@@ -494,7 +495,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
 
   // ── Sport picks ──
   function buildPicks(gameList, sport) {
-    const ats = [], ou = [];
+    const ats = [], ou = [], ml = [];
     for (const g of gameList) {
       if (!g.pred) continue;
       const h = g.homeTeam || "Home", a = g.awayTeam || "Away";
@@ -519,10 +520,21 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           ou.push({ team: `${h} / ${a}`, side, edge, units, modelTotal: predTotal, gameId: g.gameId });
         }
       }
+
+      // ML bets from cron (margin + ATS agreement — 80-81% walk-forward)
+      if (g._mlBet && g._mlBet.units > 0) {
+        const side = g._mlBet.side;
+        const team = side === "HOME" ? h : a;
+        const opp = side === "HOME" ? a : h;
+        const mlOdds = side === "HOME" ? (g.odds?.homeML || null) : (g.odds?.awayML || null);
+        const margin = Math.abs(parseFloat(g.pred?.projectedSpread) || 0);
+        ml.push({ team, opp, units: g._mlBet.units, side, mlOdds, margin, gameId: g.gameId });
+      }
     }
     return { 
       ats: ats.filter(p => p.units >= MIN_BET_UNITS), 
-      ou: ou.filter(p => p.units >= 1)  // O/U model thresholds are already selective (66%+) 
+      ou: ou.filter(p => p.units >= 1),
+      ml: ml,
     };
   }
 
@@ -531,7 +543,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
     { key: "nba",  name: "NBA",  icon: "🏀", color: "#58a6ff", ...buildPicks(games.nba, "nba"),   count: games.nba.length },
     { key: "mlb",  name: "MLB",  icon: "⚾", color: C.blue,   ...buildPicks(games.mlb, "mlb"),   count: games.mlb.length },
   ];
-  const totalPicks = sports.reduce((s,sp) => s + sp.ats.length + sp.ou.length, 0);
+  const totalPicks = sports.reduce((s,sp) => s + sp.ats.length + sp.ou.length + sp.ml.length, 0);
   const anySyncing = Object.values(syncing).some(Boolean);
 
   // ── Render ──
@@ -670,14 +682,14 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
 
       {/* ── SPORT SECTIONS ── */}
       {sports.map(sp => {
-        const has = sp.ats.length > 0 || sp.ou.length > 0;
+        const has = sp.ats.length > 0 || sp.ou.length > 0 || sp.ml.length > 0;
         return (
           <div key={sp.key} style={{ marginTop: 28 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, paddingBottom: 8, borderBottom: "1px solid #21262d" }}>
               <span style={{ fontSize: 20 }}>{sp.icon}</span>
               <span style={{ fontSize: 18, fontWeight: 900, color: "#e6edf3", letterSpacing: -0.5 }}>{sp.name}</span>
               <span style={{ fontSize: 11, color: C.dim, marginLeft: "auto" }}>
-                {has ? `${sp.ats.length} ATS · ${sp.ou.length} O/U` : sp.count > 0 ? `${sp.count} games · no signals` : "not synced"}
+                {has ? [sp.ats.length > 0 && `${sp.ats.length} ATS`, sp.ou.length > 0 && `${sp.ou.length} O/U`, sp.ml.length > 0 && `${sp.ml.length} ML`].filter(Boolean).join(" · ") : sp.count > 0 ? `${sp.count} games · no signals` : "not synced"}
               </span>
               <button onClick={() => syncSport(sp.key)} disabled={syncing[sp.key]} style={{
                 padding: "3px 10px", borderRadius: 6, border: `1px solid ${sp.color}55`,
@@ -718,6 +730,29 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                     borderRadius: 4, padding: "2px 8px", minWidth: 30, textAlign: "center" }}>{p.units}u</span>
                 </div>
               ))}
+            </>}
+
+            {sp.ml.length > 0 && <>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#d29922", letterSpacing: 2, marginTop: 14, marginBottom: 6 }}>MONEYLINE BETS</div>
+              {sp.ml.sort((a,b) => b.units - a.units || b.margin - a.margin).map((p,i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+                  background: "linear-gradient(135deg, #d2992208, #d2992204)", borderRadius: 8, marginBottom: 6,
+                  border: "1px solid #d2992233", maxWidth: 480 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#e6edf3", flex: 1 }}>
+                    💰 {p.team} ML
+                  </span>
+                  <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>
+                    {p.mlOdds ? (parseInt(p.mlOdds) > 0 ? `+${p.mlOdds}` : p.mlOdds) : "—"}
+                  </span>
+                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.margin.toFixed(1)} runs</span>
+                  <span style={{ fontSize: 10, fontWeight: 900, color: "#fff",
+                    background: p.units >= 2 ? "#d29922" : "#8b949e",
+                    borderRadius: 4, padding: "2px 8px", minWidth: 30, textAlign: "center" }}>{p.units}u</span>
+                </div>
+              ))}
+              <div style={{ fontSize: 9, color: "#484f58", marginTop: 4 }}>
+                2u: 81% win rate (margin+ATS agree) · 1u: 80% win rate · Walk-forward validated
+              </div>
             </>}
           </div>
         );
