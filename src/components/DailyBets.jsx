@@ -233,8 +233,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           const sportKey = (leg.sportKey || (leg.sport === "⚾" ? "mlb" : "")).toLowerCase();
           if (sportKey === "mlb") {
             try {
-              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
-              if (res?.length) row = { ...res[0], _atsCorrect: res[0].rl_correct };
+              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=ats_correct,result_entered&limit=1`);
+              if (res?.length) row = { ...res[0], _atsCorrect: res[0].ats_correct };
             } catch {}
           } else {
             for (const table of ["ncaa_predictions", "nba_predictions"]) {
@@ -278,7 +278,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           if (sport === "mlb") {
             const abbr = mlbNameToAbbr(tn).toUpperCase();
             try {
-              const all = await supabaseQuery(`/mlb_predictions?game_date=eq.${betDate}&result_entered=eq.true&select=game_pk,home_team,away_team,rl_correct,ou_correct`);
+              const all = await supabaseQuery(`/mlb_predictions?game_date=eq.${betDate}&result_entered=eq.true&select=game_pk,home_team,away_team,ats_correct,ou_correct`);
               for (const r of (all || [])) {
                 const h = (r.home_team||"").toUpperCase(), a = (r.away_team||"").toUpperCase();
                 if (h === abbr || a === abbr) { row = r; break; }
@@ -313,8 +313,8 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
             // Direct lookup by gameId
             if (sportKey === "mlb") {
               try {
-                const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=rl_correct,result_entered&limit=1`);
-                if (res?.length) row = { ...res[0], _atsCorrect: res[0].rl_correct };
+                const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=ats_correct,result_entered&limit=1`);
+                if (res?.length) row = { ...res[0], _atsCorrect: res[0].ats_correct };
               } catch {}
             } else {
               for (const table of ["ncaa_predictions", "nba_predictions"]) {
@@ -330,7 +330,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           if (!row && pick.team) {
             const fallback = await findByTeamName(pick.team, sportKey || (pick.sport === "nba" ? "nba" : pick.sport === "ncaa" ? "ncaa" : "mlb"));
             if (fallback) {
-              row = { result_entered: true, _atsCorrect: fallback.rl_correct ?? fallback.ats_correct };
+              row = { result_entered: true, _atsCorrect: fallback.ats_correct };
             }
           }
 
