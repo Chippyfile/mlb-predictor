@@ -8,6 +8,7 @@ import { useState, useEffect, useCallback } from "react";
 import { C, Pill, Kv, confColor2, AccuracyDashboard, HistoryTab, ParlayBuilder, BetSignalsPanel } from "../../components/Shared.jsx";
 import ShapPanel from "../../components/ShapPanel.jsx";
 import MonteCarloPanel from "../../components/MonteCarloPanel.jsx";
+import PlayerImpactPanel from "../../components/PlayerImpactPanel.jsx";
 import { trueImplied, EDGE_THRESHOLD, DECISIVENESS_GATE } from "../../utils/sharedUtils.js";
 import { buildStoredSignals } from "../../utils/buildStoredSignals.js";
 import { supabaseQuery } from "../../utils/supabase.js";
@@ -316,6 +317,10 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
           _storedAtsSide: patch.ats_side ?? null,
           _storedAtsDisagree: patch.ats_disagree ?? null,
           _storedAtsPickSpread: patch.ats_pick_spread ?? null,
+          // Player impact data for toggle UI
+          _homeOutPlayers: mlResult.home_out_players || [],
+          _awayOutPlayers: mlResult.away_out_players || [],
+          _impactAdjustment: mlResult.impact_adjustment || 0,
           confidence: Math.abs(mlMargin) >= 7 ? "HIGH" : Math.abs(mlMargin) >= 3 ? "MEDIUM" : "LOW",
           confScore: parseFloat(Math.abs(mlMargin).toFixed(1)),
           decisiveness: parseFloat((Math.abs(mlWinHome - 0.5) * 100).toFixed(1)),
@@ -472,6 +477,10 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
           // Stored ML odds for edge calculation
           _storedHomeML: stored.market_home_ml ?? stored.opening_home_ml ?? null,
           _storedAwayML: stored.market_away_ml ?? stored.opening_away_ml ?? null,
+          // Player impact data for toggle UI
+          _homeOutPlayers: stored.home_out_players || [],
+          _awayOutPlayers: stored.away_out_players || [],
+          _impactAdjustment: stored.impact_adjustment || 0,
         };
         // Build fake mlResult for SHAP panel (no SHAP from stored — need refresh for that)
         mlResult = {
@@ -953,8 +962,16 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
                     marginBottom: 10
                   }}>
                     <Kv k="Projected Score" v={`${awayName} ${game.pred.awayScore?.toFixed(0) ?? "—"} — ${homeName} ${game.pred.homeScore?.toFixed(0) ?? "—"}`} />
-                    <Kv k="Win %" v={`${homeName} ${(game.pred.homeWinPct*100).toFixed(1)}% / ${awayName} ${((game.pred.awayWinPct ?? (1-game.pred.homeWinPct))*100).toFixed(1)}%`} />
-                    <Kv k="Spread" v={game.pred.projectedSpread > 0 ? `${homeName} -${game.pred.projectedSpread.toFixed(1)}` : `${awayName} -${(-game.pred.projectedSpread).toFixed(1)}`} />
+                    <Kv k="Win %" v={
+                      game.pred._adjustedWp
+                        ? `${homeName} ${(game.pred._adjustedWp*100).toFixed(1)}% (adj) / ${awayName} ${((1-game.pred._adjustedWp)*100).toFixed(1)}%`
+                        : `${homeName} ${(game.pred.homeWinPct*100).toFixed(1)}% / ${awayName} ${((game.pred.awayWinPct ?? (1-game.pred.homeWinPct))*100).toFixed(1)}%`
+                    } />
+                    <Kv k="Spread" v={(() => {
+                      const m = game.pred._adjustedMargin ?? game.pred.projectedSpread;
+                      const suffix = game.pred._adjustedMargin != null ? " (adj)" : "";
+                      return m > 0 ? `${homeName} -${m.toFixed(1)}${suffix}` : `${awayName} -${(-m).toFixed(1)}${suffix}`;
+                    })()} />
                     <Kv k="O/U Total" v={game.pred._ouPredictedTotal
                       ? `${game.pred._ouPredictedTotal.toFixed(1)} ML${game.pred._ouEdge ? ` (${game.pred._ouEdge > 0 ? '+' : ''}${game.pred._ouEdge.toFixed(1)} vs mkt)` : ''}`
                       : game.pred.ouTotal} />
@@ -971,6 +988,30 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
                   {game.pred?.mlEnhanced && <div style={{ fontSize: 8, color: "#58a6ff", marginTop: 4 }}>⚡ ML-enhanced · trained on {game.mlMeta?.n_train} games · MAE {game.mlMeta?.mae_cv?.toFixed(1)} pts</div>}
                   <ShapPanel shap={game.mlShap} homeName={homeName} awayName={awayName} />
                   <MonteCarloPanel mc={game.mc} />
+                  <PlayerImpactPanel
+                    gameId={game.gameId}
+                    homeAbbr={game.homeAbbr}
+                    awayAbbr={game.awayAbbr}
+                    homeOutPlayers={game.pred?._homeOutPlayers || []}
+                    awayOutPlayers={game.pred?._awayOutPlayers || []}
+                    impactAdjustment={game.pred?._impactAdjustment || 0}
+                    storedMargin={game.pred?.projectedSpread || 0}
+                    storedWp={game.pred?.homeWinPct || 0.5}
+                    onAdjusted={(adj) => {
+                      setGames(prev => prev.map(g => {
+                        if (g.gameId !== game.gameId) return g;
+                        return {
+                          ...g,
+                          pred: {
+                            ...g.pred,
+                            _adjustedMargin: adj.adjustedMargin,
+                            _adjustedWp: adj.adjustedWp,
+                            _adjustedImpact: adj.newImpact,
+                          }
+                        };
+                      }));
+                    }}
+                  />
                 </div>
               )}
             </div>
