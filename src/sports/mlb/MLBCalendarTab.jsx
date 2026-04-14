@@ -388,7 +388,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       };
 
       // ATS: use v9 sniper from backend (full pipeline with lineup + ump features)
-      const mktSpread = game.odds?.homeSpread ?? null;
+      const mktSpread = mlResult.market_spread_home ?? game.odds?.homeSpread ?? null;
       if (mktSpread !== null) {
         patch.market_spread_home = mktSpread;
       }
@@ -417,9 +417,9 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       patch.refreshed_at = new Date().toISOString();
       patch.lineup_available = mlResult.lineup_available ?? false;
 
-      // Compute ML edge
-      const hml = game.odds?.homeML ?? null;
-      const aml = game.odds?.awayML ?? null;
+      // Compute ML edge — prefer backend-fetched odds, fall back to stored
+      const hml = mlResult.market_home_ml ?? game.odds?.homeML ?? null;
+      const aml = mlResult.market_away_ml ?? game.odds?.awayML ?? null;
       if (hml && aml) {
         const hImp = hml < 0 ? Math.abs(hml) / (Math.abs(hml) + 100) : 100 / (hml + 100);
         const aImp = aml < 0 ? Math.abs(aml) / (Math.abs(aml) + 100) : 100 / (aml + 100);
