@@ -22,6 +22,48 @@ function spreadToML(sp) {
 function mlDec(ml) { return ml > 0 ? ml/100+1 : 100/Math.abs(ml)+1; }
 function parlayOdds(picks) { return picks.reduce((a,p) => a * mlDec(p.ml), 1); }
 
+// ── ATS grade resolver ────────────────────────────────────────
+// Returns true (won), false (lost), or null (push / unscorable — skip).
+//
+// Philosophy: v9 sniper is the authoritative pick, but grading is determined
+// by actual scores + market spread + stored pick side. This handles three cases:
+//   1. Current v9 pick → cron already graded ats_correct → use it
+//   2. Legacy parlay leg (pre-v9-only policy) → cron left ats_correct null →
+//      compute inline from (actual_margin + market_spread) vs pick.side
+//   3. Result not entered or scores missing → null (leave undecided)
+function resolveAtsCorrect(row, pick) {
+  if (!row || !row.result_entered) return null;
+  // 1. Trust cron-graded v9 pick when it made one
+  if (row.ats_units > 0 && (row.ats_correct === true || row.ats_correct === false)) {
+    return row.ats_correct;
+  }
+  // 2. Inline compute from actual scores + spread + pick side
+  const hs = row.actual_home_runs ?? row.actual_home_score;
+  const as_ = row.actual_away_runs ?? row.actual_away_score;
+  const sp = row.market_spread_home;
+  if (hs == null || as_ == null || sp == null) return null;
+  const actualMargin = parseFloat(hs) - parseFloat(as_);
+  const atsResult = actualMargin + parseFloat(sp);
+  if (atsResult === 0) return null; // push
+  const homeCovered = atsResult > 0;
+  // Determine which side the pick was on
+  let pickedHome;
+  if (pick.side === "HOME" || pick.side === "AWAY") {
+    pickedHome = pick.side === "HOME";
+  } else if (pick.team && row.home_team) {
+    // Match pick.team against home_team abbreviation/name
+    const pt = (pick.team || "").toLowerCase();
+    const ht = (row.home_team || row.home_team_name || "").toLowerCase();
+    const at = (row.away_team || row.away_team_name || "").toLowerCase();
+    if (ht && (pt === ht || pt.includes(ht) || ht.includes(pt))) pickedHome = true;
+    else if (at && (pt === at || pt.includes(at) || at.includes(pt))) pickedHome = false;
+    else return null; // can't match
+  } else {
+    return null;
+  }
+  return pickedHome === homeCovered;
+}
+
 // ── Supabase fetchers — only today's games ──
 async function fetchSport(table, date) {
   try {
@@ -225,30 +267,34 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
         let won = 0, decided = 0, anyLoss = false;
         const updatedLegs = [...legs];
 
-        // Grade parlay legs
+        // Grade parlay legs — prefer v9 stored ats_correct; fall back to inline compute
+        // Inline compute handles legacy parlays built before v9-only picking
         for (let li = 0; li < updatedLegs.length; li++) {
           const leg = updatedLegs[li];
           const gid = leg.gameId;
           if (!gid) continue;
           let row = null;
-          // MLB uses game_pk, NBA/NCAA use game_id
           const sportKey = (leg.sportKey || (leg.sport === "⚾" ? "mlb" : "")).toLowerCase();
+          const cols = sportKey === "mlb"
+            ? "ats_correct,ats_units,result_entered,actual_home_runs,actual_away_runs,actual_home_score,actual_away_score,market_spread_home,home_team,away_team"
+            : "ats_correct,ats_units,result_entered,actual_home_score,actual_away_score,market_spread_home,home_team,away_team,home_team_name,away_team_name";
           if (sportKey === "mlb") {
             try {
-              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=ats_correct,result_entered&limit=1`);
-              if (res?.length) row = { ...res[0], _atsCorrect: res[0].ats_correct };
+              const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=${cols}&limit=1`);
+              if (res?.length) row = res[0];
             } catch {}
           } else {
             for (const table of ["ncaa_predictions", "nba_predictions"]) {
               try {
-                const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ats_correct,result_entered&limit=1`);
-                if (res?.length) { row = { ...res[0], _atsCorrect: res[0].ats_correct }; break; }
+                const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=${cols}&limit=1`);
+                if (res?.length) { row = res[0]; break; }
               } catch {}
             }
           }
           if (row?.result_entered) {
+            const correct = resolveAtsCorrect(row, leg);
+            if (correct === null) continue; // push or unscorable — leave leg undecided
             decided++;
-            const correct = !!row._atsCorrect;
             updatedLegs[li] = { ...leg, correct };
             if (correct) won++;
             else anyLoss = true;
@@ -280,7 +326,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           if (sport === "mlb") {
             const abbr = mlbNameToAbbr(tn).toUpperCase();
             try {
-              const all = await supabaseQuery(`/mlb_predictions?game_date=eq.${betDate}&result_entered=eq.true&select=game_pk,home_team,away_team,ats_correct,ou_correct`);
+              const all = await supabaseQuery(`/mlb_predictions?game_date=eq.${betDate}&result_entered=eq.true&select=game_pk,home_team,away_team,ats_correct,ats_units,ou_correct,actual_home_runs,actual_away_runs,actual_home_score,actual_away_score,market_spread_home`);
               for (const r of (all || [])) {
                 const h = (r.home_team||"").toUpperCase(), a = (r.away_team||"").toUpperCase();
                 if (h === abbr || a === abbr) { row = r; break; }
@@ -289,7 +335,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           } else {
             for (const table of ["nba_predictions", "ncaa_predictions"]) {
               try {
-                const all = await supabaseQuery(`/${table}?game_date=eq.${betDate}&result_entered=eq.true&select=game_id,home_team,away_team,ats_correct,ou_correct`);
+                const all = await supabaseQuery(`/${table}?game_date=eq.${betDate}&result_entered=eq.true&select=game_id,home_team,away_team,home_team_name,away_team_name,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,market_spread_home`);
                 for (const r of (all || [])) {
                   if ((r.home_team||"").toLowerCase().includes(tn) || (r.away_team||"").toLowerCase().includes(tn) || tn.includes((r.home_team||"").toLowerCase()) || tn.includes((r.away_team||"").toLowerCase())) {
                     row = r; break;
@@ -310,19 +356,21 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           const gid = pick.gameId;
           let row = null;
           const sportKey = (pick.sportKey || (pick.sport === "⚾" ? "mlb" : (pick.sport === "mlb" ? "mlb" : ""))).toLowerCase();
+          const cols = sportKey === "mlb"
+            ? "ats_correct,ats_units,result_entered,actual_home_runs,actual_away_runs,actual_home_score,actual_away_score,market_spread_home,home_team,away_team"
+            : "ats_correct,ats_units,result_entered,actual_home_score,actual_away_score,market_spread_home,home_team,away_team,home_team_name,away_team_name";
 
           if (gid) {
-            // Direct lookup by gameId
             if (sportKey === "mlb") {
               try {
-                const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=ats_correct,result_entered&limit=1`);
-                if (res?.length) row = { ...res[0], _atsCorrect: res[0].ats_correct };
+                const res = await supabaseQuery(`/mlb_predictions?game_pk=eq.${gid}&select=${cols}&limit=1`);
+                if (res?.length) row = res[0];
               } catch {}
             } else {
               for (const table of ["ncaa_predictions", "nba_predictions"]) {
                 try {
-                  const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=ats_correct,result_entered&limit=1`);
-                  if (res?.length) { row = { ...res[0], _atsCorrect: res[0].ats_correct }; break; }
+                  const res = await supabaseQuery(`/${table}?game_id=eq.${gid}&select=${cols}&limit=1`);
+                  if (res?.length) { row = res[0]; break; }
                 } catch {}
               }
             }
@@ -331,13 +379,12 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
           // Fallback: match by team name + date
           if (!row && pick.team) {
             const fallback = await findByTeamName(pick.team, sportKey || (pick.sport === "nba" ? "nba" : pick.sport === "ncaa" ? "ncaa" : "mlb"));
-            if (fallback) {
-              row = { result_entered: true, _atsCorrect: fallback.ats_correct };
-            }
+            if (fallback) row = fallback;
           }
 
           if (row?.result_entered) {
-            const correct = !!row._atsCorrect;
+            const correct = resolveAtsCorrect(row, pick);
+            if (correct === null) continue; // push or unscorable — skip
             updatedAts[ai] = { ...pick, correct };
             if (correct) atsW++; else atsL++;
           }

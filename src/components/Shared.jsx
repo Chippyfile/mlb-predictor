@@ -360,8 +360,8 @@ export function HistoryTab({ table, refreshKey }) {
   const load = useCallback(async () => {
     setLoading(true);
     const histCols = isMLB
-      ? "id,game_date,home_team,away_team,spread_home,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs"
-      : "id,game_date,home_team,away_team,home_team_name,away_team_name,spread_home,ou_total,win_pct_home,ml_win_prob_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
+      ? "id,game_date,home_team,away_team,spread_home,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs"
+      : "id,game_date,home_team,away_team,home_team_name,away_team_name,spread_home,ou_total,win_pct_home,ml_win_prob_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
@@ -447,23 +447,27 @@ export function HistoryTab({ table, refreshKey }) {
                       <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayAbbr} {awayScore} – {homeAbbr} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
-                        if (!hasMarketSpread || !r.result_entered) return "—";
-                        // Only grade ATS when model had enough edge to trigger a bet
-                        const modelMargin = r.spread_home ?? (r.pred_home_runs != null && r.pred_away_runs != null ? r.pred_home_runs - r.pred_away_runs : null);
-                        if (modelMargin == null) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        const mktImplied = -parseFloat(r.market_spread_home);
-                        const disagree = Math.abs(modelMargin - mktImplied);
-                        const atsMinEdge = isMLB ? 1.0 : 4;
-                        if (disagree < atsMinEdge) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        // Compute ATS result from actual scores
+                        if (!r.result_entered) return "—";
+                        // v9 sniper is the source of truth for whether a bet existed.
+                        // No v9 pick → no ATS result to display.
+                        if (!r.ats_units || r.ats_units <= 0) {
+                          return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        }
+                        // Prefer cron-graded result
+                        if (r.ats_correct === true) return "✅";
+                        if (r.ats_correct === false) return "❌";
+                        // Fallback: inline compute from scores + stored pick side.
+                        // Covers the edge case where ats_units>0 but grader hasn't run yet.
+                        if (r.market_spread_home == null || !r.ats_side) {
+                          return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        }
                         const hs = parseFloat(r.actual_home_runs ?? r.actual_home_score ?? 0);
                         const as_ = parseFloat(r.actual_away_runs ?? r.actual_away_score ?? 0);
-                        const margin = hs - as_;
-                        const atsResult = margin + parseFloat(r.market_spread_home);
+                        const atsResult = (hs - as_) + parseFloat(r.market_spread_home);
                         if (atsResult === 0) return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
-                        const modelSideHome = modelMargin > mktImplied;
+                        const pickedHome = r.ats_side === "HOME";
                         const homeCovered = atsResult > 0;
-                        return modelSideHome === homeCovered ? "✅" : "❌";
+                        return pickedHome === homeCovered ? "✅" : "❌";
                       })()}</td>
                       <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
                         if (!hasMarketOU || !r.result_entered) return "—";
