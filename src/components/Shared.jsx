@@ -525,12 +525,25 @@ const _resolveTeamName = (raw) => {
   return _NBA_NAMES[s] || _NFL_NAMES[s] || s;
 };
 const _detectSport = (g) => {
-  // Heuristic: NBA/NFL games have short abbreviation homeTeam (2-3 chars), NCAA has full names
+  if (g._sport) return g._sport;
+  if (g.sport) return g.sport.toUpperCase();
   const ht = typeof g.homeTeam === "string" ? g.homeTeam : "";
   if (_NBA_NAMES[ht]) return "NBA";
   if (_NFL_NAMES[ht]) return "NFL";
+  // NCAAF: check for football-specific fields
+  if (g.pred?.parlayEligible !== undefined || g.pred?.atsConsensus !== undefined) return "NCAAF";
   return "NCAA";
 };
+
+const _SPORT_CFG = [
+  { key: "ALL", label: "All", icon: "🎯", color: C.blue },
+  { key: "MLB", label: "⚾ MLB", icon: "⚾", color: C.blue, bg: "#0d1a2e" },
+  { key: "NCAA", label: "🏀 NCAAB", icon: "🏀", color: C.orange, bg: "#2a1a0a" },
+  { key: "NBA", label: "🏀 NBA", icon: "🏀", color: "#bc8cff", bg: "#1a0d2e" },
+  { key: "NFL", label: "🏈 NFL", icon: "🏈", color: "#f97316", bg: "#1a0f00" },
+  { key: "NCAAF", label: "🏈 CFB", icon: "🏈", color: "#22c55e", bg: "#0d1a12" },
+];
+const _LEG_COUNTS = [2, 3, 4, 5, 6, 7, 8, 10, 12, 15];
 
 export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
   const [sportFilter, setSportFilter] = useState("ALL");
@@ -548,17 +561,26 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
       const wp = g.pred.homeWinPct ?? 0.5;
       return { sport: "MLB", gamePk: g.gamePk || g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
-    const ncaaLegs = ncaaGames.filter(g => g.pred).map(g => {
+    const otherLegs = ncaaGames.filter(g => g.pred).map(g => {
       const pickHome = g.pred.homeWinPct >= 0.5;
       const ml = pickHome ? (g.odds?.homeML || g.pred.modelML_home) : (g.odds?.awayML || g.pred.modelML_away);
       const sport = _detectSport(g);
       const hName = _resolveTeamName(g.homeAbbr || g.homeTeam || g.homeTeamName).slice(0, 12);
       const aName = _resolveTeamName(g.awayAbbr || g.awayTeam || g.awayTeamName).slice(0, 12);
-      const wp = g.pred.homeWinPct ?? 0.5;
-      return { sport, gamePk: g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
+      let prob = pickHome ? (g.pred.homeWinPct ?? 0.5) : (1 - (g.pred.homeWinPct ?? 0.5));
+      if (g.pred.parlayConfidence) prob = g.pred.parlayConfidence;
+      if (g.pred.winProbability && sport === "NCAAF") prob = g.pred.winProbability;
+      return { sport, gamePk: g.gameId || g.gamePk, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
-    return [...mlbLegs, ...ncaaLegs].sort((a, b) => b.prob - a.prob);
+    return [...mlbLegs, ...otherLegs].filter(l => l.prob > 0.5 && l.ml).sort((a, b) => b.prob - a.prob);
   }, [mlbGames, ncaaGames]);
+
+  // Sport counts for filter badges
+  const sportCounts = useMemo(() => {
+    const c = {};
+    allGameLegs.forEach(l => { c[l.sport] = (c[l.sport] || 0) + 1; });
+    return c;
+  }, [allGameLegs]);
 
   const filteredLegs = useMemo(() => {
     if (sportFilter === "ALL") return allGameLegs;
@@ -574,16 +596,16 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
   const toggleCustomLeg = (leg) => {
     const exists = customLegs.find(l => l.gamePk === leg.gamePk && l.sport === leg.sport);
     if (exists) setCustomLegs(customLegs.filter(l => !(l.gamePk === leg.gamePk && l.sport === leg.sport)));
-    else setCustomLegs([...customLegs, leg]);
+    else if (customLegs.length < 15) setCustomLegs([...customLegs, leg]);
   };
 
-  const sportColor = s => ({ MLB: C.blue, NBA: "#58a6ff", NFL: "#f97316", NCAAF: "#22c55e" }[s] || C.orange);
+  const sportColor = s => (_SPORT_CFG.find(sp => sp.key === s)?.color || C.orange);
   const sportBadge = s => {
-    const icon = { MLB: "⚾", NBA: "🏀", NFL: "🏈", NCAAF: "🏈" }[s] || "🏀";
+    const cfg = _SPORT_CFG.find(sp => sp.key === s) || { icon: "🏟", color: C.dim, bg: "#111" };
     return (
-    <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: s === "MLB" ? "#0d1a2e" : s === "NBA" ? "#0d1a2e" : s === "NFL" ? "#1a0f00" : "#2a1a0a", color: sportColor(s), marginLeft: 4 }}>
-      {icon}
-    </span>
+      <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: cfg.bg || "#111", color: cfg.color, marginLeft: 4 }}>
+        {cfg.icon}
+      </span>
     );
   };
 
@@ -592,13 +614,29 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         <h2 style={{ margin: 0, fontSize: 14, color: C.blue, letterSpacing: 2, textTransform: "uppercase" }}>🎯 Parlay Builder</h2>
         <div style={{ display: "flex", gap: 3, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3 }}>
-          {[["ALL", "All"], ["MLB", "⚾"], ["NCAA", "🏀"], ["NBA", "🏀"], ["NFL", "🏈"]].map(([v, l]) => (
-            <button key={v} onClick={() => setSportFilter(v)} style={{ padding: "3px 10px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, background: sportFilter === v ? C.blue : "transparent", color: sportFilter === v ? C.bg : C.dim }}>{l}</button>
-          ))}
+          {_SPORT_CFG.map(sp => {
+            const count = sp.key === "ALL" ? allGameLegs.length : (sportCounts[sp.key] || 0);
+            if (sp.key !== "ALL" && count === 0) return null;
+            return (
+              <button key={sp.key} onClick={() => setSportFilter(sp.key)} style={{
+                padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer",
+                fontSize: 10, fontWeight: 700,
+                background: sportFilter === sp.key ? (sp.color || C.blue) : "transparent",
+                color: sportFilter === sp.key ? C.bg : C.dim,
+              }}>
+                {sp.label}{count > 0 && sp.key !== "ALL" ? ` ${count}` : ""}
+              </button>
+            );
+          })}
         </div>
-        <div style={{ display: "flex", gap: 3 }}>
-          {[2, 3, 4, 5, 6, 7, 8].map(n => (
-            <button key={n} onClick={() => { setLegCount(n); setMode("auto"); }} style={{ width: 26, height: 26, borderRadius: "50%", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 800, background: mode === "auto" && legCount === n ? C.blue : "#161b22", color: mode === "auto" && legCount === n ? C.bg : C.dim }}>{n}</button>
+        <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
+          {_LEG_COUNTS.map(n => (
+            <button key={n} onClick={() => { setLegCount(n); setMode("auto"); }} style={{
+              width: n >= 10 ? 30 : 26, height: 26, borderRadius: "50%", border: "none",
+              cursor: "pointer", fontSize: 11, fontWeight: 800,
+              background: mode === "auto" && legCount === n ? C.blue : "#161b22",
+              color: mode === "auto" && legCount === n ? C.bg : C.dim,
+            }}>{n}</button>
           ))}
         </div>
         <button onClick={() => setMode(m => m === "auto" ? "custom" : "auto")} style={{ background: mode === "custom" ? C.blue : "#161b22", color: mode === "custom" ? C.bg : "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11 }}>
@@ -645,7 +683,7 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
           const isAutoSel = mode === "auto" && autoParlay.find(l => l.gamePk === leg.gamePk && l.sport === leg.sport);
           const isCustomSel = customLegs.find(l => l.gamePk === leg.gamePk && l.sport === leg.sport);
           return (
-            <div key={`${leg.sport}-${leg.gamePk}`} style={{ background: isAutoSel ? "#0e2015" : C.card, border: `1px solid ${isAutoSel ? "#2ea043" : C.border}`, borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div key={`${leg.sport}-${leg.gamePk}-${i}`} style={{ background: isAutoSel ? "#0e2015" : C.card, border: `1px solid ${isAutoSel ? "#2ea043" : C.border}`, borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div style={{ width: 22, fontSize: 10, color: C.dim }}>{isAutoSel ? "✅" : `#${i + 1}`}</div>
               <div style={{ flex: 1, minWidth: 120 }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>{leg.label}{sportBadge(leg.sport)}</div>
