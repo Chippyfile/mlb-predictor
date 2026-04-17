@@ -1,128 +1,202 @@
-import { pstTodayStr } from "../../utils/dateUtils.js";
-// src/sports/ncaaf/ncaafSync.js
-// Lines 3969–4046 of App.jsx (extracted)
+/**
+ * ncaafSync.js — NCAAF Frontend Sync Module
+ * ============================================
+ * Architecture: Supabase is sole source of truth.
+ * Page load: read from Supabase.
+ * Refresh: trigger backend cron → re-read from Supabase.
+ * 
+ * No frontend computation of predictions — everything comes from backend.
+ */
 
-import { supabaseQuery } from "../../utils/supabase.js";
-import { fetchOdds, _sleep } from "../../utils/sharedUtils.js";
-import {
-  fetchNCAAFGamesForDate,
-  fetchNCAAFTeamStats,
-  ncaafPredictGame,
-  matchNCAAFOddsToGame,
-  ncaafFillFinalScores,
-} from "./ncaafUtils.js";
+import { supabaseQuery } from "../../utils/supabaseClient";
 
-// ─────────────────────────────────────────────────────────────
-// AUTO SYNC
-// ─────────────────────────────────────────────────────────────
-export async function ncaafAutoSync(onProgress) {
-  onProgress?.("🏈 Syncing NCAAF…");
-  const today = pstTodayStr();
-  const yr    = new Date().getFullYear();
-  const seasonStart = `${yr}-08-15`; // CFB starts late August
+const RAILWAY_API = import.meta.env.VITE_API_URL || "https://sports-predictor-api-production.up.railway.app";
 
-  const existing = await supabaseQuery(
-    `/ncaaf_predictions?select=id,game_date,home_team_id,away_team_id,result_entered,game_id&order=game_date.asc&limit=10000`
+// ═══════════════════════════════════════════════════════════
+// LOAD PREDICTIONS FROM SUPABASE
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Load NCAAF predictions for a specific date range or week.
+ * @param {Object} opts - { season, week, gameDate }
+ * @returns {Array} predictions from Supabase
+ */
+export async function loadNCAAFPredictions({ season, week, gameDate } = {}) {
+  let query = "/ncaaf_predictions?select=*&order=game_date.asc,win_probability.desc";
+
+  if (season && week) {
+    query += `&season=eq.${season}&week=eq.${week}`;
+  } else if (gameDate) {
+    query += `&game_date=eq.${gameDate}`;
+  } else if (season) {
+    query += `&season=eq.${season}`;
+  }
+
+  const rows = await supabaseQuery(query);
+  if (!rows?.length) return [];
+
+  return rows.map(mapNCAAFPrediction);
+}
+
+/**
+ * Load all NCAAF predictions for today / this week.
+ */
+export async function loadNCAAFToday() {
+  const today = new Date().toISOString().split("T")[0];
+  // CFB games are usually Saturday, but load the whole week
+  const weekAgo = new Date(Date.now() - 3 * 86400000).toISOString().split("T")[0];
+  const weekAhead = new Date(Date.now() + 4 * 86400000).toISOString().split("T")[0];
+
+  const query = `/ncaaf_predictions?select=*&game_date=gte.${weekAgo}&game_date=lte.${weekAhead}&order=game_date.asc,win_probability.desc`;
+  const rows = await supabaseQuery(query);
+  return (rows || []).map(mapNCAAFPrediction);
+}
+
+// ═══════════════════════════════════════════════════════════
+// MAP SUPABASE ROW → DISPLAY FORMAT
+// ═══════════════════════════════════════════════════════════
+
+function mapNCAAFPrediction(r) {
+  return {
+    // Identity
+    gameId: r.game_id,
+    gameDate: r.game_date,
+    season: r.season,
+    week: r.week,
+    homeTeam: r.home_team,
+    awayTeam: r.away_team,
+    conferenceGame: r.conference_game,
+    neutralSite: r.neutral_site,
+
+    // Market
+    spread: r.market_spread_home,
+    total: r.market_total,
+
+    // Winner
+    predictedWinner: r.predicted_winner,
+    winProbability: r.win_probability,
+    predMargin: r.pred_margin,
+
+    // Scores
+    predHomeScore: r.pred_home_score,
+    predAwayScore: r.pred_away_score,
+    predTotal: r.pred_total,
+
+    // ATS
+    atsEdge: r.ats_edge,
+    atsContrarian: r.ats_contrarian,
+    atsConsensus: r.ats_consensus,
+    atsAvgEdge: r.ats_avg_edge,
+    atsPick: r.ats_pick,
+    atsUnits: r.ats_units || 0,
+
+    // O/U
+    ouEdge: r.ou_edge,
+    ouPick: r.ou_pick,
+    ouUnits: r.ou_units || 0,
+
+    // Parlay
+    parlayEligible: r.parlay_eligible,
+    parlayConfidence: r.parlay_confidence,
+
+    // Results (filled after grading)
+    actualHomeScore: r.actual_home_score,
+    actualAwayScore: r.actual_away_score,
+    actualMargin: r.actual_margin,
+    resultEntered: r.result_entered,
+    mlCorrect: r.ml_correct,
+    atsCorrect: r.ats_correct,
+    ouCorrect: r.ou_correct,
+    atsProfit: r.ats_profit,
+    ouProfit: r.ou_profit,
+
+    // Derived display values
+    _displayWinner: r.predicted_winner === "HOME" ? r.home_team : r.away_team,
+    _displayScore: `${r.pred_away_score || "?"}-${r.pred_home_score || "?"}`,
+    _atsDisplay: r.ats_pick
+      ? `${r.ats_pick === "HOME" ? r.home_team : r.away_team} ${r.ats_units}u`
+      : null,
+    _ouDisplay: r.ou_pick ? `${r.ou_pick} ${r.ou_units}u` : null,
+    _confidenceTier: r.win_probability >= 0.95 ? "LOCK"
+      : r.win_probability >= 0.90 ? "STRONG"
+      : r.win_probability >= 0.80 ? "SOLID"
+      : r.win_probability >= 0.70 ? "LEAN"
+      : "TOSS-UP",
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// REFRESH (trigger backend, then re-read)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Trigger backend prediction for a specific week, then reload.
+ */
+export async function refreshNCAAFWeek(season, week) {
+  try {
+    await fetch(`${RAILWAY_API}/predict/ncaaf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ season, week }),
+    });
+  } catch (e) {
+    console.warn("NCAAF refresh failed:", e);
+  }
+
+  // Re-read from Supabase (source of truth)
+  return loadNCAAFPredictions({ season, week });
+}
+
+// ═══════════════════════════════════════════════════════════
+// SEASON SUMMARY
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Load season-level performance summary.
+ */
+export async function loadNCAAFSeasonSummary(season) {
+  const rows = await supabaseQuery(
+    `/ncaaf_predictions?season=eq.${season}&result_entered=eq.true&select=ml_correct,ats_correct,ou_correct,ats_profit,ou_profit,ats_units,ou_units`
   );
-  const savedKeys = new Set(
-    (existing || []).map(r => r.game_id || `${r.game_date}|${r.home_team_id}|${r.away_team_id}`)
+  if (!rows?.length) return null;
+
+  const mlGames = rows.filter((r) => r.ml_correct !== null);
+  const atsGames = rows.filter((r) => r.ats_correct !== null);
+  const ouGames = rows.filter((r) => r.ou_correct !== null);
+
+  return {
+    totalGames: rows.length,
+    mlAccuracy: mlGames.length ? mlGames.filter((r) => r.ml_correct).length / mlGames.length : 0,
+    mlGames: mlGames.length,
+    atsAccuracy: atsGames.length ? atsGames.filter((r) => r.ats_correct).length / atsGames.length : 0,
+    atsGames: atsGames.length,
+    atsProfit: atsGames.reduce((s, r) => s + (r.ats_profit || 0), 0),
+    ouAccuracy: ouGames.length ? ouGames.filter((r) => r.ou_correct).length / ouGames.length : 0,
+    ouGames: ouGames.length,
+    ouProfit: ouGames.reduce((s, r) => s + (r.ou_profit || 0), 0),
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// PARLAY PICKS (for DailyBets integration)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Get this week's parlay-eligible picks (ML 90%+ confidence).
+ */
+export async function getNCAAFParlayPicks(season, week) {
+  const rows = await supabaseQuery(
+    `/ncaaf_predictions?season=eq.${season}&week=eq.${week}&parlay_eligible=eq.true&select=*&order=win_probability.desc`
   );
-  const pending = (existing || []).filter(r => !r.result_entered);
-  if (pending.length) {
-    const f = await ncaafFillFinalScores(pending);
-    if (f) onProgress?.(`🏈 ${f} NCAAF result(s) recorded`);
-  }
+  return (rows || []).map(mapNCAAFPrediction);
+}
 
-  // CFB: scan only Saturdays + Thursdays + Fridays + Sundays (bowl games)
-  const dates = [];
-  const cur = new Date(seasonStart);
-  const todayDate = new Date(today);
-  while (cur <= todayDate) {
-    const day = cur.getDay(); // 0=Sun, 4=Thu, 5=Fri, 6=Sat
-    if (day === 6 || day === 4 || day === 5 || day === 0) {
-      dates.push(cur.toISOString().split("T")[0]);
-    }
-    cur.setDate(cur.getDate() + 1);
-  }
-
-  const todayOdds = (await fetchOdds("americanfootball_ncaaf"))?.games || [];
-  let newPred = 0;
-
-  for (const dateStr of dates) {
-    const games = await fetchNCAAFGamesForDate(dateStr);
-    if (!games.length) { await _sleep(80); continue; }
-
-    const unsaved = games.filter(g =>
-      !savedKeys.has(g.gameId || `${dateStr}|${g.homeTeamId}|${g.awayTeamId}`)
-    );
-    if (!unsaved.length) { await _sleep(80); continue; }
-
-    const isToday = dateStr === today;
-    const rows = (await Promise.all(unsaved.map(async g => {
-      const [hs, as_] = await Promise.all([
-        fetchNCAAFTeamStats(g.homeTeamId),
-        fetchNCAAFTeamStats(g.awayTeamId),
-      ]);
-      if (!hs || !as_) return null;
-      const pred = ncaafPredictGame({
-        homeStats: hs, awayStats: as_,
-        neutralSite: g.neutralSite,
-        weather: g.weather,
-        homeTeamName: g.homeTeamName || "",
-        awayTeamName: g.awayTeamName || "",
-        isConferenceGame: g.conferenceGame || false,
-      });
-      if (!pred) return null;
-      const odds = isToday ? (todayOdds.find(o => matchNCAAFOddsToGame(o, g)) || null) : null;
-      return {
-        game_date:        dateStr,
-        game_id:          g.gameId,
-        home_team:        g.homeAbbr || g.homeTeamName,
-        away_team:        g.awayAbbr || g.awayTeamName,
-        home_team_name:   g.homeTeamName,
-        away_team_name:   g.awayTeamName,
-        home_team_id:     g.homeTeamId,
-        away_team_id:     g.awayTeamId,
-        home_rank:        g.homeRank,
-        away_rank:        g.awayRank,
-        home_conference:  hs.conference,
-        away_conference:  as_.conference,
-        week:             g.week,
-        season:           g.season,
-        model_ml_home:    pred.modelML_home,
-        model_ml_away:    pred.modelML_away,
-        spread_home:      pred.projectedSpread,
-        ou_total:         pred.ouTotal,
-        win_pct_home:     parseFloat(pred.homeWinPct.toFixed(4)),
-        confidence:       pred.confidence,
-        pred_home_score:  pred.homeScore,
-        pred_away_score:  pred.awayScore,
-        home_adj_em:      pred.homeAdjEM,
-        away_adj_em:      pred.awayAdjEM,
-        neutral_site:     g.neutralSite || false,
-        key_factors:      pred.factors,
-        ...(odds?.marketSpreadHome != null && { market_spread_home: odds.marketSpreadHome }),
-        ...(odds?.marketTotal      != null && { market_ou_total:    odds.marketTotal }),
-        // CLV: Opening moneylines captured at prediction time
-        ...(odds?.homeML           != null && { opening_home_ml:    odds.homeML }),
-        ...(odds?.awayML           != null && { opening_away_ml:    odds.awayML }),
-      };
-    }))).filter(Boolean);
-
-    if (rows.length) {
-      await supabaseQuery("/ncaaf_predictions", "POST", rows);
-      newPred += rows.length;
-      const ns = await supabaseQuery(
-        `/ncaaf_predictions?game_date=eq.${dateStr}&result_entered=eq.false` +
-        `&select=id,game_id,home_team_id,away_team_id,ou_total,market_ou_total,` +
-        `market_spread_home,result_entered,game_date,win_pct_home,spread_home,` +
-        `pred_home_score,pred_away_score`
-      );
-      if (ns?.length) await ncaafFillFinalScores(ns);
-      rows.forEach(r => savedKeys.add(r.game_id || `${dateStr}|${r.home_team_id}|${r.away_team_id}`));
-    }
-    await _sleep(200);
-  }
-
-  onProgress?.(newPred ? `🏈 NCAAF sync complete — ${newPred} new` : "🏈 NCAAF up to date");
+/**
+ * Get this week's ATS picks (units > 0).
+ */
+export async function getNCAAFATSPicks(season, week) {
+  const rows = await supabaseQuery(
+    `/ncaaf_predictions?season=eq.${season}&week=eq.${week}&ats_units=gt.0&select=*&order=ats_avg_edge.desc`
+  );
+  return (rows || []).map(mapNCAAFPrediction);
 }
