@@ -8,7 +8,7 @@
  * No frontend computation of predictions — everything comes from backend.
  */
 
-import { supabaseQuery } from "../../utils/supabaseClient";
+import { supabaseQuery } from "../../utils/supabase.js";
 
 const RAILWAY_API = import.meta.env.VITE_API_URL || "https://sports-predictor-api-production.up.railway.app";
 
@@ -199,4 +199,12 @@ export async function getNCAAFATSPicks(season, week) {
     `/ncaaf_predictions?season=eq.${season}&week=eq.${week}&ats_units=gt.0&select=*&order=ats_avg_edge.desc`
   );
   return (rows || []).map(mapNCAAFPrediction);
+}
+
+// ── Compatibility export for NCAAFCalendarTab ──
+export async function ncaafAutoSync(onProgress) {
+  onProgress?.("🏈 Syncing NCAAF…");
+  const preds = await loadNCAAFToday();
+  onProgress?.(preds.length ? `🏈 ${preds.length} NCAAF games` : "🏈 No NCAAF games");
+  return preds;
 }
