@@ -463,11 +463,12 @@ export function HistoryTab({ table, refreshKey }) {
                       <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
                         {(() => {
                           if (predTotal == null) return "—";
-                          const rounded = (Math.round(predTotal * 2) / 2).toFixed(1);
+                          const roundedNum = Math.round(predTotal * 2) / 2;
+                          const rounded = roundedNum.toFixed(1);
                           if (mktTotal != null) {
-                            const isOver = predTotal > mktTotal;
-                            const isUnder = predTotal < mktTotal;
-                            const color = isOver ? C.green : isUnder ? "#58a6ff" : C.yellow;
+                            const isOver = roundedNum > mktTotal;
+                            const isUnder = roundedNum < mktTotal;
+                            const color = isOver ? C.green : isUnder ? "#58a6ff" : C.muted;
                             const tag = isOver ? " O" : isUnder ? " U" : "";
                             return <>
                               <span style={{ color, fontWeight: 600 }}>{rounded}{tag}</span>
