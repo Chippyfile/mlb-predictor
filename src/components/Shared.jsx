@@ -450,7 +450,7 @@ export function HistoryTab({ table, refreshKey }) {
                       {/* PRED SCORE */}
                       <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap", color: C.muted }}>
                         {predH != null && predA != null
-                          ? `${isMLB ? parseFloat(predA).toFixed(1) : Math.round(predA)}-${isMLB ? parseFloat(predH).toFixed(1) : Math.round(predH)}`
+                          ? `${Math.round(predA)}-${Math.round(predH)}`
                           : "—"}
                       </td>
                       {/* ACTUAL SCORE */}
@@ -459,21 +459,35 @@ export function HistoryTab({ table, refreshKey }) {
                           ? `${awayScore}-${homeScore}`
                           : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳</span>}
                       </td>
-                      {/* PRED O/U (model total vs market line) */}
+                      {/* PRED O/U (model total vs market line — green O / blue U) */}
                       <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
-                        {predTotal != null
-                          ? <span style={{ color: C.yellow }}>{(Math.round(predTotal * 2) / 2).toFixed(1)}</span>
-                          : "—"}
-                        {mktTotal != null && <span style={{ color: C.dim, fontSize: 9 }}>{" / "}{mktTotal}</span>}
+                        {(() => {
+                          if (predTotal == null) return "—";
+                          const rounded = (Math.round(predTotal * 2) / 2).toFixed(1);
+                          if (mktTotal != null) {
+                            const isOver = predTotal > mktTotal;
+                            const isUnder = predTotal < mktTotal;
+                            const color = isOver ? C.green : isUnder ? "#58a6ff" : C.yellow;
+                            const tag = isOver ? " O" : isUnder ? " U" : "";
+                            return <>
+                              <span style={{ color, fontWeight: 600 }}>{rounded}{tag}</span>
+                              <span style={{ color: C.dim, fontSize: 9 }}>{" / "}{mktTotal}</span>
+                            </>;
+                          }
+                          return <span style={{ color: C.muted }}>{rounded}</span>;
+                        })()}
                       </td>
-                      {/* ACTUAL O/U */}
+                      {/* ACTUAL O/U (O/U label first, then total) */}
                       <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
-                        {actualTotal != null
-                          ? <span style={{ color: mktTotal != null ? (actualTotal > mktTotal ? C.green : actualTotal < mktTotal ? "#58a6ff" : C.yellow) : "#e2e8f0", fontWeight: 600 }}>
-                              {isMLB ? actualTotal : Math.round(actualTotal)}
-                              {mktTotal != null && <span style={{ fontSize: 9, color: C.dim }}>{actualTotal > mktTotal ? " O" : actualTotal < mktTotal ? " U" : " P"}</span>}
-                            </span>
-                          : "—"}
+                        {(() => {
+                          if (actualTotal == null) return "—";
+                          if (mktTotal == null) return <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{actualTotal}</span>;
+                          const isOver = actualTotal > mktTotal;
+                          const isUnder = actualTotal < mktTotal;
+                          const color = isOver ? C.green : isUnder ? "#58a6ff" : C.yellow;
+                          const tag = isOver ? "O " : isUnder ? "U " : "P ";
+                          return <span style={{ color, fontWeight: 600 }}>{tag}{actualTotal}</span>;
+                        })()}
                       </td>
                       {/* WIN% (best side) */}
                       <td style={{ padding: "6px 6px", textAlign: "center", color: wpDisp != null ? (wpDisp >= 65 ? C.green : wpDisp >= 55 ? C.blue : C.muted) : C.dim }}>
