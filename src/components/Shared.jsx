@@ -360,8 +360,8 @@ export function HistoryTab({ table, refreshKey }) {
   const load = useCallback(async () => {
     setLoading(true);
     const histCols = isMLB
-      ? "id,game_date,home_team,away_team,spread_home,ou_total,win_pct_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs"
-      : "id,game_date,home_team,away_team,home_team_name,away_team_name,spread_home,ou_total,win_pct_home,ml_win_prob_home,confidence,result_entered,ml_correct,rl_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total";
+      ? "id,game_date,home_team,away_team,ou_total,win_pct_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs,ou_pick,ou_units"
+      : "id,game_date,home_team,away_team,home_team_name,away_team_name,ou_total,win_pct_home,ml_win_prob_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,pred_home_score,pred_away_score,ou_pick,ou_units";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
@@ -418,78 +418,100 @@ export function HistoryTab({ table, refreshKey }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
                 <tr style={{ color: C.dim, fontSize: 9 }}>
-                  {["MATCHUP", "MODEL ML", "O/U", "WIN %", "CONF", "RESULT", "ML✓", "ATS✓", "O/U✓", ""].map(h => (
-                    <th key={h} style={{ padding: "5px 8px", textAlign: "left", borderBottom: `1px solid #161b22`, whiteSpace: "nowrap" }}>{h}</th>
+                  {["MATCHUP", "PRED", "ACTUAL", "O/U PRED", "O/U ACT", "WIN%", "ML", "ATS", "O/U", ""].map(h => (
+                    <th key={h} style={{ padding: "5px 6px", textAlign: h === "MATCHUP" ? "left" : "center", borderBottom: `1px solid #161b22`, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {recs.map(r => {
-                  const bg = r.result_entered ? (r.ml_correct ? "rgba(63,185,80,0.06)" : "rgba(248,81,73,0.06)") : "transparent";
                   const homeScore = isMLB ? (r.actual_home_runs ?? r.actual_home_score) : r.actual_home_score;
                   const awayScore = isMLB ? r.actual_away_runs : r.actual_away_score;
-                  // Always prefer abbreviation (r.home_team / r.away_team) over full names
+                  const predH = isMLB ? r.pred_home_runs : r.pred_home_score;
+                  const predA = isMLB ? r.pred_away_runs : r.pred_away_score;
                   const homeAbbr = r.home_team || (r.home_team_name || "HOME").split(" ").pop();
                   const awayAbbr = r.away_team || (r.away_team_name || "AWAY").split(" ").pop();
-                  // Only show ATS/O/U results when real market data existed
-                  const hasMarketSpread = r.market_spread_home != null;
                   const hasMarketOU = r.market_ou_total != null;
+                  const bg = r.result_entered ? (r.ml_correct ? "rgba(63,185,80,0.04)" : "rgba(248,81,73,0.04)") : "transparent";
+                  // Pred total & actual total
+                  const predTotal = (predH != null && predA != null) ? parseFloat(predH) + parseFloat(predA) : null;
+                  const actualTotal = (homeScore != null && awayScore != null) ? parseFloat(homeScore) + parseFloat(awayScore) : null;
+                  const mktTotal = hasMarketOU ? parseFloat(r.market_ou_total) : null;
+                  // Win%
+                  const wp = r.win_pct_home ?? r.ml_win_prob_home;
+                  const wpDisp = wp != null ? Math.round(Math.max(wp, 1 - wp) * 100) : null;
                   return (
                     <tr key={r.id} style={{ borderBottom: `1px solid #0d1117`, background: bg }}>
-                      <td style={{ padding: "7px 8px", fontWeight: 700, whiteSpace: "nowrap" }}>{awayAbbr} @ {homeAbbr} {r.game_type === "S" && <span style={{ fontSize: 8, color: C.yellow, marginLeft: 4 }}>ST</span>}</td>
-                      <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{(() => {
-                        const margin = r.spread_home ?? (r.pred_home_runs != null && r.pred_away_runs != null ? parseFloat((r.pred_home_runs - r.pred_away_runs).toFixed(1)) : null);
-                        return margin != null ? <span style={{ color: margin > 0 ? "#3fb950" : "#58a6ff", fontWeight: 600 }}>{margin > 0 ? "+" : ""}{parseFloat(margin).toFixed(1)}</span> : <span style={{ color: C.dim }}>—</span>;
-                      })()}</td>
-                      <td style={{ padding: "7px 8px", color: C.yellow }}>{r.ou_total}</td>
-                      <td style={{ padding: "7px 8px", color: C.blue }}>{r.win_pct_home != null ? `${Math.round(r.win_pct_home * 100)}%` : "—"}</td>
-                      <td style={{ padding: "7px 8px" }}><span style={{ color: confColor(r.confidence), fontWeight: 700, fontSize: 10 }}>{r.confidence}</span></td>
-                      <td style={{ padding: "7px 8px", whiteSpace: "nowrap" }}>{r.result_entered ? <span style={{ color: C.green }}>{awayAbbr} {awayScore} – {homeAbbr} {homeScore}</span> : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳ Pending</span>}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
+                      {/* MATCHUP */}
+                      <td style={{ padding: "6px 6px", fontWeight: 700, whiteSpace: "nowrap" }}>
+                        {awayAbbr} @ {homeAbbr}
+                        {r.game_type === "S" && <span style={{ fontSize: 8, color: C.yellow, marginLeft: 4 }}>ST</span>}
+                      </td>
+                      {/* PRED SCORE */}
+                      <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap", color: C.muted }}>
+                        {predH != null && predA != null
+                          ? `${isMLB ? parseFloat(predA).toFixed(1) : Math.round(predA)}-${isMLB ? parseFloat(predH).toFixed(1) : Math.round(predH)}`
+                          : "—"}
+                      </td>
+                      {/* ACTUAL SCORE */}
+                      <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap", fontWeight: 600, color: r.result_entered ? "#e2e8f0" : C.dim }}>
+                        {r.result_entered
+                          ? `${awayScore}-${homeScore}`
+                          : <span style={{ color: "#4a3a00", fontSize: 10 }}>⏳</span>}
+                      </td>
+                      {/* PRED O/U (model total vs market line) */}
+                      <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
+                        {predTotal != null
+                          ? <span style={{ color: C.yellow }}>{isMLB ? predTotal.toFixed(1) : Math.round(predTotal)}</span>
+                          : "—"}
+                        {mktTotal != null && <span style={{ color: C.dim, fontSize: 9 }}>{" / "}{mktTotal}</span>}
+                      </td>
+                      {/* ACTUAL O/U */}
+                      <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
+                        {actualTotal != null
+                          ? <span style={{ color: mktTotal != null ? (actualTotal > mktTotal ? C.green : actualTotal < mktTotal ? "#58a6ff" : C.yellow) : "#e2e8f0", fontWeight: 600 }}>
+                              {isMLB ? actualTotal : Math.round(actualTotal)}
+                              {mktTotal != null && <span style={{ fontSize: 9, color: C.dim }}>{actualTotal > mktTotal ? " O" : actualTotal < mktTotal ? " U" : " P"}</span>}
+                            </span>
+                          : "—"}
+                      </td>
+                      {/* WIN% (best side) */}
+                      <td style={{ padding: "6px 6px", textAlign: "center", color: wpDisp != null ? (wpDisp >= 65 ? C.green : wpDisp >= 55 ? C.blue : C.muted) : C.dim }}>
+                        {wpDisp != null ? `${wpDisp}%` : "—"}
+                      </td>
+                      {/* ML ✓ */}
+                      <td style={{ padding: "6px 4px", textAlign: "center" }}>
+                        {r.result_entered ? (r.ml_correct ? "✅" : "❌") : "—"}
+                      </td>
+                      {/* ATS ✓ — v9 sniper source of truth */}
+                      <td style={{ padding: "6px 4px", textAlign: "center" }}>{(() => {
                         if (!r.result_entered) return "—";
-                        // v9 sniper is the source of truth for whether a bet existed.
-                        // No v9 pick → no ATS result to display.
-                        if (!r.ats_units || r.ats_units <= 0) {
-                          return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        }
-                        // Prefer cron-graded result
+                        if (!r.ats_units || r.ats_units <= 0) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
                         if (r.ats_correct === true) return "✅";
                         if (r.ats_correct === false) return "❌";
-                        // Fallback: inline compute from scores + stored pick side.
-                        // Covers the edge case where ats_units>0 but grader hasn't run yet.
-                        if (r.market_spread_home == null || !r.ats_side) {
-                          return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        }
+                        if (r.market_spread_home == null || !r.ats_side) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
                         const hs = parseFloat(r.actual_home_runs ?? r.actual_home_score ?? 0);
                         const as_ = parseFloat(r.actual_away_runs ?? r.actual_away_score ?? 0);
                         const atsResult = (hs - as_) + parseFloat(r.market_spread_home);
                         if (atsResult === 0) return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
-                        const pickedHome = r.ats_side === "HOME";
-                        const homeCovered = atsResult > 0;
-                        return pickedHome === homeCovered ? "✅" : "❌";
+                        return (r.ats_side === "HOME") === (atsResult > 0) ? "✅" : "❌";
                       })()}</td>
-                      <td style={{ padding: "7px 8px", textAlign: "center" }}>{(() => {
+                      {/* O/U ✓ */}
+                      <td style={{ padding: "6px 4px", textAlign: "center" }}>{(() => {
                         if (!hasMarketOU || !r.result_entered) return "—";
                         const modelTotal = parseFloat(r.ou_total || 0);
-                        const mktTotal = parseFloat(r.market_ou_total || 0);
                         if (!mktTotal || !modelTotal) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        // Only grade when model triggered an O/U bet
                         const absDiff = Math.abs(modelTotal - mktTotal);
                         const pctDiff = absDiff / mktTotal;
                         const triggered = isMLB ? absDiff >= 1.0 : pctDiff >= 0.04;
                         if (!triggered) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        // Compute from actual scores
-                        const hs = parseFloat(r.actual_home_runs ?? r.actual_home_score ?? 0);
-                        const as_ = parseFloat(r.actual_away_runs ?? r.actual_away_score ?? 0);
-                        const actualTotal = hs + as_;
-                        if (!actualTotal) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
                         if (actualTotal === mktTotal) return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
                         const modelSaysOver = modelTotal > mktTotal;
                         const actualOver = actualTotal > mktTotal;
                         return modelSaysOver === actualOver ? "✅" : "❌";
                       })()}</td>
-                      <td style={{ padding: "7px 8px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: C.dim, cursor: "pointer", fontSize: 12 }}>🗑</button></td>
+                      {/* DELETE */}
+                      <td style={{ padding: "6px 4px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: "#21262d", cursor: "pointer", fontSize: 11, opacity: 0.5 }}>✕</button></td>
                     </tr>
                   );
                 })}
@@ -525,25 +547,12 @@ const _resolveTeamName = (raw) => {
   return _NBA_NAMES[s] || _NFL_NAMES[s] || s;
 };
 const _detectSport = (g) => {
-  if (g._sport) return g._sport;
-  if (g.sport) return g.sport.toUpperCase();
+  // Heuristic: NBA/NFL games have short abbreviation homeTeam (2-3 chars), NCAA has full names
   const ht = typeof g.homeTeam === "string" ? g.homeTeam : "";
   if (_NBA_NAMES[ht]) return "NBA";
   if (_NFL_NAMES[ht]) return "NFL";
-  // NCAAF: check for football-specific fields
-  if (g.pred?.parlayEligible !== undefined || g.pred?.atsConsensus !== undefined) return "NCAAF";
   return "NCAA";
 };
-
-const _SPORT_CFG = [
-  { key: "ALL", label: "All", icon: "🎯", color: C.blue },
-  { key: "MLB", label: "⚾ MLB", icon: "⚾", color: C.blue, bg: "#0d1a2e" },
-  { key: "NCAA", label: "🏀 NCAAB", icon: "🏀", color: C.orange, bg: "#2a1a0a" },
-  { key: "NBA", label: "🏀 NBA", icon: "🏀", color: "#bc8cff", bg: "#1a0d2e" },
-  { key: "NFL", label: "🏈 NFL", icon: "🏈", color: "#f97316", bg: "#1a0f00" },
-  { key: "NCAAF", label: "🏈 CFB", icon: "🏈", color: "#22c55e", bg: "#0d1a12" },
-];
-const _LEG_COUNTS = [2, 3, 4, 5, 6, 7, 8, 10, 12, 15];
 
 export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
   const [sportFilter, setSportFilter] = useState("ALL");
@@ -561,26 +570,17 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
       const wp = g.pred.homeWinPct ?? 0.5;
       return { sport: "MLB", gamePk: g.gamePk || g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
-    const otherLegs = ncaaGames.filter(g => g.pred).map(g => {
+    const ncaaLegs = ncaaGames.filter(g => g.pred).map(g => {
       const pickHome = g.pred.homeWinPct >= 0.5;
       const ml = pickHome ? (g.odds?.homeML || g.pred.modelML_home) : (g.odds?.awayML || g.pred.modelML_away);
       const sport = _detectSport(g);
       const hName = _resolveTeamName(g.homeAbbr || g.homeTeam || g.homeTeamName).slice(0, 12);
       const aName = _resolveTeamName(g.awayAbbr || g.awayTeam || g.awayTeamName).slice(0, 12);
-      let prob = pickHome ? (g.pred.homeWinPct ?? 0.5) : (1 - (g.pred.homeWinPct ?? 0.5));
-      if (g.pred.parlayConfidence) prob = g.pred.parlayConfidence;
-      if (g.pred.winProbability && sport === "NCAAF") prob = g.pred.winProbability;
-      return { sport, gamePk: g.gameId || g.gamePk, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
+      const wp = g.pred.homeWinPct ?? 0.5;
+      return { sport, gamePk: g.gameId, label: `${aName} @ ${hName}`, pick: pickHome ? hName : aName, prob: pickHome ? wp : 1 - wp, ml, confidence: g.pred.confidence, confScore: g.pred.confScore, hasOdds: !!g.odds?.homeML };
     });
-    return [...mlbLegs, ...otherLegs].filter(l => l.prob > 0.5 && l.ml).sort((a, b) => b.prob - a.prob);
+    return [...mlbLegs, ...ncaaLegs].sort((a, b) => b.prob - a.prob);
   }, [mlbGames, ncaaGames]);
-
-  // Sport counts for filter badges
-  const sportCounts = useMemo(() => {
-    const c = {};
-    allGameLegs.forEach(l => { c[l.sport] = (c[l.sport] || 0) + 1; });
-    return c;
-  }, [allGameLegs]);
 
   const filteredLegs = useMemo(() => {
     if (sportFilter === "ALL") return allGameLegs;
@@ -596,16 +596,16 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
   const toggleCustomLeg = (leg) => {
     const exists = customLegs.find(l => l.gamePk === leg.gamePk && l.sport === leg.sport);
     if (exists) setCustomLegs(customLegs.filter(l => !(l.gamePk === leg.gamePk && l.sport === leg.sport)));
-    else if (customLegs.length < 15) setCustomLegs([...customLegs, leg]);
+    else setCustomLegs([...customLegs, leg]);
   };
 
-  const sportColor = s => (_SPORT_CFG.find(sp => sp.key === s)?.color || C.orange);
+  const sportColor = s => ({ MLB: C.blue, NBA: "#58a6ff", NFL: "#f97316", NCAAF: "#22c55e" }[s] || C.orange);
   const sportBadge = s => {
-    const cfg = _SPORT_CFG.find(sp => sp.key === s) || { icon: "🏟", color: C.dim, bg: "#111" };
+    const icon = { MLB: "⚾", NBA: "🏀", NFL: "🏈", NCAAF: "🏈" }[s] || "🏀";
     return (
-      <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: cfg.bg || "#111", color: cfg.color, marginLeft: 4 }}>
-        {cfg.icon}
-      </span>
+    <span style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: s === "MLB" ? "#0d1a2e" : s === "NBA" ? "#0d1a2e" : s === "NFL" ? "#1a0f00" : "#2a1a0a", color: sportColor(s), marginLeft: 4 }}>
+      {icon}
+    </span>
     );
   };
 
@@ -614,29 +614,13 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         <h2 style={{ margin: 0, fontSize: 14, color: C.blue, letterSpacing: 2, textTransform: "uppercase" }}>🎯 Parlay Builder</h2>
         <div style={{ display: "flex", gap: 3, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3 }}>
-          {_SPORT_CFG.map(sp => {
-            const count = sp.key === "ALL" ? allGameLegs.length : (sportCounts[sp.key] || 0);
-            if (sp.key !== "ALL" && count === 0) return null;
-            return (
-              <button key={sp.key} onClick={() => setSportFilter(sp.key)} style={{
-                padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer",
-                fontSize: 10, fontWeight: 700,
-                background: sportFilter === sp.key ? (sp.color || C.blue) : "transparent",
-                color: sportFilter === sp.key ? C.bg : C.dim,
-              }}>
-                {sp.label}{count > 0 && sp.key !== "ALL" ? ` ${count}` : ""}
-              </button>
-            );
-          })}
+          {[["ALL", "All"], ["MLB", "⚾"], ["NCAA", "🏀"], ["NBA", "🏀"], ["NFL", "🏈"]].map(([v, l]) => (
+            <button key={v} onClick={() => setSportFilter(v)} style={{ padding: "3px 10px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, background: sportFilter === v ? C.blue : "transparent", color: sportFilter === v ? C.bg : C.dim }}>{l}</button>
+          ))}
         </div>
-        <div style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
-          {_LEG_COUNTS.map(n => (
-            <button key={n} onClick={() => { setLegCount(n); setMode("auto"); }} style={{
-              width: n >= 10 ? 30 : 26, height: 26, borderRadius: "50%", border: "none",
-              cursor: "pointer", fontSize: 11, fontWeight: 800,
-              background: mode === "auto" && legCount === n ? C.blue : "#161b22",
-              color: mode === "auto" && legCount === n ? C.bg : C.dim,
-            }}>{n}</button>
+        <div style={{ display: "flex", gap: 3 }}>
+          {[2, 3, 4, 5, 6, 7, 8].map(n => (
+            <button key={n} onClick={() => { setLegCount(n); setMode("auto"); }} style={{ width: 26, height: 26, borderRadius: "50%", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 800, background: mode === "auto" && legCount === n ? C.blue : "#161b22", color: mode === "auto" && legCount === n ? C.bg : C.dim }}>{n}</button>
           ))}
         </div>
         <button onClick={() => setMode(m => m === "auto" ? "custom" : "auto")} style={{ background: mode === "custom" ? C.blue : "#161b22", color: mode === "custom" ? C.bg : "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11 }}>
@@ -683,7 +667,7 @@ export function ParlayBuilder({ mlbGames = [], ncaaGames = [] }) {
           const isAutoSel = mode === "auto" && autoParlay.find(l => l.gamePk === leg.gamePk && l.sport === leg.sport);
           const isCustomSel = customLegs.find(l => l.gamePk === leg.gamePk && l.sport === leg.sport);
           return (
-            <div key={`${leg.sport}-${leg.gamePk}-${i}`} style={{ background: isAutoSel ? "#0e2015" : C.card, border: `1px solid ${isAutoSel ? "#2ea043" : C.border}`, borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div key={`${leg.sport}-${leg.gamePk}`} style={{ background: isAutoSel ? "#0e2015" : C.card, border: `1px solid ${isAutoSel ? "#2ea043" : C.border}`, borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div style={{ width: 22, fontSize: 10, color: C.dim }}>{isAutoSel ? "✅" : `#${i + 1}`}</div>
               <div style={{ flex: 1, minWidth: 120 }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>{leg.label}{sportBadge(leg.sport)}</div>
