@@ -462,7 +462,7 @@ export function HistoryTab({ table, refreshKey }) {
                       {/* PRED O/U (model total vs market line) */}
                       <td style={{ padding: "6px 6px", textAlign: "center", whiteSpace: "nowrap" }}>
                         {predTotal != null
-                          ? <span style={{ color: C.yellow }}>{isMLB ? predTotal.toFixed(1) : Math.round(predTotal)}</span>
+                          ? <span style={{ color: C.yellow }}>{(Math.round(predTotal * 2) / 2).toFixed(1)}</span>
                           : "—"}
                         {mktTotal != null && <span style={{ color: C.dim, fontSize: 9 }}>{" / "}{mktTotal}</span>}
                       </td>
