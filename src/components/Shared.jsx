@@ -411,9 +411,41 @@ export function HistoryTab({ table, refreshKey }) {
       </div>
       {loading && <div style={{ color: C.dim, textAlign: "center", marginTop: 40 }}>Loading…</div>}
       {!loading && records.length === 0 && <div style={{ color: C.dim, textAlign: "center", marginTop: 40 }}>No predictions yet</div>}
-      {Object.entries(grouped).map(([date, recs]) => (
+      {Object.entries(grouped).map(([date, recs]) => {
+        // ── Daily summary counts ──
+        const graded = recs.filter(r => r.result_entered);
+        const mlW = graded.filter(r => r.ml_correct === true).length;
+        const mlL = graded.filter(r => r.ml_correct === false).length;
+        const atsW = graded.filter(r => r.ats_units > 0 && r.ats_correct === true).length;
+        const atsL = graded.filter(r => r.ats_units > 0 && r.ats_correct === false).length;
+        let ouW = 0, ouL = 0;
+        graded.forEach(r => {
+          const modelT = parseFloat(r.ou_total || 0);
+          const mktT = r.market_ou_total != null ? parseFloat(r.market_ou_total) : null;
+          if (!mktT || !modelT) return;
+          const diff = Math.abs(modelT - mktT);
+          const triggered = isMLB ? diff >= 1.0 : (diff / mktT) >= 0.04;
+          if (!triggered) return;
+          const hs = parseFloat((isMLB ? (r.actual_home_runs ?? r.actual_home_score) : r.actual_home_score) ?? 0);
+          const as_ = parseFloat((isMLB ? (r.actual_away_runs ?? r.actual_away_score) : r.actual_away_score) ?? 0);
+          const actT = hs + as_;
+          if (actT === mktT) return;
+          if ((modelT > mktT) === (actT > mktT)) ouW++; else ouL++;
+        });
+        const mlTotal = mlW + mlL, atsTotal = atsW + atsL, ouTotal = ouW + ouL;
+        const summaryColor = (w, t) => t === 0 ? C.dim : (w / t >= 0.55 ? C.green : w / t >= 0.5 ? C.yellow : C.red);
+        return (
         <div key={date} style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.yellow, marginBottom: 6, borderBottom: `1px solid #161b22`, paddingBottom: 5, letterSpacing: 2 }}>📅 {date}</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid #161b22`, paddingBottom: 5, marginBottom: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: C.yellow, letterSpacing: 2 }}>📅 {date}</span>
+            {mlTotal > 0 && (
+              <div style={{ display: "flex", gap: 12, fontSize: 10 }}>
+                <span style={{ color: summaryColor(mlW, mlTotal) }}>ML <span style={{ fontWeight: 700 }}>{mlW}-{mlL}</span></span>
+                {atsTotal > 0 && <span style={{ color: summaryColor(atsW, atsTotal) }}>ATS <span style={{ fontWeight: 700 }}>{atsW}-{atsL}</span></span>}
+                {ouTotal > 0 && <span style={{ color: summaryColor(ouW, ouTotal) }}>O/U <span style={{ fontWeight: 700 }}>{ouW}-{ouL}</span></span>}
+              </div>
+            )}
+          </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
@@ -526,7 +558,7 @@ export function HistoryTab({ table, refreshKey }) {
                         return modelSaysOver === actualOver ? "✅" : "❌";
                       })()}</td>
                       {/* DELETE */}
-                      <td style={{ padding: "6px 4px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: "#21262d", cursor: "pointer", fontSize: 11, opacity: 0.5 }}>✕</button></td>
+                      <td style={{ padding: "6px 4px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: "#3a3f47", cursor: "pointer", fontSize: 11 }}>✕</button></td>
                     </tr>
                   );
                 })}
@@ -534,7 +566,8 @@ export function HistoryTab({ table, refreshKey }) {
             </table>
           </div>
         </div>
-      ))}
+      );
+      })}
     </div>
   );
 }
