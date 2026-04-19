@@ -361,7 +361,7 @@ export function HistoryTab({ table, refreshKey }) {
     setLoading(true);
     const histCols = isMLB
       ? "id,game_date,home_team,away_team,ou_total,win_pct_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs,ou_pick,ou_units"
-      : "id,game_date,home_team,away_team,home_team_name,away_team_name,ou_total,win_pct_home,ml_win_prob_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,pred_home_score,pred_away_score,ou_pick,ou_units";
+      : "id,game_date,home_team,away_team,home_team_name,away_team_name,ou_total,win_pct_home,ml_win_prob_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,pred_home_score,pred_away_score";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
