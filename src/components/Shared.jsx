@@ -436,23 +436,21 @@ export function HistoryTab({ table, refreshKey }) {
         const summaryColor = (w, t) => t === 0 ? C.dim : (w / t >= 0.55 ? C.green : w / t >= 0.5 ? C.yellow : C.red);
         return (
         <div key={date} style={{ marginBottom: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid #161b22`, paddingBottom: 5, marginBottom: 6 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: C.yellow, letterSpacing: 2 }}>📅 {date}</span>
-            {mlTotal > 0 && (
-              <div style={{ display: "flex", gap: 12, fontSize: 10 }}>
-                <span style={{ color: summaryColor(mlW, mlTotal) }}>ML <span style={{ fontWeight: 700 }}>{mlW}-{mlL}</span></span>
-                {atsTotal > 0 && <span style={{ color: summaryColor(atsW, atsTotal) }}>ATS <span style={{ fontWeight: 700 }}>{atsW}-{atsL}</span></span>}
-                {ouTotal > 0 && <span style={{ color: summaryColor(ouW, ouTotal) }}>O/U <span style={{ fontWeight: 700 }}>{ouW}-{ouL}</span></span>}
-              </div>
-            )}
-          </div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.yellow, marginBottom: 6, borderBottom: `1px solid #161b22`, paddingBottom: 5, letterSpacing: 2 }}>📅 {date}</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
                 <tr style={{ color: C.dim, fontSize: 9 }}>
-                  {["MATCHUP", "PRED", "ACTUAL", "O/U PRED", "O/U ACT", "WIN%", "ML", "ATS", "O/U", ""].map(h => (
+                  {["MATCHUP", "PRED", "ACTUAL", "O/U PRED", "O/U ACT", "WIN%"].map(h => (
                     <th key={h} style={{ padding: "5px 6px", textAlign: h === "MATCHUP" ? "left" : "center", borderBottom: `1px solid #161b22`, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
+                  {[["ML", mlW, mlL, mlTotal], ["ATS", atsW, atsL, atsTotal], ["O/U", ouW, ouL, ouTotal]].map(([label, w, l, t]) => (
+                    <th key={label} style={{ padding: "5px 4px", textAlign: "center", borderBottom: `1px solid #161b22`, whiteSpace: "nowrap" }}>
+                      {label}
+                      {t > 0 && <div style={{ fontSize: 8, fontWeight: 700, color: summaryColor(w, t), marginTop: 1 }}>{w}-{l}</div>}
+                    </th>
+                  ))}
+                  <th style={{ padding: "5px 4px", borderBottom: `1px solid #161b22` }}></th>
                 </tr>
               </thead>
               <tbody>
