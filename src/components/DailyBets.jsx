@@ -825,7 +825,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                   <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>
                     {p.spread != null ? (p.spread > 0 ? `+${p.spread.toFixed(1)}` : p.spread.toFixed(1)) : "—"}
                   </span>
-                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.edge.toFixed(1)} pts</span>
+                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.edge.toFixed(1)} {sp.key === "mlb" ? "runs" : "pts"}</span>
                   <span style={{ fontSize: 10, fontWeight: 900, color: "#fff", background: unitColor(p.units),
                     borderRadius: 4, padding: "2px 8px", minWidth: 30, textAlign: "center" }}>{p.units}u</span>
                 </div>
@@ -841,7 +841,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                     {p.side === "OVER" ? "▲" : "▼"} {p.side} {p.team}
                   </span>
                   <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>{p.modelTotal?.toFixed?.(1) ?? "—"}</span>
-                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.edge.toFixed(1)} pts</span>
+                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.edge.toFixed(1)} {sp.key === "mlb" ? "runs" : "pts"}</span>
                   <span style={{ fontSize: 10, fontWeight: 900, color: "#fff",
                     background: unitColor(p.units),
                     borderRadius: 4, padding: "2px 8px", minWidth: 30, textAlign: "center" }}>{p.units}u</span>
