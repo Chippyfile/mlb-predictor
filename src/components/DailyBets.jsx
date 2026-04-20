@@ -107,6 +107,7 @@ function mapNBA(rows) { return rows.filter(r => r.pred_home_score != null).map(r
     _ats: r.ats_units > 0 ? { side: r.ats_side, units: r.ats_units, disagree: r.ats_disagree, spread: r.ats_pick_spread } : null,
     _atsComputed: r.ats_units != null,
     _modelsAgree: r.ats_models_agree,
+    _mlBet: r.ml_bet_units > 0 ? { side: r.ml_bet_side, units: r.ml_bet_units } : null,
   };
 }); }
 
