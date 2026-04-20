@@ -104,10 +104,22 @@ export function buildStoredSignals({ pred, odds, sport = "nba", homeName = "Home
   // ── O/U SIGNAL (from stored Supabase data — cron computed) ──
   let ouSignal = null;
   const ouPick = pred._ouPick ?? null;
-  const ouTier = pred._ouTier ?? 0;
   const ouEdge = pred._ouEdge ?? null;
   const ouPredTotal = pred._ouPredictedTotal ?? null;
   const mktTotal = odds?.ouLine ?? null;
+  // Derive tier from edge when cron stored ou_pick but not ou_tier
+  let ouTier = pred._ouTier ?? 0;
+  if (ouPick && ouTier === 0 && ouEdge != null) {
+    const absEdge = Math.abs(ouEdge);
+    if (sport === "nba") {
+      ouTier = absEdge >= 10 ? 3 : absEdge >= 7 ? 2 : absEdge >= 4 ? 1 : 0;
+    } else if (sport === "mlb") {
+      ouTier = absEdge >= 2.0 ? 3 : absEdge >= 1.5 ? 2 : absEdge >= 1.0 ? 1 : 0;
+    } else {
+      // NCAA/NCAAF: percentage-based would need market total, use absolute as fallback
+      ouTier = absEdge >= 10 ? 3 : absEdge >= 7 ? 2 : absEdge >= 5 ? 1 : 0;
+    }
+  }
 
   if (ouPick && ouTier > 0) {
     // Backend triple agreement says BET
