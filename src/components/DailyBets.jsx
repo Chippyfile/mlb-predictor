@@ -861,7 +861,7 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
                   <span style={{ fontSize: 12, color: "#8b949e", width: 60, textAlign: "center" }}>
                     {p.mlOdds ? (parseInt(p.mlOdds) > 0 ? `+${p.mlOdds}` : p.mlOdds) : "—"}
                   </span>
-                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.margin.toFixed(1)} runs</span>
+                  <span style={{ fontSize: 11, width: 55, textAlign: "right" }}>{p.margin.toFixed(1)} {sp.key === "mlb" ? "runs" : "pts"}</span>
                   <span style={{ fontSize: 10, fontWeight: 900, color: "#fff",
                     background: p.units >= 2 ? "#d29922" : "#8b949e",
                     borderRadius: 4, padding: "2px 8px", minWidth: 30, textAlign: "center" }}>{p.units}u</span>
