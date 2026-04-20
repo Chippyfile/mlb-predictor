@@ -528,7 +528,14 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
 
         // ── O/U parlay candidate ──
         const ouPick = g.pred?._ouPick;
-        const ouTier = g.pred?._ouTier || 0;
+        let ouTier = g.pred?._ouTier || 0;
+        // Derive tier from edge when cron stored ou_pick but not ou_tier
+        if (ouPick && ouTier === 0 && g.pred?._ouEdge != null) {
+          const absE = Math.abs(g.pred._ouEdge);
+          if (sport === "nba") ouTier = absE >= 10 ? 3 : absE >= 7 ? 2 : absE >= 4 ? 1 : 0;
+          else if (sport === "mlb") ouTier = absE >= 2.0 ? 3 : absE >= 1.5 ? 2 : absE >= 1.0 ? 1 : 0;
+          else ouTier = absE >= 10 ? 3 : absE >= 7 ? 2 : absE >= 5 ? 1 : 0;
+        }
         if (ouPick && ouTier >= 2) {
           const ouLine = g.odds?.ouLine || g.pred?._ouPredictedTotal;
           const ouConf = ouTier >= 3 ? 0.70 : 0.62;
@@ -608,7 +615,14 @@ export default function DailyBets({ setNcaaGames, setNbaGames, setMlbGames, refr
       if (g.pred._ouPick) {
         const side = g.pred._ouPick;
         const edge = Math.abs(parseFloat(g.pred._ouEdge) || 0);
-        const units = g.pred._ouTier || 1;
+        // Derive tier from edge when cron stored ou_pick but not ou_tier
+        let units = g.pred._ouTier || 0;
+        if (units === 0 && edge > 0) {
+          if (sport === "nba") units = edge >= 10 ? 3 : edge >= 7 ? 2 : edge >= 4 ? 1 : 0;
+          else if (sport === "mlb") units = edge >= 2.0 ? 3 : edge >= 1.5 ? 2 : edge >= 1.0 ? 1 : 0;
+          else units = edge >= 10 ? 3 : edge >= 7 ? 2 : edge >= 5 ? 1 : 0;
+        }
+        if (units === 0) units = 1; // final fallback
         const predTotal = parseFloat(g.pred._ouPredictedTotal) || 0;
         if (!ou.find(o => o.team === `${h} / ${a}`)) {
           ou.push({ team: `${h} / ${a}`, side, edge, units, modelTotal: predTotal, gameId: g.gameId });
