@@ -320,6 +320,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
           // Player impact data for toggle UI
           _homeOutPlayers: mlResult.home_out_players || [],
           _awayOutPlayers: mlResult.away_out_players || [],
+          _homeGtdPlayers: mlResult.home_gtd_players || [],
+          _awayGtdPlayers: mlResult.away_gtd_players || [],
           _impactAdjustment: mlResult.impact_adjustment || 0,
           confidence: Math.abs(mlMargin) >= 7 ? "HIGH" : Math.abs(mlMargin) >= 3 ? "MEDIUM" : "LOW",
           confScore: parseFloat(Math.abs(mlMargin).toFixed(1)),
@@ -346,7 +348,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ats_residual_blend,ats_residual_cb,ats_residual_lasso,ats_models_agree,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,opening_home_ml,opening_away_ml,ml_edge_pct,ml_bet_side,home_ppg,away_ppg,home_opp_ppg,away_opp_ppg,home_net_rtg,away_net_rtg,home_pace,away_pace,home_wins,away_wins,home_losses,away_losses,impact_adjustment,home_out_players,away_out_players`
+        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ats_residual_blend,ats_residual_cb,ats_residual_lasso,ats_models_agree,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,opening_home_ml,opening_away_ml,ml_edge_pct,ml_bet_side,home_ppg,away_ppg,home_opp_ppg,away_opp_ppg,home_net_rtg,away_net_rtg,home_pace,away_pace,home_wins,away_wins,home_losses,away_losses,impact_adjustment,home_out_players,away_out_players,home_gtd_players,away_gtd_players`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
@@ -480,6 +482,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
           // Player impact data for toggle UI
           _homeOutPlayers: stored.home_out_players || [],
           _awayOutPlayers: stored.away_out_players || [],
+          _homeGtdPlayers: stored.home_gtd_players || [],
+          _awayGtdPlayers: stored.away_gtd_players || [],
           _impactAdjustment: stored.impact_adjustment || 0,
         };
         // Build fake mlResult for SHAP panel (no SHAP from stored — need refresh for that)
@@ -994,6 +998,8 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
                     awayAbbr={game.awayAbbr}
                     homeOutPlayers={game.pred?._homeOutPlayers || []}
                     awayOutPlayers={game.pred?._awayOutPlayers || []}
+                    homeGtdPlayers={game.pred?._homeGtdPlayers || []}
+                    awayGtdPlayers={game.pred?._awayGtdPlayers || []}
                     impactAdjustment={game.pred?._impactAdjustment || 0}
                     storedMargin={game.pred?.projectedSpread || 0}
                     storedWp={game.pred?.homeWinPct || 0.5}

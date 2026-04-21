@@ -46,6 +46,7 @@ function parseStoredStatus(entry) {
 export default function PlayerImpactPanel({
   gameId, homeAbbr, awayAbbr,
   homeOutPlayers = [], awayOutPlayers = [],
+  homeGtdPlayers = [], awayGtdPlayers = [],
   impactAdjustment = 0,
   storedMargin = 0, storedWp = 0.5,
   onAdjusted,
@@ -245,9 +246,9 @@ export default function PlayerImpactPanel({
 
       {/* Player lists by team */}
       {[
-        { abbr: homeAbbr, label: "HOME", players: homePlayers, side: "home" },
-        { abbr: awayAbbr, label: "AWAY", players: awayPlayers, side: "away" },
-      ].map(({ abbr, label, players: teamPlayers, side }) => (
+        { abbr: homeAbbr, label: "HOME", players: homePlayers, side: "home", gtd: homeGtdPlayers },
+        { abbr: awayAbbr, label: "AWAY", players: awayPlayers, side: "away", gtd: awayGtdPlayers },
+      ].map(({ abbr, label, players: teamPlayers, side, gtd }) => (
         <div key={abbr} style={{ marginBottom: 8 }}>
           <div style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -274,7 +275,7 @@ export default function PlayerImpactPanel({
           </div>
 
           {/* Player rows */}
-          {teamPlayers.length === 0 && (
+          {teamPlayers.length === 0 && (!gtd || gtd.length === 0) && (
             <div style={{ fontSize: 10, color: C.muted, fontStyle: "italic", marginBottom: 4 }}>
               No reported injuries
             </div>
@@ -347,6 +348,46 @@ export default function PlayerImpactPanel({
                   ×
                 </button>
               )}
+            </div>
+          ))}
+
+          {/* GTD players (warning display, no margin adjustment) */}
+          {gtd && gtd.length > 0 && gtd.map((g, i) => (
+            <div key={`gtd-${i}`} style={{
+              display: "flex", alignItems: "center", gap: 8,
+              padding: "4px 8px",
+              background: "rgba(210,153,34,0.08)",
+              borderRadius: 5,
+              marginBottom: 3,
+              borderLeft: `3px solid ${C.yellow}`,
+            }}>
+              <span style={{
+                width: 22, height: 22, borderRadius: 4,
+                background: `${C.yellow}22`,
+                border: `1px solid ${C.yellow}`,
+                color: C.yellow,
+                fontSize: 10, fontWeight: 800,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                flexShrink: 0,
+              }}>⚠</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: "#e2e8f0" }}>
+                    {g.name}
+                  </span>
+                  <span style={{
+                    fontSize: 8, fontWeight: 700, letterSpacing: 0.5,
+                    color: C.yellow,
+                    padding: "0 4px",
+                    background: `${C.yellow}18`,
+                    borderRadius: 3,
+                  }}>GTD</span>
+                </div>
+                <div style={{ fontSize: 9, color: C.dim }}>
+                  {g.impact ? `${g.impact > 0 ? "+" : ""}${g.impact} pts if OUT` : ""}
+                  {g.note ? ` · ${g.note.substring(0, 50)}` : ""}
+                </div>
+              </div>
             </div>
           ))}
 
