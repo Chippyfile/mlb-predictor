@@ -387,23 +387,17 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
         park_factor: ds.park_factor ?? null,
       };
 
-      // ATS: v9 sniper → 2u, v11 consensus → 1u fallback
+      // ATS: use v9 sniper from backend (full pipeline with lineup + ump features)
       const mktSpread = mlResult.market_spread_home ?? game.odds?.homeSpread ?? null;
       if (mktSpread !== null) {
         patch.market_spread_home = mktSpread;
       }
       if (mlResult.ats_v9_units > 0) {
         patch.ats_side = mlResult.ats_v9_side;
-        patch.ats_units = 2;  // v9 sniper = 2u conviction
+        patch.ats_units = mlResult.ats_v9_units;
         patch.ats_models_agree = mlResult.ats_v9_models_agree ?? null;
-        patch.ats_model_version = "v9";
+        patch.ats_model_version = "v9.1";
         patch.ats_disagree = mlResult.ats_v9_edge ?? null;
-      } else if (mlResult.v11_ats_units > 0) {
-        patch.ats_side = mlResult.v11_ats_pick;
-        patch.ats_units = 1;  // v11 consensus = 1u volume
-        patch.ats_models_agree = true;
-        patch.ats_model_version = "v11";
-        patch.ats_disagree = mlResult.v11_avg_edge ?? null;
       } else {
         patch.ats_units = 0;
       }
@@ -445,7 +439,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       // Reload from Supabase to get consistent state
       await loadGames(dateStr);
       onRefresh?.();
-      console.log(`[MLB REFRESH] ${game.homeAbbr}: wp=${wp.toFixed(3)}, ats=${patch.ats_units ?? 0}u${patch.ats_model_version ? `(${patch.ats_model_version})` : ''}, saved to Supabase`);
+      console.log(`[MLB REFRESH] ${game.homeAbbr}: wp=${wp.toFixed(3)}, ats=${patch.ats_units ?? 0}u, saved to Supabase`);
     } catch (e) { console.warn("[MLB refresh] error:", e); }
     setRefreshingGame(null);
   }, [dateStr, loadGames, onRefresh]);
@@ -896,7 +890,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                     <Kv k="Away FIP" v={game.pred.aFIP?.toFixed(2)} />
                     <Kv k="Home wOBA" v={game.pred.homeWOBA?.toFixed(3)} />
                     <Kv k="Away wOBA" v={game.pred.awayWOBA?.toFixed(3)} />
-                    {game.umpire?.name && <Kv k="Umpire" v={`${game.umpire.name} (${game.umpire.size})`} />}
+                    {game.umpire?.name && <Kv k="Umpire" v={`${game.umpire.name}${game.umpire.home_win_pct ? ` (${(game.umpire.home_win_pct * 100).toFixed(0)}% home)` : game.umpire.size ? ` (${game.umpire.size})` : ''}`} />}
                     <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
                     {game.venue && <Kv k="Venue" v={game.venue} />}
                   </div>
