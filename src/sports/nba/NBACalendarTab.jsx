@@ -242,8 +242,48 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
       const mlResult = await mlPredictNBAFull(game.gameId, { gameDate: dateStr });
       if (!mlResult || mlResult.error) { setRefreshingGame(null); return; }
 
-      const mlMargin = mlResult.ml_margin;
-      const mlWinHome = Math.max(0.05, Math.min(0.95, mlResult.ml_win_prob_home ?? 0.5));
+      let mlMargin = mlResult.ml_margin;
+      let mlWinHome = Math.max(0.05, Math.min(0.95, mlResult.ml_win_prob_home ?? 0.5));
+
+      // ── Apply injury adjustments from Supabase (same as cron) ──
+      let injuryAdj = 0;
+      let homeOutNames = [];
+      let awayOutNames = [];
+      let homeGtdList = [];
+      let awayGtdList = [];
+      try {
+        const injuredResp = await supabaseQuery(
+          `/nba_player_impact?season=eq.2026&injury_status=in.(OUT,GTD)&select=player_name,team,margin_impact,injury_status,injury_note`
+        );
+        const injured = injuredResp || [];
+        const homeInjured = injured.filter(p => p.team === game.homeAbbr);
+        const awayInjured = injured.filter(p => p.team === game.awayAbbr);
+        const homeLoss = homeInjured.filter(p => p.injury_status === "OUT").reduce((s, p) => s + (p.margin_impact || 0), 0);
+        const awayLoss = awayInjured.filter(p => p.injury_status === "OUT").reduce((s, p) => s + (p.margin_impact || 0), 0);
+        injuryAdj = -homeLoss + awayLoss;
+        homeOutNames = homeInjured.filter(p => p.injury_status === "OUT").map(p => p.player_name);
+        awayOutNames = awayInjured.filter(p => p.injury_status === "OUT").map(p => p.player_name);
+        homeGtdList = homeInjured.filter(p => p.injury_status === "GTD").map(p => ({
+          name: p.player_name, impact: Math.round((p.margin_impact || 0) * 100) / 100, note: (p.injury_note || "").substring(0, 80),
+        }));
+        awayGtdList = awayInjured.filter(p => p.injury_status === "GTD").map(p => ({
+          name: p.player_name, impact: Math.round((p.margin_impact || 0) * 100) / 100, note: (p.injury_note || "").substring(0, 80),
+        }));
+        if (Math.abs(injuryAdj) > 0.5) {
+          mlMargin += injuryAdj;
+          mlWinHome = 1 / (1 + Math.pow(10, -mlMargin / 7.0));
+          mlWinHome = Math.max(0.05, Math.min(0.95, mlWinHome));
+          if (mlResult.pred_home_score && mlResult.pred_away_score) {
+            mlResult.pred_home_score -= homeLoss / 2;
+            mlResult.pred_away_score -= awayLoss / 2;
+            const adjTotal = mlResult.pred_home_score + mlResult.pred_away_score;
+            mlResult.ou_predicted_total = Math.round(adjTotal * 10) / 10;
+          }
+          console.log(`[NBA REFRESH] 🏥 ${game.awayAbbr}@${game.homeAbbr}: injury adj ${injuryAdj.toFixed(1)} pts (${[...homeOutNames, ...awayOutNames].join(", ")})`);
+        }
+      } catch (injErr) {
+        console.warn("[NBA refresh] Injury lookup failed:", injErr);
+      }
 
       // ── Save to Supabase (single source of truth) ──
       const patch = {
@@ -268,7 +308,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
         patch.ats_side = mlResult.ats_side || null;
         patch.ats_units = mlResult.ats_units || 0;
         patch.ats_pick_spread = mlResult.ats_pick_spread || (game.odds?.homeSpread ?? null);
-        patch.ats_disagree = Math.abs(mlResult.ats_residual_blend || 0);
+        patch.ats_disagree = Math.abs(mlResult.avg_ha_edge || mlResult.ats_residual_blend || 0);
         if (mlResult.ats_residual_blend != null) patch.ats_residual_blend = mlResult.ats_residual_blend;
         if (mlResult.ats_residual_cb != null) patch.ats_residual_cb = mlResult.ats_residual_cb;
         if (mlResult.ats_residual_lasso != null) patch.ats_residual_lasso = mlResult.ats_residual_lasso;
@@ -280,6 +320,24 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
       // Metadata
       patch.refreshed_at = new Date().toISOString();
       if (game.odds?.homeSpread != null) patch.market_spread_home = game.odds.homeSpread;
+      // Injury data
+      if (Math.abs(injuryAdj) > 0.5) {
+        patch.impact_adjustment = Math.round(injuryAdj * 100) / 100;
+        patch.home_out_players = homeOutNames;
+        patch.away_out_players = awayOutNames;
+        // Suppress ATS if injuries flipped margin direction
+        const origHome = mlResult.ml_margin > 0;
+        const adjHome = mlMargin > 0;
+        if (origHome !== adjHome && (patch.ats_units || 0) > 0) {
+          patch.ats_units = 0;
+          patch.ats_side = null;
+          console.log(`[NBA REFRESH] 🚫 ATS suppressed: injury flipped margin (${mlResult.ml_margin.toFixed(1)} → ${mlMargin.toFixed(1)})`);
+        }
+      }
+      if (homeGtdList.length || awayGtdList.length) {
+        patch.home_gtd_players = homeGtdList;
+        patch.away_gtd_players = awayGtdList;
+      }
 
       await supabaseQuery(`/nba_predictions?game_id=eq.${game.gameId}`, "PATCH", patch).catch(e => {
         console.warn("[NBA refresh] Supabase save failed:", e);
@@ -318,11 +376,11 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
           _storedAtsDisagree: patch.ats_disagree ?? null,
           _storedAtsPickSpread: patch.ats_pick_spread ?? null,
           // Player impact data for toggle UI
-          _homeOutPlayers: mlResult.home_out_players || [],
-          _awayOutPlayers: mlResult.away_out_players || [],
-          _homeGtdPlayers: mlResult.home_gtd_players || [],
-          _awayGtdPlayers: mlResult.away_gtd_players || [],
-          _impactAdjustment: mlResult.impact_adjustment || 0,
+          _homeOutPlayers: homeOutNames.length ? homeOutNames : (mlResult.home_out_players || []),
+          _awayOutPlayers: awayOutNames.length ? awayOutNames : (mlResult.away_out_players || []),
+          _homeGtdPlayers: homeGtdList,
+          _awayGtdPlayers: awayGtdList,
+          _impactAdjustment: Math.abs(injuryAdj) > 0.5 ? injuryAdj : (mlResult.impact_adjustment || 0),
           confidence: Math.abs(mlMargin) >= 7 ? "HIGH" : Math.abs(mlMargin) >= 3 ? "MEDIUM" : "LOW",
           confScore: parseFloat(Math.abs(mlMargin).toFixed(1)),
           decisiveness: parseFloat((Math.abs(mlWinHome - 0.5) * 100).toFixed(1)),
@@ -348,7 +406,7 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
     let storedPredMap = new Map();
     try {
       const storedPreds = await supabaseQuery(
-        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ats_residual_blend,ats_residual_cb,ats_residual_lasso,ats_models_agree,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,opening_home_ml,opening_away_ml,ml_edge_pct,ml_bet_side,home_ppg,away_ppg,home_opp_ppg,away_opp_ppg,home_net_rtg,away_net_rtg,home_pace,away_pace,home_wins,away_wins,home_losses,away_losses,impact_adjustment,home_out_players,away_out_players,home_gtd_players,away_gtd_players`
+        `/nba_predictions?game_date=eq.${d}&select=game_id,spread_home,win_pct_home,ml_win_prob_home,market_spread_home,market_ou_total,ou_total,pred_home_score,pred_away_score,ats_disagree,ats_units,ats_side,ats_pick_spread,ats_residual_blend,ats_residual_cb,ats_residual_lasso,ats_models_agree,ml_feature_coverage,ml_model_type,ou_predicted_total,ou_edge,ou_pick,ou_tier,ou_res_avg,ou_cls_avg,market_home_ml,market_away_ml,opening_home_ml,opening_away_ml,ml_edge_pct,ml_bet_side,home_ppg,away_ppg,home_opp_ppg,away_opp_ppg,home_net_rtg,away_net_rtg,home_pace,away_pace,home_wins,away_wins,home_losses,away_losses,impact_adjustment,home_out_players,away_out_players`
       );
       if (Array.isArray(storedPreds)) {
         for (const sp of storedPreds) {
@@ -482,8 +540,6 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
           // Player impact data for toggle UI
           _homeOutPlayers: stored.home_out_players || [],
           _awayOutPlayers: stored.away_out_players || [],
-          _homeGtdPlayers: stored.home_gtd_players || [],
-          _awayGtdPlayers: stored.away_gtd_players || [],
           _impactAdjustment: stored.impact_adjustment || 0,
         };
         // Build fake mlResult for SHAP panel (no SHAP from stored — need refresh for that)
@@ -998,8 +1054,6 @@ export function NBACalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) 
                     awayAbbr={game.awayAbbr}
                     homeOutPlayers={game.pred?._homeOutPlayers || []}
                     awayOutPlayers={game.pred?._awayOutPlayers || []}
-                    homeGtdPlayers={game.pred?._homeGtdPlayers || []}
-                    awayGtdPlayers={game.pred?._awayGtdPlayers || []}
                     impactAdjustment={game.pred?._impactAdjustment || 0}
                     storedMargin={game.pred?.projectedSpread || 0}
                     storedWp={game.pred?.homeWinPct || 0.5}
