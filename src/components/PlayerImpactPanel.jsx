@@ -351,8 +351,12 @@ export default function PlayerImpactPanel({
             </div>
           ))}
 
-          {/* GTD players (warning display, no margin adjustment) */}
-          {gtd && gtd.length > 0 && gtd.map((g, i) => (
+          {/* GTD players (warning display — click ⚠ to toggle to OUT) */}
+          {gtd && gtd.length > 0 && gtd.map((g, i) => {
+            const gtdKey = `${abbr}::${g.name}`;
+            const alreadyAdded = !!players[gtdKey];
+            if (alreadyAdded) return null; // already in interactive list above
+            return (
             <div key={`gtd-${i}`} style={{
               display: "flex", alignItems: "center", gap: 8,
               padding: "4px 8px",
@@ -361,15 +365,27 @@ export default function PlayerImpactPanel({
               marginBottom: 3,
               borderLeft: `3px solid ${C.yellow}`,
             }}>
-              <span style={{
-                width: 22, height: 22, borderRadius: 4,
-                background: `${C.yellow}22`,
-                border: `1px solid ${C.yellow}`,
-                color: C.yellow,
-                fontSize: 10, fontWeight: 800,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                flexShrink: 0,
-              }}>⚠</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPlayers(prev => ({
+                    ...prev,
+                    [gtdKey]: { name: g.name, team: abbr, status: "OUT", original: false },
+                  }));
+                  setDirty(true);
+                }}
+                style={{
+                  width: 22, height: 22, borderRadius: 4,
+                  background: `${C.yellow}22`,
+                  border: `1px solid ${C.yellow}`,
+                  color: C.yellow,
+                  fontSize: 10, fontWeight: 800,
+                  cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  flexShrink: 0,
+                }}
+                title="Click to mark as OUT"
+              >⚠</button>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
                   <span style={{ fontSize: 11, fontWeight: 600, color: "#e2e8f0" }}>
@@ -382,6 +398,7 @@ export default function PlayerImpactPanel({
                     background: `${C.yellow}18`,
                     borderRadius: 3,
                   }}>GTD</span>
+                  <span style={{ fontSize: 8, color: C.dim }}>tap to mark OUT</span>
                 </div>
                 <div style={{ fontSize: 9, color: C.dim }}>
                   {g.impact ? `${g.impact > 0 ? "+" : ""}${g.impact} pts if OUT` : ""}
@@ -389,7 +406,8 @@ export default function PlayerImpactPanel({
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
 
           {/* Add player dropdown */}
           {showAdd === side && (
