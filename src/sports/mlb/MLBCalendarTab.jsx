@@ -387,17 +387,25 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
         park_factor: ds.park_factor ?? null,
       };
 
-      // ATS: use v9 sniper from backend (full pipeline with lineup + ump features)
+      // ATS: v12 with pattern-tiered units (cutover from v9, May 19 2026)
+      //   3/3 voters above gate (unanimous) → 3u  (n=660, ROI +15.98% across 11yr WF)
+      //   2/3 voters above gate (1B pattern) → 1u  (n=2839, ROI +1.68%)
       const mktSpread = mlResult.market_spread_home ?? game.odds?.homeSpread ?? null;
       if (mktSpread !== null) {
         patch.market_spread_home = mktSpread;
       }
-      if (mlResult.ats_v9_units > 0) {
-        patch.ats_side = mlResult.ats_v9_side;
-        patch.ats_units = mlResult.ats_v9_units;
-        patch.ats_models_agree = mlResult.ats_v9_models_agree ?? null;
-        patch.ats_model_version = "v9.1";
-        patch.ats_disagree = mlResult.ats_v9_edge ?? null;
+      if (mlResult.ats_v12_units > 0) {
+        const pick = mlResult.ats_v12_pick;
+        const votesWin = pick === "HOME"
+          ? (mlResult.ats_v12_n_votes_home ?? 0)
+          : (mlResult.ats_v12_n_votes_away ?? 0);
+        const unanimous = votesWin >= 3;
+        patch.ats_side = pick;
+        patch.ats_units = unanimous ? 3 : 1;
+        patch.ats_disagree = mlResult.ats_v12_edge_vs_market ?? null;
+        patch.ats_pick_spread = mktSpread;
+        patch.ats_models_agree = unanimous;
+        patch.ats_model_version = "v12";
       } else {
         patch.ats_units = 0;
       }
