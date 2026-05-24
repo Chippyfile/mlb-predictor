@@ -360,7 +360,7 @@ export function HistoryTab({ table, refreshKey }) {
   const load = useCallback(async () => {
     setLoading(true);
     const histCols = isMLB
-      ? "id,game_date,home_team,away_team,ou_total,win_pct_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs,ou_pick,ou_units"
+      ? "id,game_date,home_team,away_team,ou_total,win_pct_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs,ou_pick,ou_units,ou_pick_correct"
       : "id,game_date,home_team,away_team,home_team_name,away_team_name,ou_total,win_pct_home,ml_win_prob_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,pred_home_score,pred_away_score";
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
@@ -420,14 +420,19 @@ export function HistoryTab({ table, refreshKey }) {
         const atsL = graded.filter(r => r.ats_units > 0 && r.ats_correct === false).length;
         let ouW = 0, ouL = 0;
         graded.forEach(r => {
+          // Prefer the backend-graded boolean (authoritative, push-aware). Fall
+          // back to recompute only for sports that don't write ou_pick_correct yet.
+          if (r.ou_pick_correct === true) { ouW++; return; }
+          if (r.ou_pick_correct === false) { ouL++; return; }
+          if (isMLB) return; // MLB: trust the boolean only (null = no bet/push)
           const modelT = parseFloat(r.ou_total || 0);
           const mktT = r.market_ou_total != null ? parseFloat(r.market_ou_total) : null;
           if (!mktT || !modelT) return;
           const diff = Math.abs(modelT - mktT);
-          const triggered = isMLB ? diff >= 1.0 : (diff / mktT) >= 0.04;
+          const triggered = (diff / mktT) >= 0.04;
           if (!triggered) return;
-          const hs = parseFloat((isMLB ? (r.actual_home_runs ?? r.actual_home_score) : r.actual_home_score) ?? 0);
-          const as_ = parseFloat((isMLB ? (r.actual_away_runs ?? r.actual_away_score) : r.actual_away_score) ?? 0);
+          const hs = parseFloat(r.actual_home_score ?? 0);
+          const as_ = parseFloat(r.actual_away_score ?? 0);
           const actT = hs + as_;
           if (actT === mktT) return;
           if ((modelT > mktT) === (actT > mktT)) ouW++; else ouL++;
@@ -543,17 +548,23 @@ export function HistoryTab({ table, refreshKey }) {
                       })()}</td>
                       {/* O/U ✓ */}
                       <td style={{ padding: "6px 4px", textAlign: "center" }}>{(() => {
-                        if (!hasMarketOU || !r.result_entered) return "—";
+                        if (!r.result_entered) return "—";
+                        // Authoritative: backend-graded ou_pick bet (push-aware).
+                        if (r.ou_pick_correct === true) return "✅";
+                        if (r.ou_pick_correct === false) return "❌";
+                        if (isMLB) {
+                          // null -> no pick, or push
+                          if (hasMarketOU && actualTotal === mktTotal) return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
+                          return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        }
+                        // Non-MLB fallback (no ou_pick_correct column yet): recompute.
+                        if (!hasMarketOU) return "—";
                         const modelTotal = parseFloat(r.ou_total || 0);
                         if (!mktTotal || !modelTotal) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
-                        const absDiff = Math.abs(modelTotal - mktTotal);
-                        const pctDiff = absDiff / mktTotal;
-                        const triggered = isMLB ? absDiff >= 1.0 : pctDiff >= 0.04;
-                        if (!triggered) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
+                        const pctDiff = Math.abs(modelTotal - mktTotal) / mktTotal;
+                        if (pctDiff < 0.04) return <span style={{ color: C.dim, fontSize: 10 }}>—</span>;
                         if (actualTotal === mktTotal) return <span style={{ color: C.yellow, fontSize: 10 }}>P</span>;
-                        const modelSaysOver = modelTotal > mktTotal;
-                        const actualOver = actualTotal > mktTotal;
-                        return modelSaysOver === actualOver ? "✅" : "❌";
+                        return (modelTotal > mktTotal) === (actualTotal > mktTotal) ? "✅" : "❌";
                       })()}</td>
                       {/* DELETE */}
                       <td style={{ padding: "6px 4px" }}><button onClick={() => deleteRecord(r.id)} style={{ background: "transparent", border: "none", color: "#3a3f47", cursor: "pointer", fontSize: 11 }}>✕</button></td>
