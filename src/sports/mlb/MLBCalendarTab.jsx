@@ -366,8 +366,13 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       const ds = mlResult.data_sources ?? {};
       const totalBase = pt || 9.0;
 
-      // Save to Supabase (single source of truth)
+      // Save to Supabase (single source of truth) — upsert keyed on game_pk
       const patch = {
+        // Natural keys (required when creating a new row via upsert)
+        game_pk: gamePk,
+        game_date: dateStr,
+        home_team: game.homeAbbr,
+        away_team: game.awayAbbr,
         win_pct_home: parseFloat(wp.toFixed(4)),
         ml_win_prob_home: parseFloat(wp.toFixed(4)),
         spread_home: parseFloat(margin.toFixed(2)),
@@ -440,7 +445,10 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
         patch.market_away_ml = aml;
       }
 
-      await supabaseQuery(`/mlb_predictions?game_pk=eq.${gamePk}`, "PATCH", patch).catch(e => {
+      // UPSERT instead of PATCH: PATCH silently no-ops when the row doesn't exist,
+      // which is exactly the case when refreshing a PENDING game. Upsert keyed on
+      // game_pk creates the row on first refresh, updates it on subsequent ones.
+      await supabaseQuery(`/mlb_predictions`, "UPSERT", patch, "game_pk").catch(e => {
         console.warn("[MLB refresh] Supabase save failed:", e);
       });
 
