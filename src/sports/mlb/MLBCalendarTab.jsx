@@ -26,6 +26,25 @@ function applyAtsTeamOverride(pickSide, homeTeam, awayTeam, baseUnits, unanimous
   if (ATS_OPP_BOOST.has(against))   return { units: 2, reason: `boost_against_${against}` };
   return { units: baseUnits, reason: null };
 }
+
+// Data-completeness gate — keep in lockstep with backend ats_v12_overrides.get_pick_status.
+// v12 trained on games with confirmed lineups + known starters; predicting on
+// incomplete data zero-fills lineup features → different distribution than train.
+const COVERAGE_MIN_NUMER = 28;  // need >=28/30 real features
+function getPickStatus(hasV12Pick, lineupAvailable, featureCoverage, homeStarter, awayStarter) {
+  if (!hasV12Pick) return "NO_BET";
+  if (!lineupAvailable) return "WAITING_LINEUP";
+  if (!homeStarter || !awayStarter) return "WAITING_STARTER";
+  if (featureCoverage) {
+    try {
+      const numer = parseInt(String(featureCoverage).split("/")[0], 10);
+      if (isNaN(numer) || numer < COVERAGE_MIN_NUMER) return "WAITING_COVERAGE";
+    } catch (e) { return "WAITING_COVERAGE"; }
+  } else {
+    return "WAITING_COVERAGE";
+  }
+  return "READY";
+}
 import {
   mlbTeamById,
   fetchMLBScheduleForDate,
@@ -430,6 +449,19 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       } else {
         patch.ats_units = 0;
         patch.ats_override_reason = null;
+      }
+
+      // Data-completeness gate (train/serve parity) — applies on top of the override.
+      const _status = getPickStatus(
+        (mlResult.ats_v12_units ?? 0) > 0,
+        !!mlResult.lineup_available,
+        mlResult.feature_coverage,
+        mlResult.home_starter,
+        mlResult.away_starter,
+      );
+      patch.ats_pick_status = _status;
+      if (_status !== "READY" && _status !== "NO_BET" && (patch.ats_units ?? 0) > 0) {
+        patch.ats_units = 0;  // hide bet until data complete
       }
 
       // O/U pick — use backend v2 model result directly
