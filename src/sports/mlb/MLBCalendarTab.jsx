@@ -56,6 +56,41 @@ import { mlbAutoSync } from "./mlbSync.js";
 const ML_CAP = 500;
 
 // Unit badge for spread/ML/OU cells
+const WaitingBanner = ({ status }) => {
+  const labels = {
+    WAITING_LINEUP: "Waiting for lineup",
+    WAITING_STARTER: "Waiting for probable pitcher",
+    WAITING_COVERAGE: "Waiting for full feature data",
+  };
+  const label = labels[status] || "Waiting for data";
+  return (
+    <div style={{
+      padding: "8px 14px",
+      background: "linear-gradient(135deg, #2a1e0a, #2e2410)",
+      borderBottom: "1px solid #d2992244",
+      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 18 }}>⏳</span>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#d29922", letterSpacing: 0.5 }}>
+            {label}
+          </div>
+          <div style={{ fontSize: 10, color: "#8b949e" }}>
+            Bet hidden until prediction data matches training distribution
+          </div>
+        </div>
+      </div>
+      <div style={{
+        padding: "3px 10px", borderRadius: 4, background: "#d29922",
+        color: "#000", fontSize: 10, fontWeight: 800, letterSpacing: 1.5,
+      }}>
+        WAITING
+      </div>
+    </div>
+  );
+};
+
 const SignalBadge = ({ label, color, children }) => {
   if (!label) return <>{children}</>;
 
@@ -267,7 +302,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
     const [raw, storedPreds] = await Promise.all([
       fetchMLBScheduleForDate(d),
       supabaseQuery(
-        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage`
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage,ats_pick_status`
       ).catch(e => { console.warn("Failed to load stored MLB predictions:", e); return []; }),
     ]);
     setOddsData(null); // v20: No Odds API on page load — stored market odds from Supabase
@@ -337,6 +372,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
           // Stored ATS signals (cron computed — single source of truth)
           _storedAtsUnits: stored.ats_units ?? null,
           _storedAtsSide: stored.ats_side ?? null,
+          atsPickStatus: stored.ats_pick_status ?? null,
           _storedAtsDisagree: stored.ats_disagree ?? null,
           _storedAtsPickSpread: stored.market_spread_home ?? null,
           _storedAtsDirectionFlip: stored.ats_direction_flip ?? false,
@@ -664,6 +700,10 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
               }}
               onClick={() => setExpanded(expanded === game.gamePk ? null : game.gamePk)}
             >
+              {/* Data-completeness gate — show WAITING badge instead of bet when data incomplete */}
+              {game.pred?.atsPickStatus?.startsWith("WAITING_") && (
+                <WaitingBanner status={game.pred.atsPickStatus} />
+              )}
               {/* Bet advantage banner */}
               {isBetGame && (
                 <BetBanner signals={signals} homeName={homeName} awayName={awayName} odds={game.odds} />
