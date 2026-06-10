@@ -32,7 +32,7 @@ function applyAtsTeamOverride(pickSide, homeTeam, awayTeam, baseUnits, unanimous
 // incomplete data zero-fills lineup features → different distribution than train.
 const COVERAGE_MIN_NUMER = 28;  // need >=28/30 real features
 function getPickStatus(hasV12Pick, lineupAvailable, featureCoverage, homeStarter, awayStarter) {
-  if (!hasV12Pick) return "NO_BET";
+  // Data completeness FIRST — v12's no-bet on incomplete data is also unreliable
   if (!lineupAvailable) return "WAITING_LINEUP";
   if (!homeStarter || !awayStarter) return "WAITING_STARTER";
   if (featureCoverage) {
@@ -43,7 +43,8 @@ function getPickStatus(hasV12Pick, lineupAvailable, featureCoverage, homeStarter
   } else {
     return "WAITING_COVERAGE";
   }
-  return "READY";
+  // Data complete — now trust v12
+  return hasV12Pick ? "READY" : "NO_BET";
 }
 import {
   mlbTeamById,
