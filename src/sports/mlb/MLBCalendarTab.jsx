@@ -9,6 +9,23 @@ import { trueImplied, EDGE_THRESHOLD, DECISIVENESS_GATE } from "../../utils/shar
 import { buildStoredSignals } from "../../utils/buildStoredSignals.js";
 import { mlPredictMLBFull } from "../../utils/mlApi.js";
 import { supabaseQuery } from "../../utils/supabase.js";
+
+// ATS v12 team-based overrides — mirrors backend ats_v12_overrides.py
+// (kept in sync so refresh-button picks match cron-generated picks)
+// Lists from 2023-2025 walkforward; regenerate via team_overrides_3yr.py.
+const ATS_PICK_BOOST  = new Set(["ARI","CLE","NYA","TEX","BOS","CIN","CHN","DET"]);
+const ATS_OPP_BOOST   = new Set(["SFN","DET","CHA","COL","SLN","ANA","SEA","TBA","MIL","CHN","SDN"]);
+const ATS_EXCLUDE_OPP = new Set(["LAN"]);
+
+function applyAtsTeamOverride(pickSide, homeTeam, awayTeam, baseUnits, unanimous) {
+  const picked  = pickSide === "HOME" ? homeTeam : awayTeam;
+  const against = pickSide === "HOME" ? awayTeam : homeTeam;
+  if (ATS_EXCLUDE_OPP.has(against)) return { units: 0, reason: `exclude_against_${against}` };
+  if (unanimous) return { units: baseUnits, reason: null }; // 3u never demoted
+  if (ATS_PICK_BOOST.has(picked))   return { units: 2, reason: `boost_pick_${picked}` };
+  if (ATS_OPP_BOOST.has(against))   return { units: 2, reason: `boost_against_${against}` };
+  return { units: baseUnits, reason: null };
+}
 import {
   mlbTeamById,
   fetchMLBScheduleForDate,
@@ -366,13 +383,8 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       const ds = mlResult.data_sources ?? {};
       const totalBase = pt || 9.0;
 
-      // Save to Supabase (single source of truth) — upsert keyed on game_pk
+      // Save to Supabase (single source of truth)
       const patch = {
-        // Natural keys (required when creating a new row via upsert)
-        game_pk: gamePk,
-        game_date: dateStr,
-        home_team: game.homeAbbr,
-        away_team: game.awayAbbr,
         win_pct_home: parseFloat(wp.toFixed(4)),
         ml_win_prob_home: parseFloat(wp.toFixed(4)),
         spread_home: parseFloat(margin.toFixed(2)),
@@ -405,14 +417,19 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
           ? (mlResult.ats_v12_n_votes_home ?? 0)
           : (mlResult.ats_v12_n_votes_away ?? 0);
         const unanimous = votesWin >= 3;
+        const baseUnits = unanimous ? 3 : 1;
+        // Team override: exclude LAN-against, boost 2u for hot/cold teams
+        const ovr = applyAtsTeamOverride(pick, game.homeAbbr, game.awayAbbr, baseUnits, unanimous);
         patch.ats_side = pick;
-        patch.ats_units = unanimous ? 3 : 1;
+        patch.ats_units = ovr.units;
         patch.ats_disagree = mlResult.ats_v12_edge_vs_market ?? null;
         patch.ats_pick_spread = mktSpread;
         patch.ats_models_agree = unanimous;
         patch.ats_model_version = "v12";
+        patch.ats_override_reason = ovr.reason;
       } else {
         patch.ats_units = 0;
+        patch.ats_override_reason = null;
       }
 
       // O/U pick — use backend v2 model result directly
@@ -445,10 +462,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
         patch.market_away_ml = aml;
       }
 
-      // UPSERT instead of PATCH: PATCH silently no-ops when the row doesn't exist,
-      // which is exactly the case when refreshing a PENDING game. Upsert keyed on
-      // game_pk creates the row on first refresh, updates it on subsequent ones.
-      await supabaseQuery(`/mlb_predictions`, "UPSERT", patch, "game_pk").catch(e => {
+      await supabaseQuery(`/mlb_predictions?game_pk=eq.${gamePk}`, "PATCH", patch).catch(e => {
         console.warn("[MLB refresh] Supabase save failed:", e);
       });
 
