@@ -55,16 +55,26 @@ import { mlbAutoSync } from "./mlbSync.js";
 // ML moneyline cap — MLB lines rarely exceed ±500 even in extreme mismatches
 const ML_CAP = 500;
 
-// Unit badge for spread/ML/OU cells
-const WaitingBanner = ({ status, featureCoverage, featureStatus }) => {
+// Feature coverage banner: shown on every game card that has feature data.
+// Two visual variants based on status:
+//   - WAITING_*  → prominent amber banner with WAITING pill (gates the bet)
+//   - READY/NO_BET/null → subtle slim bar (informational only)
+// Both share the same expandable dropdown listing covered/missing features.
+const FeatureCoverageBanner = ({ status, featureCoverage, featureStatus }) => {
   const [expanded, setExpanded] = useState(false);
-  const labels = {
+
+  const isWaiting = typeof status === "string" && status.startsWith("WAITING_");
+  // Hide entirely when there's nothing to show (no coverage data AND not in WAITING)
+  if (!isWaiting && !featureCoverage) return null;
+
+  const waitingLabels = {
     WAITING_LINEUP: "Waiting for lineup",
     WAITING_STARTER: "Waiting for probable pitcher",
     WAITING_COVERAGE: "Waiting for full feature data",
   };
-  const label = labels[status] || "Waiting for data";
-  // Parse "25/34" -> { numer: 25, denom: 34 } for color coding
+  const waitingLabel = waitingLabels[status] || "Waiting for data";
+
+  // Parse "26/35" -> { numer: 26, denom: 35 } for color coding
   let coverageInfo = null;
   if (featureCoverage) {
     const parts = String(featureCoverage).split("/");
@@ -74,12 +84,11 @@ const WaitingBanner = ({ status, featureCoverage, featureStatus }) => {
       coverageInfo = { numer, denom, pct: numer / denom };
     }
   }
-  // Color the count: green when at/above threshold, amber when below
   const coverageColor = coverageInfo
     ? (coverageInfo.numer >= COVERAGE_MIN_NUMER ? "#3fb950" : "#d29922")
     : "#8b949e";
+
   // Split featureStatus into missing (value == 0) and covered (value != 0)
-  // featureStatus is { feature_name: float_value } from Supabase ml_feature_status column
   const featureLists = (() => {
     if (!featureStatus || typeof featureStatus !== "object") return null;
     const missing = [];
@@ -94,14 +103,25 @@ const WaitingBanner = ({ status, featureCoverage, featureStatus }) => {
     return { missing, covered };
   })();
   const canExpand = !!featureLists;
+
+  // Variant styling
+  const containerStyle = isWaiting
+    ? {
+        background: "linear-gradient(135deg, #2a1e0a, #2e2410)",
+        borderBottom: "1px solid #d2992244",
+      }
+    : {
+        background: "rgba(0,0,0,0.25)",
+        borderBottom: "1px solid #30363d44",
+      };
+  const headerPadding = isWaiting ? "8px 14px" : "5px 14px";
+  const labelColor = isWaiting ? "#d29922" : "#8b949e";
+
   return (
-    <div style={{
-      background: "linear-gradient(135deg, #2a1e0a, #2e2410)",
-      borderBottom: "1px solid #d2992244",
-    }}>
+    <div style={containerStyle}>
       <div
         style={{
-          padding: "8px 14px",
+          padding: headerPadding,
           display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
           cursor: canExpand ? "pointer" : "default",
         }}
@@ -112,16 +132,24 @@ const WaitingBanner = ({ status, featureCoverage, featureStatus }) => {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 18 }}>⏳</span>
+          {isWaiting && <span style={{ fontSize: 18 }}>⏳</span>}
           <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#d29922", letterSpacing: 0.5 }}>
-              {label}
+            <div style={{
+              fontSize: isWaiting ? 12 : 10,
+              fontWeight: isWaiting ? 700 : 600,
+              color: labelColor,
+              letterSpacing: 0.5,
+              textTransform: isWaiting ? "none" : "uppercase",
+            }}>
+              {isWaiting ? waitingLabel : "Feature coverage"}
             </div>
-            <div style={{ fontSize: 10, color: "#8b949e" }}>
-              {canExpand
-                ? (expanded ? "Click to hide feature list" : "Click for feature breakdown")
-                : "Bet hidden until prediction data matches training distribution"}
-            </div>
+            {isWaiting && (
+              <div style={{ fontSize: 10, color: "#8b949e" }}>
+                {canExpand
+                  ? (expanded ? "Click to hide feature list" : "Click for feature breakdown")
+                  : "Bet hidden until prediction data matches training distribution"}
+              </div>
+            )}
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -132,7 +160,7 @@ const WaitingBanner = ({ status, featureCoverage, featureStatus }) => {
               border: `1px solid ${coverageColor}66`,
               color: coverageColor, fontSize: 11, fontWeight: 700,
               fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-            }} title={`Feature coverage: ${coverageInfo.numer} of ${coverageInfo.denom} features have real (non-default) values. Threshold to bet: ${COVERAGE_MIN_NUMER}.`}>
+            }} title={`Feature coverage: ${coverageInfo.numer} of ${coverageInfo.denom} v12 features have real (non-default) values. Threshold to bet: ${COVERAGE_MIN_NUMER}.`}>
               {coverageInfo.numer}/{coverageInfo.denom}
             </div>
           )}
@@ -141,19 +169,21 @@ const WaitingBanner = ({ status, featureCoverage, featureStatus }) => {
               {expanded ? "▲" : "▼"}
             </span>
           )}
-          <div style={{
-            padding: "3px 10px", borderRadius: 4, background: "#d29922",
-            color: "#000", fontSize: 10, fontWeight: 800, letterSpacing: 1.5,
-          }}>
-            WAITING
-          </div>
+          {isWaiting && (
+            <div style={{
+              padding: "3px 10px", borderRadius: 4, background: "#d29922",
+              color: "#000", fontSize: 10, fontWeight: 800, letterSpacing: 1.5,
+            }}>
+              WAITING
+            </div>
+          )}
         </div>
       </div>
       {expanded && featureLists && (
         <div
           style={{
             padding: "10px 14px 12px",
-            borderTop: "1px solid #d2992222",
+            borderTop: `1px solid ${isWaiting ? "#d2992222" : "#30363d22"}`,
             background: "rgba(0,0,0,0.2)",
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
@@ -197,6 +227,9 @@ const WaitingBanner = ({ status, featureCoverage, featureStatus }) => {
     </div>
   );
 };
+
+// Back-compat alias: existing call sites can keep using WaitingBanner
+const WaitingBanner = FeatureCoverageBanner;
 
 const SignalBadge = ({ label, color, children }) => {
   if (!label) return <>{children}</>;
@@ -809,14 +842,14 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
               }}
               onClick={() => setExpanded(expanded === game.gamePk ? null : game.gamePk)}
             >
-              {/* Data-completeness gate — show WAITING badge instead of bet when data incomplete */}
-              {game.pred?.atsPickStatus?.startsWith("WAITING_") && (
-                <WaitingBanner
-                  status={game.pred.atsPickStatus}
-                  featureCoverage={game.pred?._featureCoverage}
-                  featureStatus={game.pred?._featureStatus}
-                />
-              )}
+              {/* Feature coverage banner — prominent when WAITING, subtle when READY/NO_BET.
+                  Always rendered when coverage data is available so users can inspect features
+                  on betting games too, not just the gated ones. */}
+              <FeatureCoverageBanner
+                status={game.pred?.atsPickStatus}
+                featureCoverage={game.pred?._featureCoverage}
+                featureStatus={game.pred?._featureStatus}
+              />
               {/* Bet advantage banner */}
               {isBetGame && (
                 <BetBanner signals={signals} homeName={homeName} awayName={awayName} odds={game.odds} />
