@@ -30,7 +30,7 @@ function applyAtsTeamOverride(pickSide, homeTeam, awayTeam, baseUnits, unanimous
 // Data-completeness gate — keep in lockstep with backend ats_v12_overrides.get_pick_status.
 // v12 trained on games with confirmed lineups + known starters; predicting on
 // incomplete data zero-fills lineup features → different distribution than train.
-const COVERAGE_MIN_NUMER = 28;  // need >=28/30 real features
+const COVERAGE_MIN_NUMER = 22;  // lowered 2026-06-11: must stay in lockstep with backend ats_v12_overrides.COVERAGE_MIN_NUMER
 function getPickStatus(hasV12Pick, lineupAvailable, featureCoverage, homeStarter, awayStarter) {
   // Data completeness FIRST — v12's no-bet on incomplete data is also unreliable
   if (!lineupAvailable) return "WAITING_LINEUP";
@@ -56,37 +56,144 @@ import { mlbAutoSync } from "./mlbSync.js";
 const ML_CAP = 500;
 
 // Unit badge for spread/ML/OU cells
-const WaitingBanner = ({ status }) => {
+const WaitingBanner = ({ status, featureCoverage, featureStatus }) => {
+  const [expanded, setExpanded] = useState(false);
   const labels = {
     WAITING_LINEUP: "Waiting for lineup",
     WAITING_STARTER: "Waiting for probable pitcher",
     WAITING_COVERAGE: "Waiting for full feature data",
   };
   const label = labels[status] || "Waiting for data";
+  // Parse "25/34" -> { numer: 25, denom: 34 } for color coding
+  let coverageInfo = null;
+  if (featureCoverage) {
+    const parts = String(featureCoverage).split("/");
+    const numer = parseInt(parts[0], 10);
+    const denom = parseInt(parts[1], 10);
+    if (!isNaN(numer) && !isNaN(denom)) {
+      coverageInfo = { numer, denom, pct: numer / denom };
+    }
+  }
+  // Color the count: green when at/above threshold, amber when below
+  const coverageColor = coverageInfo
+    ? (coverageInfo.numer >= COVERAGE_MIN_NUMER ? "#3fb950" : "#d29922")
+    : "#8b949e";
+  // Split featureStatus into missing (value == 0) and covered (value != 0)
+  // featureStatus is { feature_name: float_value } from Supabase ml_feature_status column
+  const featureLists = (() => {
+    if (!featureStatus || typeof featureStatus !== "object") return null;
+    const missing = [];
+    const covered = [];
+    Object.entries(featureStatus).forEach(([name, val]) => {
+      const isReal = val !== 0 && val !== null && val !== undefined;
+      if (isReal) covered.push({ name, val });
+      else missing.push({ name, val });
+    });
+    missing.sort((a, b) => a.name.localeCompare(b.name));
+    covered.sort((a, b) => a.name.localeCompare(b.name));
+    return { missing, covered };
+  })();
+  const canExpand = !!featureLists;
   return (
     <div style={{
-      padding: "8px 14px",
       background: "linear-gradient(135deg, #2a1e0a, #2e2410)",
       borderBottom: "1px solid #d2992244",
-      display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 18 }}>⏳</span>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#d29922", letterSpacing: 0.5 }}>
-            {label}
+      <div
+        style={{
+          padding: "8px 14px",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+          cursor: canExpand ? "pointer" : "default",
+        }}
+        onClick={(e) => {
+          if (!canExpand) return;
+          e.stopPropagation();  // prevent card click-to-expand
+          setExpanded(v => !v);
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 18 }}>⏳</span>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#d29922", letterSpacing: 0.5 }}>
+              {label}
+            </div>
+            <div style={{ fontSize: 10, color: "#8b949e" }}>
+              {canExpand
+                ? (expanded ? "Click to hide feature list" : "Click for feature breakdown")
+                : "Bet hidden until prediction data matches training distribution"}
+            </div>
           </div>
-          <div style={{ fontSize: 10, color: "#8b949e" }}>
-            Bet hidden until prediction data matches training distribution
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {coverageInfo && (
+            <div style={{
+              padding: "3px 8px", borderRadius: 4,
+              background: "rgba(0,0,0,0.35)",
+              border: `1px solid ${coverageColor}66`,
+              color: coverageColor, fontSize: 11, fontWeight: 700,
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            }} title={`Feature coverage: ${coverageInfo.numer} of ${coverageInfo.denom} features have real (non-default) values. Threshold to bet: ${COVERAGE_MIN_NUMER}.`}>
+              {coverageInfo.numer}/{coverageInfo.denom}
+            </div>
+          )}
+          {canExpand && (
+            <span style={{ fontSize: 10, color: "#8b949e", marginLeft: -2 }}>
+              {expanded ? "▲" : "▼"}
+            </span>
+          )}
+          <div style={{
+            padding: "3px 10px", borderRadius: 4, background: "#d29922",
+            color: "#000", fontSize: 10, fontWeight: 800, letterSpacing: 1.5,
+          }}>
+            WAITING
           </div>
         </div>
       </div>
-      <div style={{
-        padding: "3px 10px", borderRadius: 4, background: "#d29922",
-        color: "#000", fontSize: 10, fontWeight: 800, letterSpacing: 1.5,
-      }}>
-        WAITING
-      </div>
+      {expanded && featureLists && (
+        <div
+          style={{
+            padding: "10px 14px 12px",
+            borderTop: "1px solid #d2992222",
+            background: "rgba(0,0,0,0.2)",
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 12,
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            fontSize: 10,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div>
+            <div style={{ color: "#d29922", fontWeight: 700, marginBottom: 4, letterSpacing: 0.5 }}>
+              MISSING ({featureLists.missing.length})
+            </div>
+            {featureLists.missing.length === 0 ? (
+              <div style={{ color: "#8b949e", fontStyle: "italic" }}>none</div>
+            ) : (
+              featureLists.missing.map(({ name }) => (
+                <div key={name} style={{ color: "#d29922cc", paddingLeft: 6 }}>
+                  • {name}
+                </div>
+              ))
+            )}
+          </div>
+          <div>
+            <div style={{ color: "#3fb950", fontWeight: 700, marginBottom: 4, letterSpacing: 0.5 }}>
+              COVERED ({featureLists.covered.length})
+            </div>
+            {featureLists.covered.length === 0 ? (
+              <div style={{ color: "#8b949e", fontStyle: "italic" }}>none</div>
+            ) : (
+              featureLists.covered.map(({ name, val }) => (
+                <div key={name} style={{ color: "#3fb950cc", paddingLeft: 6, display: "flex", justifyContent: "space-between", gap: 8 }}>
+                  <span>• {name}</span>
+                  <span style={{ color: "#8b949e", fontSize: 9 }}>{typeof val === "number" ? val.toFixed(2) : val}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -302,7 +409,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
     const [raw, storedPreds] = await Promise.all([
       fetchMLBScheduleForDate(d),
       supabaseQuery(
-        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage,ats_pick_status`
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage,ml_feature_status,ats_pick_status`
       ).catch(e => { console.warn("Failed to load stored MLB predictions:", e); return []; }),
     ]);
     setOddsData(null); // v20: No Odds API on page load — stored market odds from Supabase
@@ -358,6 +465,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
           mlEnhanced: true,
           _fromStored: true,
           _featureCoverage: stored.ml_feature_coverage,
+          _featureStatus: stored.ml_feature_status,
           // Display stats from stored data
           hFIP: stored.home_sp_fip ?? null,
           aFIP: stored.away_sp_fip ?? null,
@@ -449,6 +557,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
         ou_total: pt ? parseFloat(pt.toFixed(1)) : null,
         ml_ou_pred_total: pt ? parseFloat(pt.toFixed(2)) : null,
         ml_feature_coverage: mlResult.feature_coverage || null,
+        ml_feature_status: mlResult.feature_status || null,
         // Display stats
         home_starter: mlResult.home_starter || null,
         away_starter: mlResult.away_starter || null,
@@ -702,7 +811,11 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
             >
               {/* Data-completeness gate — show WAITING badge instead of bet when data incomplete */}
               {game.pred?.atsPickStatus?.startsWith("WAITING_") && (
-                <WaitingBanner status={game.pred.atsPickStatus} />
+                <WaitingBanner
+                  status={game.pred.atsPickStatus}
+                  featureCoverage={game.pred?._featureCoverage}
+                  featureStatus={game.pred?._featureStatus}
+                />
               )}
               {/* Bet advantage banner */}
               {isBetGame && (
