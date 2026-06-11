@@ -883,7 +883,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
 
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}-{game.homeScore}</span>}
-                  {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE {game.inningHalf} {game.inning}</span>}
+                  {game.status === "Live" && <span style={{ fontSize: 10, color: C.orange, fontWeight: 700 }}>LIVE {game.inningHalf} {game.inning}{game.awayScore != null && game.homeScore != null && ` · ${game.awayScore}-${game.homeScore}`}</span>}
                   {game.umpire?.name && <span style={{ fontSize: 9, color: C.dim }}>⚖ {game.umpire.name.split(" ").pop()}</span>}
                   {game.status !== "Final" && (
                     <span
