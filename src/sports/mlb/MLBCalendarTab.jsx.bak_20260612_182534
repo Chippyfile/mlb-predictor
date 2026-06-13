@@ -442,7 +442,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
     const [raw, storedPreds] = await Promise.all([
       fetchMLBScheduleForDate(d),
       supabaseQuery(
-        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage,ml_feature_status,ats_pick_status,ats_v12_agree_pair,ats_v12_tier`
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage,ml_feature_status,ats_pick_status`
       ).catch(e => { console.warn("Failed to load stored MLB predictions:", e); return []; }),
     ]);
     setOddsData(null); // v20: No Odds API on page load — stored market odds from Supabase
@@ -609,13 +609,26 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       if (mktSpread !== null) {
         patch.market_spread_home = mktSpread;
       }
-      // ATS sizing is written ONLY by the cron (main.py), which applies the rolling
-      // CB+DM-boost screen (mlb_v12_paper_tiers.classify_paper_tier) — logic that can't
-      // run client-side (no CSV, no classifier). Refresh no longer writes a second,
-      // divergent ats_side/ats_units; it still refreshes ats_pick_status below.
-      // [Option A follow-up] Have the backend predict endpoint return final
-      // ats_side/ats_units/ats_v12_tier, then read mlResult.ats_* here to re-enable
-      // refresh-time sizing from a single source of truth.
+      if (mlResult.ats_v12_units > 0) {
+        const pick = mlResult.ats_v12_pick;
+        const votesWin = pick === "HOME"
+          ? (mlResult.ats_v12_n_votes_home ?? 0)
+          : (mlResult.ats_v12_n_votes_away ?? 0);
+        const unanimous = votesWin >= 3;
+        const baseUnits = unanimous ? 3 : 1;
+        // Team override: exclude LAN-against, boost 2u for hot/cold teams
+        const ovr = applyAtsTeamOverride(pick, game.homeAbbr, game.awayAbbr, baseUnits, unanimous);
+        patch.ats_side = pick;
+        patch.ats_units = ovr.units;
+        patch.ats_disagree = mlResult.ats_v12_edge_vs_market ?? null;
+        patch.ats_pick_spread = mktSpread;
+        patch.ats_models_agree = unanimous;
+        patch.ats_model_version = "v12";
+        patch.ats_override_reason = ovr.reason;
+      } else {
+        patch.ats_units = 0;
+        patch.ats_override_reason = null;
+      }
 
       // Data-completeness gate (train/serve parity) — applies on top of the override.
       const _status = getPickStatus(
