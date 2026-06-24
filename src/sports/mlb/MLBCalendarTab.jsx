@@ -425,6 +425,76 @@ const BetBanner = ({ signals, homeName, awayName, odds }) => {
   );
 };
 
+
+// ── O/U SHADOW banner ──────────────────────────────────────────
+// Renders the VALIDATED shadow O/U (heuristic total -> de-biased edge), distinct from
+// the retired sp_form O/U. Tier maps grey/blue/green for tracking ONLY — you bet FLAT 1u
+// by hand (handoff: tiers logged for grey/blue/green; ROI always evaluated flat). The
+// SHADOW stamp + "flat 1u" copy keep the tier badge from ever reading as a live stake.
+const ShadowOUBanner = ({ pred }) => {
+  if (!pred || !pred._shadowPick) return null;
+  const side = pred._shadowPick; // "OVER" | "UNDER"
+  const tier = pred._shadowTier || 0;
+  const ht = pred._shadowHeuristicTotal;
+  const mkt = pred._shadowMarket;
+  // de-biased edge (dbres) = resid - bias; resid already (heuristic - market)
+  const dbres = (pred._shadowResid != null && pred._shadowBias != null)
+    ? pred._shadowResid - pred._shadowBias
+    : null;
+  // tier color: 1u grey / 2u blue / 3u green (handoff convention)
+  const tierColor = tier >= 3 ? "#2ea043" : tier >= 2 ? "#58a6ff" : "#8b949e";
+  const sideColor = side === "OVER" ? "#2ea043" : "#58a6ff";
+  const arrow = side === "OVER" ? "▲" : "▼";
+  return (
+    <div style={{
+      padding: "8px 14px",
+      background: "linear-gradient(135deg, #0a1322, #0c1726)",
+      borderBottom: `1px solid ${sideColor}44`,
+      overflowX: "auto",
+      WebkitOverflowScrolling: "touch",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 320 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", gap: 3 }}>
+            {[1, 2, 3].map(i => (
+              <div key={i} style={{
+                width: 18, height: 18, borderRadius: 4,
+                background: i <= tier ? tierColor : "#1a1e24",
+                border: `1px solid ${i <= tier ? tierColor : "#30363d"}`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: i <= tier ? 11 : 8, fontWeight: 800,
+                color: i <= tier ? "#fff" : "#484f58",
+              }}>{i <= tier ? "•" : `${i}`}</div>
+            ))}
+          </div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 9, color: C.dim, letterSpacing: 1 }}>O/U:</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: sideColor }}>
+                {side} {typeof ht === "number" ? ht.toFixed(1) : "?"} {arrow}
+              </span>
+              {typeof mkt === "number" && (
+                <span style={{ fontSize: 10, color: C.muted }}>vs mkt {mkt}</span>
+              )}
+            </div>
+            <span style={{ fontSize: 10, color: C.muted }}>
+              {dbres != null ? `${dbres >= 0 ? "+" : ""}${dbres.toFixed(2)} de-biased edge` : "edge n/a"}
+              {" · flat 1u (tier "}{tier}{" tracking)"}
+            </span>
+          </div>
+        </div>
+        <div style={{
+          padding: "3px 10px", borderRadius: 4,
+          background: "rgba(0,0,0,0.4)", border: `1px solid ${sideColor}66`,
+          color: sideColor, fontSize: 10, fontWeight: 800, letterSpacing: 1.5,
+        }}>
+          SHADOW
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) {
   const todayStr = pstTodayStr();
   const [dateStr, setDateStr] = useState(todayStr);
@@ -442,7 +512,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
     const [raw, storedPreds] = await Promise.all([
       fetchMLBScheduleForDate(d),
       supabaseQuery(
-        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage,ml_feature_status,ats_pick_status,ats_v12_agree_pair,ats_v12_tier`
+        `/mlb_predictions?game_date=eq.${d}&select=id,game_pk,home_team,away_team,win_pct_home,ml_win_prob_home,ou_total,ml_ou_pred_total,pred_total,pred_home_runs,pred_away_runs,confidence,spread_home,market_spread_home,market_ou_total,market_home_ml,market_away_ml,run_line_home,ml_edge_pct,ml_bet_side,ats_units,ats_side,ats_disagree,ats_direction_flip,ou_pick,ou_tier,ou_edge,ou_units,sp_form_combined,home_starter,away_starter,umpire,home_sp_fip,away_sp_fip,home_woba,away_woba,park_factor,ml_feature_coverage,ml_feature_status,ats_pick_status,ats_v12_agree_pair,ats_v12_tier,ou_shadow_pick,ou_shadow_tier,ou_shadow_units,ou_shadow_resid,ou_shadow_market,ou_shadow_bias,ou_shadow_n_hist,heuristic_total`
       ).catch(e => { console.warn("Failed to load stored MLB predictions:", e); return []; }),
     ]);
     setOddsData(null); // v20: No Odds API on page load — stored market odds from Supabase
@@ -510,6 +580,16 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
           _ouPick: stored.ou_pick ?? null,
           _ouTier: stored.ou_tier ?? 0,
           _ouEdge: stored.ou_edge ?? null,
+          // ─ Validated O/U SHADOW (heuristic -> de-biased). This is the live edge;
+          //   the legacy _ou* fields above are the retired sp_form model (display-only). ─
+          _shadowPick: stored.ou_shadow_pick ?? null,
+          _shadowTier: stored.ou_shadow_tier ?? 0,
+          _shadowUnits: stored.ou_shadow_units ?? 0,
+          _shadowResid: stored.ou_shadow_resid ?? null,
+          _shadowMarket: stored.ou_shadow_market ?? null,
+          _shadowBias: stored.ou_shadow_bias ?? null,
+          _shadowNHist: stored.ou_shadow_n_hist ?? null,
+          _shadowHeuristicTotal: stored.heuristic_total ?? null,
           // Stored ATS signals (cron computed — single source of truth)
           _storedAtsUnits: stored.ats_units ?? null,
           _storedAtsSide: stored.ats_side ?? null,
@@ -837,6 +917,8 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                 featureCoverage={game.pred?._featureCoverage}
                 featureStatus={game.pred?._featureStatus}
               />
+              {/* O/U shadow banner — validated heuristic->de-biased pick (shadow-only) */}
+              <ShadowOUBanner pred={game.pred} />
               {/* Bet advantage banner */}
               {isBetGame && (
                 <BetBanner signals={signals} homeName={homeName} awayName={awayName} odds={game.odds} />
@@ -1024,10 +1106,10 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                     gap: 2,
                   }}>
 
-                    <div style={{ color: (signals.ou?.verdict === "GO" || signals.ou?.verdict === "LEAN") ? (signals.ou?.side === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
-                      {(signals.ou?.verdict === "GO") && signals.ou?.units
-                        ? <SignalBadge label={`${signals.ou.side} ${signals.ou.units}u`} color={signals.ou?.side === "OVER" ? "#2ea043" : "#58a6ff"}>
-                            {signals.ou.modelTotal?.toFixed?.(1) ?? game.pred.ouTotal}{signals.ou?.side && <span style={{ fontSize: 9, marginLeft: 3 }}>{signals.ou.side === "OVER" ? "▲" : "▼"}</span>}
+                    <div style={{ color: game.pred._shadowPick ? (game.pred._shadowPick === "OVER" ? C.green : "#58a6ff") : "#e2e8f0" }}>
+                      {game.pred._shadowPick
+                        ? <SignalBadge label={`${game.pred._shadowPick} ${game.pred._shadowTier || 1}u`} color={game.pred._shadowPick === "OVER" ? "#2ea043" : "#58a6ff"}>
+                            {typeof game.pred._shadowHeuristicTotal === "number" ? game.pred._shadowHeuristicTotal.toFixed(1) : game.pred.ouTotal}<span style={{ fontSize: 9, marginLeft: 3 }}>{game.pred._shadowPick === "OVER" ? "▲" : "▼"}</span>
                           </SignalBadge>
                         : game.pred.ouTotal
                       }
@@ -1118,6 +1200,12 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                     <Kv k="Projected Score" v={`${awayName} ${game.pred.awayRuns?.toFixed(1) ?? '-'} — ${homeName} ${game.pred.homeRuns?.toFixed(1) ?? '-'}`} />
                     <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
                     <Kv k="O/U Total" v={`${game.pred.ouTotal}`} />
+                    {game.pred._shadowPick && <Kv k="Shadow O/U" v={`${game.pred._shadowPick} ${game.pred._shadowTier || 1}u (flat 1u)`} />}
+                    {game.pred._shadowHeuristicTotal != null && <Kv k="Heuristic total" v={game.pred._shadowHeuristicTotal.toFixed(2)} />}
+                    {game.pred._shadowMarket != null && <Kv k="Shadow market" v={`${game.pred._shadowMarket}`} />}
+                    {(game.pred._shadowResid != null && game.pred._shadowBias != null) && <Kv k="De-biased edge" v={(game.pred._shadowResid - game.pred._shadowBias).toFixed(2)} />}
+                    {game.pred._shadowBias != null && <Kv k="Live bias" v={game.pred._shadowBias.toFixed(3)} />}
+                    {game.pred._shadowNHist != null && <Kv k="Bias n_hist" v={`${game.pred._shadowNHist}`} />}
                     <Kv k="Model ML (H)" v={formatML(game.pred.modelML_home)} />
                     <Kv k="Model ML (A)" v={formatML(game.pred.modelML_away)} />
                     {game.odds?.homeML && <Kv k="Market ML (H)" v={formatML(game.odds.homeML)} />}

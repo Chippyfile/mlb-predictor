@@ -783,7 +783,7 @@ export function BetSignalsPanel({ signals, pred, odds, sport, homeName, awayName
     <div style={{ marginTop: 10 }}>
       <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 8 }}>BET SIGNALS</div>
       <Row label={`${sport === "mlb" ? "⚾" : sport === "nfl" || sport === "ncaaf" ? "🏈" : "🏀"} MONEYLINE`} signal={signals.ml} />
-      <Row label="📊 OVER/UNDER"      signal={signals.ou} />
+      {sport !== "mlb" && <Row label="📊 OVER/UNDER"      signal={signals.ou} />}
       {signals.spread && <Row label={`📏 ${sport === "mlb" ? "RUN LINE" : "SPREAD"}`} signal={signals.spread} />}
       <Row label="🎯 CONFIDENCE"      signal={signals.conf} />
 
@@ -830,7 +830,7 @@ export function BetSignalsPanel({ signals, pred, odds, sport, homeName, awayName
       })()}
 
       {/* ── O/U BET SIZING ──────────────────────────────── */}
-      {signals.ou?.units && signals.ou?.verdict === "GO" && (() => {
+      {sport !== "mlb" && signals.ou?.units && signals.ou?.verdict === "GO" && (() => {
         const ouSig = signals.ou;
         const ouSzColor = ouSig.side === "OVER" ? "#2ea043" : "#58a6ff";
         return (
