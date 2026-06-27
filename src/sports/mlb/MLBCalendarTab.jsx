@@ -438,9 +438,8 @@ const ShadowOUBanner = ({ pred }) => {
   const ht = pred._shadowHeuristicTotal;
   const mkt = pred._shadowMarket;
   // de-biased edge (dbres) = resid - bias; resid already (heuristic - market)
-  const dbres = (pred._shadowResid != null && pred._shadowBias != null)
-    ? pred._shadowResid - pred._shadowBias
-    : null;
+  // ou_shadow_resid is already de-biased: (heur - market) - bias. Display as-is.
+  const dbres = pred._shadowResid != null ? pred._shadowResid : null;
   // tier color: 1u grey / 2u blue / 3u green (handoff convention)
   const tierColor = tier >= 3 ? "#2ea043" : tier >= 2 ? "#58a6ff" : "#8b949e";
   const sideColor = side === "OVER" ? "#2ea043" : "#58a6ff";
@@ -1203,7 +1202,7 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                     {game.pred._shadowPick && <Kv k="Shadow O/U" v={`${game.pred._shadowPick} ${game.pred._shadowTier || 1}u (flat 1u)`} />}
                     {game.pred._shadowHeuristicTotal != null && <Kv k="Heuristic total" v={game.pred._shadowHeuristicTotal.toFixed(2)} />}
                     {game.pred._shadowMarket != null && <Kv k="Shadow market" v={`${game.pred._shadowMarket}`} />}
-                    {(game.pred._shadowResid != null && game.pred._shadowBias != null) && <Kv k="De-biased edge" v={(game.pred._shadowResid - game.pred._shadowBias).toFixed(2)} />}
+                    {game.pred._shadowResid != null && <Kv k="De-biased edge" v={game.pred._shadowResid.toFixed(2)} />}
                     {game.pred._shadowBias != null && <Kv k="Live bias" v={game.pred._shadowBias.toFixed(3)} />}
                     {game.pred._shadowNHist != null && <Kv k="Bias n_hist" v={`${game.pred._shadowNHist}`} />}
                     <Kv k="Model ML (H)" v={formatML(game.pred.modelML_home)} />
