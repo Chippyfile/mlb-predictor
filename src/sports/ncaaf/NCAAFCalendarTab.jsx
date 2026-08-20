@@ -171,7 +171,7 @@ function GameCard({ g, open, onToggle }) {
   const mismatch = stored !== deriveBlock(g);
   const aCol = teamColor(g.awayTeam);
   const hCol = teamColor(g.homeTeam);
-  const pickSide = g.atsPick;
+  const pickSide = g.atsPick === "HOME" ? g.homeTeam : g.atsPick === "AWAY" ? g.awayTeam : g.atsPick;
 
   return (
     <div style={{
