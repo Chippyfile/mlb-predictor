@@ -1,21 +1,17 @@
 /**
  * ncaafSync.js — NCAAF read layer
  * ================================
- * Supabase is the sole source of truth. This module reads it. Nothing here
- * computes a prediction; the only write path in the app is the grader in
- * ncaafUtils.js, which is a separate decision (see NOTE at the bottom).
+ * Supabase is the sole source of truth. This module reads it and computes
+ * nothing.
  *
- * Changes from the previous version:
- *   - No `order=` in any query. Ordering by a column that doesn't exist 400s
- *     the whole request, and the old code ordered every query by
- *     `win_probability.desc` — a name no other file in the app uses. Sorting
- *     happens client-side now, where a wrong field name is a wrong sort
- *     instead of an empty page.
- *   - Reads fail loudly. supabaseQuery returning a non-array now throws
- *     instead of yielding [] that renders as "no games".
- *   - The mapper carries ats_gate_block, ats_n_zero, ou_shadow_*, elo_diff_pre.
- *   - Contested column names are read through ALIASES until a live row settles
- *     them. describeSchema() reports which name actually won.
+ * Column names confirmed against a live row (54 columns). The alias table this
+ * file briefly carried is gone — these are the real names:
+ *   win_probability · market_total · ats_correct · ats_pick
+ *
+ * Names used elsewhere in the app that DO NOT exist on this table:
+ *   rl_correct · win_pct_home · ml_win_prob_home · market_ou_total · ou_total
+ *   spread_home · ats_side · home_team_name · away_team_name · elo_diff_pre
+ * Anything selecting or writing those gets a 400 from PostgREST.
  */
 
 import { supabaseQuery } from "../../utils/supabase.js";
@@ -23,51 +19,6 @@ import { supabaseQuery } from "../../utils/supabase.js";
 const RAILWAY_API =
   import.meta.env.VITE_API_URL ||
   "https://sports-predictor-api-production.up.railway.app";
-
-// ═══════════════════════════════════════════════════════════
-// CONTESTED COLUMN NAMES
-// ═══════════════════════════════════════════════════════════
-// Three files in this app disagree about what these columns are called.
-// Each list is tried in order. describeSchema() prints the winner so this
-// table can be collapsed to a single name once a real row confirms it.
-
-const ALIASES = {
-  winProb: ["win_probability", "win_pct_home", "ml_win_prob_home"],
-  marketTotal: ["market_total", "market_ou_total", "ou_total"],
-  atsCorrect: ["ats_correct", "rl_correct"],
-  atsSide: ["ats_pick", "ats_side"],
-};
-
-function pick(row, names) {
-  for (const n of names) {
-    if (row[n] !== undefined && row[n] !== null) return { value: row[n], key: n };
-  }
-  return { value: null, key: null };
-}
-
-/**
- * Which alias actually appeared in the data, and which never resolved on any
- * row. Render this somewhere visible — an unresolved alias means the display
- * is showing a blank where a real value exists under a name we didn't try.
- */
-export function describeSchema(rows) {
-  const out = {};
-  for (const [field, names] of Object.entries(ALIASES)) {
-    const seen = new Set();
-    rows.forEach((r) => {
-      const raw = r._raw || r;
-      names.forEach((n) => {
-        if (raw[n] !== undefined && raw[n] !== null) seen.add(n);
-      });
-    });
-    out[field] = {
-      resolved: [...seen],
-      unresolved: seen.size === 0,
-      ambiguous: seen.size > 1, // two names both populated — one is stale
-    };
-  }
-  return out;
-}
 
 // ═══════════════════════════════════════════════════════════
 // READ
@@ -86,7 +37,9 @@ async function readRows(query) {
 }
 
 /**
- * @param {Object} opts - { season, week, gameDate }
+ * No `order=` clause anywhere in this module. Ordering by a column that does
+ * not exist 400s the entire request; sorting client-side turns that same
+ * mistake into a wrong sort instead of an empty page.
  */
 export async function loadNCAAFPredictions({ season, week, gameDate } = {}) {
   let query = "/ncaaf_predictions?select=*";
@@ -94,8 +47,7 @@ export async function loadNCAAFPredictions({ season, week, gameDate } = {}) {
   else if (gameDate) query += `&game_date=eq.${gameDate}`;
   else if (season) query += `&season=eq.${season}`;
 
-  const rows = await readRows(query);
-  return rows.map(mapNCAAFPrediction).sort(byKickoff);
+  return (await readRows(query)).map(mapNCAAFPrediction).sort(byKickoff);
 }
 
 export async function loadNCAAFToday() {
@@ -117,11 +69,6 @@ const byKickoff = (a, b) =>
 // ═══════════════════════════════════════════════════════════
 
 function mapNCAAFPrediction(r) {
-  const winProb = pick(r, ALIASES.winProb);
-  const marketTotal = pick(r, ALIASES.marketTotal);
-  const atsCorrect = pick(r, ALIASES.atsCorrect);
-  const atsSide = pick(r, ALIASES.atsSide);
-
   return {
     // Identity
     id: r.id,
@@ -131,69 +78,70 @@ function mapNCAAFPrediction(r) {
     week: r.week,
     homeTeam: r.home_team,
     awayTeam: r.away_team,
-    homeTeamName: r.home_team_name || r.home_team,
-    awayTeamName: r.away_team_name || r.away_team,
     conferenceGame: r.conference_game,
     neutralSite: r.neutral_site,
 
     // Market
     spread: r.market_spread_home,
-    total: marketTotal.value,
+    total: r.market_total,
+    numProviders: r.num_providers,
 
-    // Winner
+    // Projection
     predictedWinner: r.predicted_winner,
-    winProbability: winProb.value,
+    winProbability: r.win_probability,
     predMargin: r.pred_margin,
+    predTotal: r.pred_total,
     predHomeScore: r.pred_home_score,
     predAwayScore: r.pred_away_score,
-    predTotal: r.pred_total,
+    predHomeRaw: r.pred_home_raw,
+    predAwayRaw: r.pred_away_raw,
 
     // ATS gate
     atsEdge: r.ats_edge,
-    atsContrarian: r.ats_contrarian,
-    atsConsensus: r.ats_consensus,
     atsAvgEdge: r.ats_avg_edge,
-    atsPick: atsSide.value,
+    atsConsensus: r.ats_consensus,
+    atsContrarian: r.ats_contrarian,
+    atsPick: r.ats_pick,
     atsUnits: r.ats_units || 0,
-    atsGateBlock: r.ats_gate_block ?? null,
-    atsNZero: r.ats_n_zero ?? null,
+    atsGateBlock: r.ats_gate_block,
+    atsNHome: r.ats_n_home,
+    atsNAway: r.ats_n_away,
+    atsNZero: r.ats_n_zero,
+    atsEdgesByModel: r.ats_edges_by_model,
 
     // O/U
     ouEdge: r.ou_edge,
     ouPick: r.ou_pick,
     ouUnits: r.ou_units || 0,
 
-    // O/U shadow branch (expected all-null until reachable)
-    ouShadowPick: r.ou_shadow_pick ?? null,
-    ouShadowUnits: r.ou_shadow_units ?? null,
-    ouShadowCorrect: r.ou_shadow_correct ?? null,
+    // O/U shadow branch — expected all-null until the branch is reachable
+    ouShadowPick: r.ou_shadow_pick,
+    ouShadowUnits: r.ou_shadow_units,
+    ouShadowCorrect: r.ou_shadow_correct,
 
-    // Diagnostics
-    eloDiffPre: r.elo_diff_pre ?? null,
-    featureCoverage: r.feature_coverage ?? null,
+    // Provenance / health
+    modelVersion: r.model_version,
+    predictedAt: r.predicted_at,
+    gradedAt: r.graded_at,
+    featureCoverage: r.feature_coverage,
+    nMissing: r.n_missing,
+    suppressReason: r.suppress_reason,
 
     // Parlay
     parlayEligible: r.parlay_eligible,
     parlayConfidence: r.parlay_confidence,
 
     // Results
+    resultEntered: r.result_entered,
     actualHomeScore: r.actual_home_score,
     actualAwayScore: r.actual_away_score,
-    resultEntered: r.result_entered,
+    actualMargin: r.actual_margin,
+    actualTotal: r.actual_total,
     mlCorrect: r.ml_correct,
-    atsCorrect: atsCorrect.value,
+    atsCorrect: r.ats_correct,
     ouCorrect: r.ou_correct,
     atsProfit: r.ats_profit,
     ouProfit: r.ou_profit,
-
-    // Which alias each contested field resolved to, for describeSchema()
-    _resolved: {
-      winProb: winProb.key,
-      marketTotal: marketTotal.key,
-      atsCorrect: atsCorrect.key,
-      atsSide: atsSide.key,
-    },
-    _raw: r,
   };
 }
 
@@ -207,9 +155,7 @@ export async function refreshNCAAFWeek(season, week) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ season, week }),
   });
-  if (!res.ok) {
-    throw new Error(`Backend predict failed (${res.status}). Rows unchanged.`);
-  }
+  if (!res.ok) throw new Error(`Backend predict failed (${res.status}). Rows unchanged.`);
   return loadNCAAFPredictions({ season, week });
 }
 
@@ -218,22 +164,24 @@ export async function refreshNCAAFWeek(season, week) {
 // ═══════════════════════════════════════════════════════════
 
 export async function getNCAAFATSPicks(season, week) {
-  const rows = await loadNCAAFPredictions({ season, week });
-  return rows.filter((r) => r.atsUnits > 0);
+  return (await loadNCAAFPredictions({ season, week })).filter((r) => r.atsUnits > 0);
 }
 
 export async function getNCAAFParlayPicks(season, week) {
-  const rows = await loadNCAAFPredictions({ season, week });
-  return rows.filter((r) => r.parlayEligible);
+  return (await loadNCAAFPredictions({ season, week })).filter((r) => r.parlayEligible);
 }
 
 /**
- * Season summary. Note ml_correct and atsCorrect are booleans; ou_correct is
- * NOT — the grader writes the string "OVER" for a correct pick and "UNDER"
- * for an incorrect one, so a truthiness test scores every graded game as a
- * win. Compared against "OVER" explicitly here, but the column is badly named
- * and worth renaming on the backend.
+ * ou_correct's encoding is unsettled. The frontend grader wrote the string
+ * "OVER" for a correct pick and "UNDER" for an incorrect one — but it also
+ * wrote rl_correct, a column that does not exist, so PostgREST rejected the
+ * whole PATCH and it never populated this column at all. Whatever writes
+ * graded_at is the real grader; whether it stores a boolean or that string is
+ * unknown until a graded row exists. Both are accepted here. Drop the one that
+ * isn't real once you see a graded row.
  */
+const ouIsCorrect = (v) => v === true || v === "OVER";
+
 export async function loadNCAAFSeasonSummary(season) {
   const rows = (await loadNCAAFPredictions({ season })).filter((r) => r.resultEntered);
   if (!rows.length) return null;
@@ -247,11 +195,8 @@ export async function loadNCAAFSeasonSummary(season) {
   return {
     totalGames: rows.length,
     ml: rate((r) => r.mlCorrect !== null, (r) => r.mlCorrect === true),
-    ats: rate(
-      (r) => r.atsUnits > 0 && r.atsCorrect !== null,
-      (r) => r.atsCorrect === true
-    ),
-    ou: rate((r) => r.ouCorrect != null, (r) => r.ouCorrect === "OVER"),
+    ats: rate((r) => r.atsUnits > 0 && r.atsCorrect !== null, (r) => r.atsCorrect === true),
+    ou: rate((r) => r.ouCorrect != null, (r) => ouIsCorrect(r.ouCorrect)),
     atsProfit: rows.reduce((s, r) => s + (r.atsProfit || 0), 0),
     ouProfit: rows.reduce((s, r) => s + (r.ouProfit || 0), 0),
   };
@@ -268,9 +213,3 @@ export async function ncaafAutoSync(onProgress) {
     throw e;
   }
 }
-
-// NOTE — grading still happens in the browser (ncaafUtils.js:522 PATCHes
-// ncaaf_predictions with actual scores, correctness flags and CLV). That is a
-// write from the frontend and contradicts sole-source-of-truth, but removing it
-// before a backend grader exists means Week 0 never grades at all. Move it,
-// don't delete it.

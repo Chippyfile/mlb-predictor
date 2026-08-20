@@ -12,7 +12,6 @@ import { NFL_TEAMS } from "../nfl/nflUtils.js";
 import {
   loadNCAAFPredictions,
   refreshNCAAFWeek,
-  describeSchema,
   ncaafAutoSync,
 } from "./ncaafSync.js";
 
@@ -53,10 +52,10 @@ const teamColor = (abbr) => NFL_TEAMS.find((t) => t.abbr === abbr)?.color || "#1
 // ─────────────────────────────────────────────────────────────
 // DIAGNOSTICS — the Week 0 watch, on the page instead of in SQL
 // ─────────────────────────────────────────────────────────────
-function Diagnostics({ games, schema }) {
+function Diagnostics({ games }) {
   const d = useMemo(() => {
     const counts = { pass: 0, consensus: 0, contrarian: 0, avg_edge: 0, unlabeled: 0 };
-    let ouSum = 0, ouN = 0, shadowN = 0, zeros = 0, eloLive = 0, mismatch = 0;
+    let ouSum = 0, ouN = 0, shadowN = 0, zeros = 0, suppressed = 0, mismatch = 0;
 
     games.forEach((g) => {
       const block = g.atsGateBlock;
@@ -67,12 +66,12 @@ function Diagnostics({ games, schema }) {
       if (g.ouEdge != null) { ouSum += Number(g.ouEdge); ouN++; }
       if (g.ouShadowPick) shadowN++;
       zeros += Number(g.atsNZero) || 0;
-      if (Number(g.eloDiffPre)) eloLive++;
+      if (g.suppressReason) suppressed++;
       if ((g.atsGateBlock || null) !== deriveBlock(g)) mismatch++;
     });
 
     return {
-      n: games.length, counts, mismatch, zeros, eloLive, shadowN,
+      n: games.length, counts, mismatch, zeros, suppressed, shadowN,
       ouMean: ouN ? ouSum / ouN : null,
       ouN,
       coverage: games.length ? shadowN / games.length : null,
@@ -92,7 +91,6 @@ function Diagnostics({ games, schema }) {
   const box = { background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" };
   const cap = { fontSize: 9, color: C.dim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4 };
 
-  const schemaIssues = Object.entries(schema || {}).filter(([, v]) => v.unresolved || v.ambiguous);
 
   return (
     <div style={{ marginBottom: 14, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -122,13 +120,11 @@ function Diagnostics({ games, schema }) {
         </div>
 
         <div style={box}>
-          <div style={cap}>Elo wired</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: d.eloLive > 0 ? C.green : C.dim }}>
-            {d.eloLive > 0 ? "yes" : "no"}
+          <div style={cap}>Suppressed</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: d.suppressed > 0 ? C.yellow : C.green }}>
+            {d.suppressed}
           </div>
-          <div style={{ fontSize: 10, color: C.dim }}>
-            {d.eloLive > 0 ? `${d.eloLive} nonzero` : "elo_diff_pre flat at 0"}
-          </div>
+          <div style={{ fontSize: 10, color: C.dim }}>rows with suppress_reason</div>
         </div>
       </div>
 
@@ -154,14 +150,6 @@ function Diagnostics({ games, schema }) {
         </div>
       </div>
 
-      {schemaIssues.length > 0 && (
-        <div style={{ ...box, borderColor: "#5a4a1a", background: "#161200" }}>
-          <div style={{ fontSize: 10, color: C.yellow }}>
-            ⚠ Column names unsettled:{" "}
-            {schemaIssues.map(([f, v]) => `${f} ${v.unresolved ? "(no alias matched)" : `(both ${v.resolved.join(" and ")} populated)`}`).join(" · ")}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -235,7 +223,12 @@ function GameCard({ g, open, onToggle }) {
             <Kv k="O/U pick" v={g.ouPick ? `${g.ouPick} ${g.ouUnits}u` : "—"} />
             <Kv k="O/U shadow" v={g.ouShadowPick ? `${g.ouShadowPick} ${n1(g.ouShadowUnits)}u` : "—"} />
             <Kv k="Pred total" v={n1(g.predTotal)} />
-            <Kv k="Elo diff" v={g.eloDiffPre == null ? "—" : n1(g.eloDiffPre, 2)} />
+            <Kv k="Vote split" v={`${g.atsNHome ?? "—"}H / ${g.atsNAway ?? "—"}A / ${g.atsNZero ?? "—"}Z`} />
+            <Kv k="Model" v={g.modelVersion ?? "—"} />
+            <Kv k="Missing feats" v={g.nMissing ?? "—"} />
+            <Kv k="Books" v={g.numProviders ?? "—"} />
+            {g.suppressReason && <Kv k="Suppressed" v={g.suppressReason} />}
+            {g.gradedAt && <Kv k="Graded" v={String(g.gradedAt).slice(0, 16).replace("T", " ")} />}
             {g.featureCoverage != null && <Kv k="Feature coverage" v={n1(g.featureCoverage, 2)} />}
             {g.conferenceGame && <Kv k="Conference" v="yes" />}
             {g.resultEntered && <Kv k="ML" v={g.mlCorrect ? "✅" : "❌"} />}
@@ -290,7 +283,6 @@ export function NCAAFCalendarTab({ season = new Date().getFullYear(), onGamesLoa
     [games, week]
   );
   const visible = picksOnly ? scoped.filter((g) => g.atsUnits > 0) : scoped;
-  const schema = useMemo(() => describeSchema(games), [games]);
 
   const doRefresh = async () => {
     if (week === "all") return load();
@@ -343,7 +335,7 @@ export function NCAAFCalendarTab({ season = new Date().getFullYear(), onGamesLoa
         </div>
       )}
 
-      {!loading && !error && games.length > 0 && <Diagnostics games={scoped} schema={schema} />}
+      {!loading && !error && games.length > 0 && <Diagnostics games={scoped} />}
 
       {!loading && !error && games.length === 0 && (
         <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "18px", fontSize: 12, color: C.dim }}>
