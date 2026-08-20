@@ -19,7 +19,7 @@ import {
 const VOTERS = 4;                    // ml, indep, lasso, residual (consensus>=4 is unanimity)
 const EDGE_TIERS = [5, 3, 2];
 const OU_EDGE_BASELINE = 1.82;
-const SHADOW_COVERAGE_BASELINE = 0.23;
+const FEATURE_COVERAGE_BASELINE = 0.23;
 
 const BLOCK_LABEL = { consensus: "Consensus", not_contrarian: "Contrarian", avg_edge: "Avg edge" };
 
@@ -41,8 +41,8 @@ const tierOf = (edge) => {
 // code disagree about check order.
 const deriveBlock = (g) => {
   if (g.atsConsensus == null) return null;
-  if (g.atsConsensus < VOTERS) return "consensus";
   if (!g.atsContrarian) return "not_contrarian";
+  if (g.atsConsensus < VOTERS) return "consensus";
   if (g.atsAvgEdge == null || g.atsAvgEdge < EDGE_TIERS[2]) return "avg_edge";
   return null;
 };
@@ -55,7 +55,7 @@ const teamColor = (abbr) => NFL_TEAMS.find((t) => t.abbr === abbr)?.color || "#1
 function Diagnostics({ games }) {
   const d = useMemo(() => {
     const counts = { pass: 0, consensus: 0, not_contrarian: 0, avg_edge: 0, unlabeled: 0 };
-    let ouSum = 0, ouN = 0, shadowN = 0, zeros = 0, suppressed = 0, mismatch = 0, noTotal = 0;
+    let ouSum = 0, ouN = 0, shadowN = 0, zeros = 0, suppressed = 0, mismatch = 0, noTotal = 0, covSum = 0, covN = 0, maxMissing = 0;
 
     games.forEach((g) => {
       const block = g.atsGateBlock;
@@ -68,12 +68,16 @@ function Diagnostics({ games }) {
       if (g.ouEdge != null && priced) { ouSum += Number(g.ouEdge); ouN++; }
       if (g.ouShadowPick) shadowN++;
       zeros += Number(g.atsNZero) || 0;
+      if (g.featureCoverage != null) { covSum += Number(g.featureCoverage); covN++; }
+      if (g.nMissing != null) maxMissing = Math.max(maxMissing, Number(g.nMissing));
       if (g.suppressReason) suppressed++;
       if ((g.atsGateBlock || null) !== deriveBlock(g)) mismatch++;
     });
 
     return {
       n: games.length, counts, mismatch, zeros, suppressed, shadowN, noTotal,
+      coverage_mean: covN ? covSum / covN : null,
+      n_missing_max: maxMissing || null,
       ouMean: ouN ? ouSum / ouN : null,
       ouN,
       coverage: games.length ? shadowN / games.length : null,
@@ -107,18 +111,20 @@ function Diagnostics({ games }) {
 
         <div style={box}>
           <div style={cap}>Shadow coverage</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: d.shadowN === 0 ? C.dim : drift(d.coverage, SHADOW_COVERAGE_BASELINE, 0.1) }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: d.shadowN === 0 ? C.dim : C.green }}>
             {d.coverage == null ? "—" : d.coverage.toFixed(2)}
           </div>
           <div style={{ fontSize: 10, color: C.dim }}>
-            {d.shadowN === 0 ? "all null — expected" : `vs ${SHADOW_COVERAGE_BASELINE} · ${d.shadowN} picks`}
+            {d.shadowN === 0 ? "all null — expected" : `${d.shadowN} shadow picks`}
           </div>
         </div>
 
         <div style={box}>
-          <div style={cap}>Exact-zero edges</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: d.zeros > 0 ? C.yellow : C.green }}>{d.zeros}</div>
-          <div style={{ fontSize: 10, color: C.dim }}>ats_n_zero, summed</div>
+          <div style={cap}>Feature coverage</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: d.coverage_mean == null ? C.dim : Math.abs(d.coverage_mean - FEATURE_COVERAGE_BASELINE) < 0.02 ? C.dim : d.coverage_mean > FEATURE_COVERAGE_BASELINE ? C.green : "#ff6b6b" }}>
+            {d.coverage_mean == null ? "—" : d.coverage_mean.toFixed(2)}
+          </div>
+          <div style={{ fontSize: 10, color: C.dim }}>vs {FEATURE_COVERAGE_BASELINE} baseline · {d.n_missing_max ?? "?"} feats missing</div>
         </div>
 
         <div style={box}>
