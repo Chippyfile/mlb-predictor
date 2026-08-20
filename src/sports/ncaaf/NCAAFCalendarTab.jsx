@@ -21,7 +21,7 @@ const EDGE_TIERS = [5, 3, 2];
 const OU_EDGE_BASELINE = 1.82;
 const SHADOW_COVERAGE_BASELINE = 0.23;
 
-const BLOCK_LABEL = { consensus: "Consensus", contrarian: "Contrarian", avg_edge: "Avg edge" };
+const BLOCK_LABEL = { consensus: "Consensus", not_contrarian: "Contrarian", avg_edge: "Avg edge" };
 
 const n1 = (v, d = 1) => (v == null || v === "" || Number.isNaN(Number(v)) ? "—" : Number(v).toFixed(d));
 const sgn = (v, d = 1) => {
@@ -42,7 +42,7 @@ const tierOf = (edge) => {
 const deriveBlock = (g) => {
   if (g.atsConsensus == null) return null;
   if (g.atsConsensus < VOTERS) return "consensus";
-  if (!g.atsContrarian) return "contrarian";
+  if (!g.atsContrarian) return "not_contrarian";
   if (g.atsAvgEdge == null || g.atsAvgEdge < EDGE_TIERS[2]) return "avg_edge";
   return null;
 };
@@ -54,8 +54,8 @@ const teamColor = (abbr) => NFL_TEAMS.find((t) => t.abbr === abbr)?.color || "#1
 // ─────────────────────────────────────────────────────────────
 function Diagnostics({ games }) {
   const d = useMemo(() => {
-    const counts = { pass: 0, consensus: 0, contrarian: 0, avg_edge: 0, unlabeled: 0 };
-    let ouSum = 0, ouN = 0, shadowN = 0, zeros = 0, suppressed = 0, mismatch = 0;
+    const counts = { pass: 0, consensus: 0, not_contrarian: 0, avg_edge: 0, unlabeled: 0 };
+    let ouSum = 0, ouN = 0, shadowN = 0, zeros = 0, suppressed = 0, mismatch = 0, noTotal = 0;
 
     games.forEach((g) => {
       const block = g.atsGateBlock;
@@ -63,7 +63,9 @@ function Diagnostics({ games }) {
       else if (block && counts[block] !== undefined) counts[block]++;
       else counts.unlabeled++;
 
-      if (g.ouEdge != null) { ouSum += Number(g.ouEdge); ouN++; }
+      const priced = Number(g.total) > 0;
+      if (!priced) noTotal++;
+      if (g.ouEdge != null && priced) { ouSum += Number(g.ouEdge); ouN++; }
       if (g.ouShadowPick) shadowN++;
       zeros += Number(g.atsNZero) || 0;
       if (g.suppressReason) suppressed++;
@@ -71,7 +73,7 @@ function Diagnostics({ games }) {
     });
 
     return {
-      n: games.length, counts, mismatch, zeros, suppressed, shadowN,
+      n: games.length, counts, mismatch, zeros, suppressed, shadowN, noTotal,
       ouMean: ouN ? ouSum / ouN : null,
       ouN,
       coverage: games.length ? shadowN / games.length : null,
@@ -82,7 +84,7 @@ function Diagnostics({ games }) {
 
   const seg = [
     { k: "pass", label: "Pick fired", col: "#2ea043" },
-    { k: "contrarian", label: "Contrarian", col: "#3d4650" },
+    { k: "not_contrarian", label: "Contrarian", col: "#3d4650" },
     { k: "avg_edge", label: "Avg edge", col: "#4d5865" },
     { k: "consensus", label: "Consensus", col: "#5d6b7a" },
     { k: "unlabeled", label: "Unlabeled", col: "#8b3a3a" },
@@ -100,7 +102,7 @@ function Diagnostics({ games }) {
           <div style={{ fontSize: 20, fontWeight: 700, color: drift(d.ouMean, OU_EDGE_BASELINE, 0.75) }}>
             {d.ouMean == null ? "—" : sgn(d.ouMean, 2)}
           </div>
-          <div style={{ fontSize: 10, color: C.dim }}>vs +{OU_EDGE_BASELINE} · {d.ouN}/{d.n} rows</div>
+          <div style={{ fontSize: 10, color: C.dim }}>vs +{OU_EDGE_BASELINE} · {d.ouN} priced{d.noTotal ? `, ${d.noTotal} unpriced excluded` : ""}</div>
         </div>
 
         <div style={box}>
@@ -163,7 +165,7 @@ function GameCard({ g, open, onToggle }) {
   const mismatch = stored !== deriveBlock(g);
   const aCol = teamColor(g.awayTeam);
   const hCol = teamColor(g.homeTeam);
-  const pickSide = g.atsPick === "HOME" ? g.homeTeam : g.atsPick === "AWAY" ? g.awayTeam : g.atsPick;
+  const pickSide = g.atsPick;
 
   return (
     <div style={{
@@ -175,8 +177,8 @@ function GameCard({ g, open, onToggle }) {
 
         <div style={{ minWidth: 190 }}>
           <div style={{ fontSize: 13, color: "#e2e8f0" }}>
-            {g.awayTeamName} <span style={{ color: C.dim }}>@</span>{" "}
-            <b>{g.homeTeamName}</b>
+            {g.awayTeam} <span style={{ color: C.dim }}>@</span>{" "}
+            <b>{g.homeTeam}</b>
           </div>
           <div style={{ fontSize: 10, color: C.dim }}>
             {g.gameDate}{g.week != null ? ` · Wk ${g.week}` : ""}{g.neutralSite ? " · neutral" : ""}
