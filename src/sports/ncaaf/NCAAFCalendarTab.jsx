@@ -1,239 +1,379 @@
-import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/ncaaf/NCAAFCalendarTab.jsx
-// Lines 4047–4281 of App.jsx (extracted)
+// Reads ncaaf_predictions. Computes nothing.
+//
+// The client-side path is gone: no ncaafPredictGame, no fetchNCAAFTeamStats,
+// no fetchOdds, no getBetSignals. Market lines, projections, gate output and
+// results all come from Supabase. Anything on screen that isn't in a row
+// isn't on screen.
 
-import { useState, useEffect, useCallback } from "react";
-import { C, confColor2, Pill, Kv, BetSignalsPanel, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
-import { getBetSignals, fetchOdds } from "../../utils/sharedUtils.js";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { C, Pill, Kv, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import { NFL_TEAMS } from "../nfl/nflUtils.js";
 import {
-  fetchNCAAFGamesForDate,
-  fetchNCAAFTeamStats,
-  ncaafPredictGame,
-  matchNCAAFOddsToGame,
-} from "./ncaafUtils.js";
-import { ncaafAutoSync } from "./ncaafSync.js";
+  loadNCAAFPredictions,
+  refreshNCAAFWeek,
+  describeSchema,
+  ncaafAutoSync,
+} from "./ncaafSync.js";
+
+// Gate reference values — see ncaaf_serve.py:150-190
+const VOTERS = 4;                    // ml, indep, lasso, residual (consensus>=4 is unanimity)
+const EDGE_TIERS = [5, 3, 2];
+const OU_EDGE_BASELINE = 1.82;
+const SHADOW_COVERAGE_BASELINE = 0.23;
+
+const BLOCK_LABEL = { consensus: "Consensus", contrarian: "Contrarian", avg_edge: "Avg edge" };
+
+const n1 = (v, d = 1) => (v == null || v === "" || Number.isNaN(Number(v)) ? "—" : Number(v).toFixed(d));
+const sgn = (v, d = 1) => {
+  if (v == null || v === "" || Number.isNaN(Number(v))) return "—";
+  const x = Number(v);
+  return `${x > 0 ? "+" : ""}${x.toFixed(d)}`;
+};
+
+const tierOf = (edge) => {
+  if (edge == null) return null;
+  const [a, b, c] = EDGE_TIERS;
+  return edge >= a ? "T1" : edge >= b ? "T2" : edge >= c ? "T3" : null;
+};
+
+// Cross-check the stored block reason against the gate's own inputs. The
+// stored value always wins on screen; a mismatch flag means the notes and the
+// code disagree about check order.
+const deriveBlock = (g) => {
+  if (g.atsConsensus == null) return null;
+  if (g.atsConsensus < VOTERS) return "consensus";
+  if (!g.atsContrarian) return "contrarian";
+  if (g.atsAvgEdge == null || g.atsAvgEdge < EDGE_TIERS[2]) return "avg_edge";
+  return null;
+};
+
+const teamColor = (abbr) => NFL_TEAMS.find((t) => t.abbr === abbr)?.color || "#1e3050";
 
 // ─────────────────────────────────────────────────────────────
-// NCAAF CALENDAR TAB
+// DIAGNOSTICS — the Week 0 watch, on the page instead of in SQL
 // ─────────────────────────────────────────────────────────────
-export function NCAAFCalendarTab({ calibrationFactor, onGamesLoaded }) {
-  const todayStr = pstTodayStr();
+function Diagnostics({ games, schema }) {
+  const d = useMemo(() => {
+    const counts = { pass: 0, consensus: 0, contrarian: 0, avg_edge: 0, unlabeled: 0 };
+    let ouSum = 0, ouN = 0, shadowN = 0, zeros = 0, eloLive = 0, mismatch = 0;
 
-  // Default to most recent Saturday
-  const defaultDate = (() => {
-    const d = new Date();
-    const day = d.getDay();
-    d.setDate(d.getDate() - (day === 0 ? 1 : day === 6 ? 0 : day));
-    return d.toISOString().split("T")[0];
-  })();
+    games.forEach((g) => {
+      const block = g.atsGateBlock;
+      if (!block && g.atsPick) counts.pass++;
+      else if (block && counts[block] !== undefined) counts[block]++;
+      else counts.unlabeled++;
 
-  const [dateStr, setDateStr]     = useState(defaultDate);
-  const [games, setGames]         = useState([]);
-  const [loading, setLoading]     = useState(false);
-  const [expanded, setExpanded]   = useState(null);
-  const [oddsInfo, setOddsInfo]   = useState(null);
-  const [filterConf, setFilterConf] = useState("All");
+      if (g.ouEdge != null) { ouSum += Number(g.ouEdge); ouN++; }
+      if (g.ouShadowPick) shadowN++;
+      zeros += Number(g.atsNZero) || 0;
+      if (Number(g.eloDiffPre)) eloLive++;
+      if ((g.atsGateBlock || null) !== deriveBlock(g)) mismatch++;
+    });
 
-  const load = useCallback(async (d) => {
-    setLoading(true); setGames([]);
-    const [raw, odds] = await Promise.all([
-      fetchNCAAFGamesForDate(d),
-      fetchOdds("americanfootball_ncaaf"),
-    ]);
-    setOddsInfo(odds);
-    setGames(raw.map(g => ({ ...g, loading: true })));
-    const enriched = await Promise.all(raw.map(async g => {
-      const [hs, as_] = await Promise.all([
-        fetchNCAAFTeamStats(g.homeTeamId),
-        fetchNCAAFTeamStats(g.awayTeamId),
-      ]);
-      const pred = hs && as_
-        ? ncaafPredictGame({
-            homeStats: hs, awayStats: as_,
-            neutralSite: g.neutralSite, weather: g.weather,
-            calibrationFactor,
-            homeTeamName: g.homeTeamName || "",
-            awayTeamName: g.awayTeamName || "",
-            isConferenceGame: g.conferenceGame || false,
-          })
-        : null;
-      const gameOdds = odds?.games?.find(o => matchNCAAFOddsToGame(o, g)) || null;
-      return { ...g, homeStats: hs, awayStats: as_, pred, loading: false, odds: gameOdds };
-    }));
-    setGames(enriched);
-    onGamesLoaded?.(enriched);
-    setLoading(false);
-  }, [calibrationFactor]);
+    return {
+      n: games.length, counts, mismatch, zeros, eloLive, shadowN,
+      ouMean: ouN ? ouSum / ouN : null,
+      ouN,
+      coverage: games.length ? shadowN / games.length : null,
+    };
+  }, [games]);
 
-  useEffect(() => { load(dateStr); }, [dateStr, calibrationFactor]);
+  const drift = (v, base, tol) => (v == null ? C.dim : Math.abs(v - base) > tol ? C.yellow : C.green);
 
-  // Conference filter options
-  const conferences = ["All", ...new Set(
-    games.flatMap(g => [g.homeStats?.conference, g.awayStats?.conference].filter(Boolean))
-  )].sort();
-  const filteredGames = filterConf === "All"
-    ? games
-    : games.filter(g => g.homeStats?.conference === filterConf || g.awayStats?.conference === filterConf);
+  const seg = [
+    { k: "pass", label: "Pick fired", col: "#2ea043" },
+    { k: "contrarian", label: "Contrarian", col: "#3d4650" },
+    { k: "avg_edge", label: "Avg edge", col: "#4d5865" },
+    { k: "consensus", label: "Consensus", col: "#5d6b7a" },
+    { k: "unlabeled", label: "Unlabeled", col: "#8b3a3a" },
+  ].filter((s) => d.counts[s.k]);
+
+  const box = { background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px" };
+  const cap = { fontSize: 9, color: C.dim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4 };
+
+  const schemaIssues = Object.entries(schema || {}).filter(([, v]) => v.unresolved || v.ambiguous);
+
+  return (
+    <div style={{ marginBottom: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8 }}>
+        <div style={box}>
+          <div style={cap}>O/U edge mean</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: drift(d.ouMean, OU_EDGE_BASELINE, 0.75) }}>
+            {d.ouMean == null ? "—" : sgn(d.ouMean, 2)}
+          </div>
+          <div style={{ fontSize: 10, color: C.dim }}>vs +{OU_EDGE_BASELINE} · {d.ouN}/{d.n} rows</div>
+        </div>
+
+        <div style={box}>
+          <div style={cap}>Shadow coverage</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: d.shadowN === 0 ? C.dim : drift(d.coverage, SHADOW_COVERAGE_BASELINE, 0.1) }}>
+            {d.coverage == null ? "—" : d.coverage.toFixed(2)}
+          </div>
+          <div style={{ fontSize: 10, color: C.dim }}>
+            {d.shadowN === 0 ? "all null — expected" : `vs ${SHADOW_COVERAGE_BASELINE} · ${d.shadowN} picks`}
+          </div>
+        </div>
+
+        <div style={box}>
+          <div style={cap}>Exact-zero edges</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: d.zeros > 0 ? C.yellow : C.green }}>{d.zeros}</div>
+          <div style={{ fontSize: 10, color: C.dim }}>ats_n_zero, summed</div>
+        </div>
+
+        <div style={box}>
+          <div style={cap}>Elo wired</div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: d.eloLive > 0 ? C.green : C.dim }}>
+            {d.eloLive > 0 ? "yes" : "no"}
+          </div>
+          <div style={{ fontSize: 10, color: C.dim }}>
+            {d.eloLive > 0 ? `${d.eloLive} nonzero` : "elo_diff_pre flat at 0"}
+          </div>
+        </div>
+      </div>
+
+      <div style={box}>
+        <div style={cap}>Gate outcome · {d.n} games</div>
+        <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "#0d1117", marginBottom: 6 }}>
+          {seg.map((s) => (
+            <div key={s.k} style={{ width: `${(d.counts[s.k] / Math.max(d.n, 1)) * 100}%`, background: s.col }} title={`${s.label}: ${d.counts[s.k]}`} />
+          ))}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+          {seg.map((s) => (
+            <span key={s.k} style={{ fontSize: 10, color: C.muted, display: "flex", alignItems: "center", gap: 5 }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: s.col }} />
+              {s.label} <b style={{ color: "#e2e8f0" }}>{d.counts[s.k]}</b>
+            </span>
+          ))}
+          {d.mismatch > 0 && (
+            <span style={{ fontSize: 10, color: "#ff6b6b" }}>
+              ⚠ {d.mismatch} row{d.mismatch !== 1 ? "s" : ""} where stored block ≠ derived
+            </span>
+          )}
+        </div>
+      </div>
+
+      {schemaIssues.length > 0 && (
+        <div style={{ ...box, borderColor: "#5a4a1a", background: "#161200" }}>
+          <div style={{ fontSize: 10, color: C.yellow }}>
+            ⚠ Column names unsettled:{" "}
+            {schemaIssues.map(([f, v]) => `${f} ${v.unresolved ? "(no alias matched)" : `(both ${v.resolved.join(" and ")} populated)`}`).join(" · ")}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// GAME CARD
+// ─────────────────────────────────────────────────────────────
+function GameCard({ g, open, onToggle }) {
+  const fired = g.atsUnits > 0 && !g.atsGateBlock;
+  const stored = g.atsGateBlock || null;
+  const mismatch = stored !== deriveBlock(g);
+  const aCol = teamColor(g.awayTeam);
+  const hCol = teamColor(g.homeTeam);
+  const pickSide = g.atsPick === "HOME" ? g.homeTeam : g.atsPick === "AWAY" ? g.awayTeam : g.atsPick;
+
+  return (
+    <div style={{
+      background: fired ? "linear-gradient(135deg,#0b2012,#0e2315)" : "linear-gradient(135deg,#0d1117,#111822)",
+      border: `1px solid ${fired ? "#2ea043" : C.border}`, borderRadius: 10, overflow: "hidden",
+    }}>
+      <div style={{ height: 3, background: `linear-gradient(90deg,${aCol},${hCol})` }} />
+      <div onClick={onToggle} style={{ padding: "12px 18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+
+        <div style={{ minWidth: 190 }}>
+          <div style={{ fontSize: 13, color: "#e2e8f0" }}>
+            {g.awayTeamName} <span style={{ color: C.dim }}>@</span>{" "}
+            <b>{g.homeTeamName}</b>
+          </div>
+          <div style={{ fontSize: 10, color: C.dim }}>
+            {g.gameDate}{g.week != null ? ` · Wk ${g.week}` : ""}{g.neutralSite ? " · neutral" : ""}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+          <Pill label="MKT" value={sgn(g.spread)} />
+          <Pill label="TOTAL" value={n1(g.total)} />
+          <Pill label="PROJ" value={`${n1(g.predAwayScore, 0)}–${n1(g.predHomeScore, 0)}`} />
+          <Pill label="MARGIN" value={sgn(g.predMargin)} />
+          {g.winProbability != null && <Pill label="WIN%" value={`${(Number(g.winProbability) * 100).toFixed(0)}%`} />}
+        </div>
+
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {fired ? (
+            <span style={{ background: "#0d2818", border: "1px solid #2ea043", borderRadius: 6, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: "#3fb950" }}>
+              {pickSide} {g.atsUnits}u{tierOf(g.atsAvgEdge) ? ` ${tierOf(g.atsAvgEdge)}` : ""}
+            </span>
+          ) : (
+            <span style={{ background: "#161b22", border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 9px", fontSize: 10, color: C.dim }}>
+              {BLOCK_LABEL[stored] || stored || "no pick"}
+            </span>
+          )}
+          {mismatch && <span style={{ fontSize: 9, color: "#ff6b6b" }} title={`stored ${stored ?? "null"} / derived ${deriveBlock(g) ?? "pass"}`}>≠</span>}
+          {g.resultEntered && (
+            <span style={{ fontSize: 10, color: g.mlCorrect ? C.green : "#ff4466", fontWeight: 700 }}>
+              {g.actualAwayScore}–{g.actualHomeScore}
+            </span>
+          )}
+          <span style={{ color: C.dim, fontSize: 12 }}>{open ? "▲" : "▼"}</span>
+        </div>
+      </div>
+
+      {open && (
+        <div style={{ borderTop: `1px solid ${C.border}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(145px,1fr))", gap: 8 }}>
+            <Kv k="Consensus" v={`${g.atsConsensus ?? "—"} / ${VOTERS}`} />
+            <Kv k="Contrarian" v={g.atsContrarian ? "yes" : "no"} />
+            <Kv k="Avg edge" v={n1(g.atsAvgEdge, 2)} />
+            <Kv k="ATS edge" v={sgn(g.atsEdge, 2)} />
+            <Kv k="Gate" v={stored ? BLOCK_LABEL[stored] || stored : fired ? "passed" : "no pick"} />
+            <Kv k="O/U edge" v={sgn(g.ouEdge, 2)} />
+            <Kv k="O/U pick" v={g.ouPick ? `${g.ouPick} ${g.ouUnits}u` : "—"} />
+            <Kv k="O/U shadow" v={g.ouShadowPick ? `${g.ouShadowPick} ${n1(g.ouShadowUnits)}u` : "—"} />
+            <Kv k="Pred total" v={n1(g.predTotal)} />
+            <Kv k="Elo diff" v={g.eloDiffPre == null ? "—" : n1(g.eloDiffPre, 2)} />
+            {g.featureCoverage != null && <Kv k="Feature coverage" v={n1(g.featureCoverage, 2)} />}
+            {g.conferenceGame && <Kv k="Conference" v="yes" />}
+            {g.resultEntered && <Kv k="ML" v={g.mlCorrect ? "✅" : "❌"} />}
+            {g.resultEntered && g.atsUnits > 0 && (
+              <Kv k="ATS" v={g.atsCorrect === true ? "✅" : g.atsCorrect === false ? "❌" : "—"} />
+            )}
+          </div>
+          <div style={{ marginTop: 10, fontSize: 10, color: C.dim }}>
+            Every value above is a stored column. Nothing on this card is computed in the browser.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// CALENDAR TAB
+// ─────────────────────────────────────────────────────────────
+export function NCAAFCalendarTab({ season = new Date().getFullYear(), onGamesLoaded }) {
+  const [games, setGames]     = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState(null);
+  const [expanded, setExpanded] = useState(null);
+  const [week, setWeek]       = useState("all");
+  const [picksOnly, setPicksOnly] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const rows = await loadNCAAFPredictions({ season });
+      setGames(rows);
+      onGamesLoaded?.(rows);
+    } catch (e) {
+      setError(e.message);
+      setGames([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [season]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const weeks = useMemo(
+    () => [...new Set(games.map((g) => g.week).filter((w) => w != null))].sort((a, b) => a - b),
+    [games]
+  );
+
+  const scoped = useMemo(
+    () => (week === "all" ? games : games.filter((g) => String(g.week) === String(week))),
+    [games, week]
+  );
+  const visible = picksOnly ? scoped.filter((g) => g.atsUnits > 0) : scoped;
+  const schema = useMemo(() => describeSchema(games), [games]);
+
+  const doRefresh = async () => {
+    if (week === "all") return load();
+    setRefreshing(true); setError(null);
+    try {
+      const rows = await refreshNCAAFWeek(season, week);
+      setGames(rows);
+      onGamesLoaded?.(rows);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const ctrl = { background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "inherit" };
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-        <input type="date" value={dateStr} onChange={e => setDateStr(e.target.value)}
-          style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "inherit" }} />
-        <button onClick={() => load(dateStr)}
-          style={{ background: "#161b22", color: "#f97316", border: `1px solid ${C.border}`, borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
-          ↻ REFRESH
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        <select value={week} onChange={(e) => setWeek(e.target.value)} style={ctrl}>
+          <option value="all">All weeks</option>
+          {weeks.map((w) => <option key={w} value={w}>Week {w}</option>)}
+        </select>
+
+        <button onClick={doRefresh} disabled={loading || refreshing}
+          style={{ ...ctrl, color: "#f97316", background: "#161b22", fontWeight: 700, cursor: "pointer" }}>
+          {refreshing ? "⏳ RUNNING…" : week === "all" ? "↻ RELOAD" : "↻ RE-PREDICT WEEK"}
         </button>
-        {conferences.length > 2 && (
-          <select value={filterConf} onChange={e => setFilterConf(e.target.value)}
-            style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "inherit" }}>
-            {conferences.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
+
+        <label style={{ fontSize: 11, color: C.muted, display: "flex", alignItems: "center", gap: 5 }}>
+          <input type="checkbox" checked={picksOnly} onChange={(e) => setPicksOnly(e.target.checked)} />
+          Picks only
+        </label>
+
+        {loading && <span style={{ fontSize: 11, color: C.dim }}>⏳ Reading ncaaf_predictions…</span>}
+        {!loading && !error && (
+          <span style={{ fontSize: 10, color: C.dim }}>
+            {visible.length} of {games.length} rows · season {season}
+          </span>
         )}
-        {!loading && oddsInfo?.games?.length > 0 &&
-          <span style={{ fontSize: 11, color: C.green }}>✓ Live odds ({oddsInfo.games.length})</span>}
-        {!loading && oddsInfo?.noKey &&
-          <span style={{ fontSize: 11, color: C.dim }}>⚠ Add ODDS_API_KEY for live lines</span>}
-        {loading &&
-          <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading {games.length > 0 ? `${games.length} games` : "CFB games"}…</span>}
-        {!loading && filteredGames.length === 0 &&
-          <span style={{ color: C.dim, fontSize: 11 }}>No games on {dateStr} — CFB plays Sat/Thu/Fri</span>}
-        {!loading && filteredGames.length > 0 &&
-          <span style={{ fontSize: 10, color: C.dim }}>Week {filteredGames[0]?.week || "?"} · {filteredGames.length} game{filteredGames.length !== 1 ? "s" : ""}</span>}
       </div>
+
+      {error && (
+        <div style={{ background: "#1a0808", border: "1px solid #5a1a1a", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 11, color: "#ff6b6b", fontFamily: "monospace" }}>
+          {error}
+          <div style={{ color: C.dim, marginTop: 4 }}>
+            Rows are unchanged. This is a read failure, not an empty slate — check the column names before changing the query.
+          </div>
+        </div>
+      )}
+
+      {!loading && !error && games.length > 0 && <Diagnostics games={scoped} schema={schema} />}
+
+      {!loading && !error && games.length === 0 && (
+        <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: "18px", fontSize: 12, color: C.dim }}>
+          No rows in ncaaf_predictions for season {season}. The backend writes this table — run a
+          prediction for a week, then reload.
+        </div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {filteredGames.map(game => {
-          const isOpen  = expanded === game.gameId;
-          const sigs    = game.pred ? getBetSignals({ pred: game.pred, odds: game.odds, sport: "ncaaf" }) : null;
-          const hasBet  = sigs && (sigs.ml?.verdict === "GO" || sigs.spread?.verdict === "LEAN" || sigs.ou?.verdict === "GO");
-          const hCol    = NFL_TEAMS.find(t => t.abbr === game.homeAbbr)?.color || "#1e3050";
-          const aCol    = NFL_TEAMS.find(t => t.abbr === game.awayAbbr)?.color || "#1e3050";
-
-          return (
-            <div key={game.gameId} style={{
-              background: hasBet ? "linear-gradient(135deg,#0b2012,#0e2315)" : "linear-gradient(135deg,#0d1117,#111822)",
-              border: `1px solid ${hasBet ? "#2ea043" : C.border}`,
-              borderRadius: 10, overflow: "hidden",
-            }}>
-              <div style={{ height: 3, background: `linear-gradient(90deg,${aCol},${hCol})` }} />
-              <div onClick={() => setExpanded(isOpen ? null : game.gameId)}
-                style={{ padding: "12px 18px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-
-                {/* Teams */}
-                <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 200 }}>
-                  <div style={{ textAlign: "center" }}>
-                    {game.awayRank && <div style={{ fontSize: 8, color: C.yellow, fontWeight: 700 }}>#{game.awayRank}</div>}
-                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: aCol, border: `2px solid ${aCol}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 800, color: "#fff", margin: "0 auto 2px", textAlign: "center", overflow: "hidden", padding: 2 }}>
-                      {(game.awayAbbr || "?").slice(0, 4)}
-                    </div>
-                    <div style={{ fontSize: 8, color: C.dim, maxWidth: 50, textAlign: "center", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
-                      {game.awayTeamName?.split(" ").pop()}
-                    </div>
-                  </div>
-                  <span style={{ color: C.dim, fontSize: 12 }}>@</span>
-                  <div style={{ textAlign: "center" }}>
-                    {game.homeRank && <div style={{ fontSize: 8, color: C.yellow, fontWeight: 700 }}>#{game.homeRank}</div>}
-                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: hCol, border: `2px solid ${hCol}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 800, color: "#fff", margin: "0 auto 2px", textAlign: "center", overflow: "hidden", padding: 2 }}>
-                      {(game.homeAbbr || "?").slice(0, 4)}
-                    </div>
-                    <div style={{ fontSize: 8, color: C.dim, maxWidth: 50, textAlign: "center", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
-                      {game.homeTeamName?.split(" ").pop()}
-                    </div>
-                    {game.neutralSite && <div style={{ fontSize: 7, color: C.dim }}>(N)</div>}
-                  </div>
-                  {game.weather?.note && <span style={{ fontSize: 9, color: C.dim }}>{game.weather.note}</span>}
-                  {game.conferenceGame && (
-                    <span style={{ fontSize: 8, color: "#58a6ff", background: "#0c1a2e", borderRadius: 4, padding: "1px 5px" }}>CONF</span>
-                  )}
-                </div>
-
-                {/* Pills */}
-                {game.pred ? (
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <Pill label="PROJ" value={`${game.pred.awayScore.toFixed(0)}–${game.pred.homeScore.toFixed(0)}`} />
-                    <Pill label="SPREAD"
-                      value={game.pred.projectedSpread > 0
-                        ? `${(game.homeAbbr || "").slice(0, 4)} -${game.pred.projectedSpread}`
-                        : `${(game.awayAbbr || "").slice(0, 4)} -${-game.pred.projectedSpread}`}
-                      highlight={sigs?.spread?.verdict === "LEAN"} />
-                    <Pill label="MDL ML"
-                      value={game.pred.modelML_home > 0 ? `+${game.pred.modelML_home}` : game.pred.modelML_home}
-                      highlight={sigs?.ml?.verdict === "GO" || sigs?.ml?.verdict === "LEAN"} />
-                    {game.odds?.homeML &&
-                      <Pill label="MKT ML" value={game.odds.homeML > 0 ? `+${game.odds.homeML}` : game.odds.homeML} color={C.yellow} />}
-                    <Pill label="O/U" value={game.pred.ouTotal} highlight={sigs?.ou?.verdict === "GO"} />
-                    <Pill label="CONF" value={game.pred.confidence} color={confColor2(game.pred.confidence)} highlight={game.pred.confidence === "HIGH"} />
-                  </div>
-                ) : (
-                  <span style={{ color: C.dim, fontSize: 11 }}>
-                    {game.loading ? "Calculating…" : "Stats unavailable"}
-                  </span>
-                )}
-
-                {/* Status */}
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  {game.status === "Final" && <span style={{ fontSize: 10, color: C.green, fontWeight: 700 }}>FINAL {game.awayScore}–{game.homeScore}</span>}
-                  {game.status === "Live"  && <span style={{ fontSize: 10, color: "#f97316", fontWeight: 700 }}>LIVE</span>}
-                  <span style={{ color: C.dim, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
-                </div>
-              </div>
-
-              {/* Expanded detail */}
-              {isOpen && game.pred && (
-                <div style={{ borderTop: `1px solid ${C.border}`, padding: "14px 18px", background: "rgba(0,0,0,0.3)" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(145px,1fr))", gap: 8, marginBottom: 10 }}>
-                    <Kv k="Projected Score" v={`${game.pred.awayScore.toFixed(1)} – ${game.pred.homeScore.toFixed(1)}`} />
-                    <Kv k="Home Win %" v={`${(game.pred.homeWinPct * 100).toFixed(1)}%`} />
-                    <Kv k="O/U Total" v={game.pred.ouTotal} />
-                    <Kv k="Spread" v={game.pred.projectedSpread > 0
-                      ? `${(game.homeAbbr || "").slice(0, 6)} -${game.pred.projectedSpread}`
-                      : `${(game.awayAbbr || "").slice(0, 6)} -${-game.pred.projectedSpread}`} />
-                    {game.homeStats && <Kv k={`${(game.homeAbbr || "").slice(0, 6)} PPG`} v={game.homeStats.ppg?.toFixed(1)} />}
-                    {game.awayStats && <Kv k={`${(game.awayAbbr || "").slice(0, 6)} PPG`} v={game.awayStats.ppg?.toFixed(1)} />}
-                    {game.homeStats && <Kv k={`${(game.homeAbbr || "").slice(0, 6)} Opp PPG`} v={game.homeStats.oppPpg?.toFixed(1)} />}
-                    {game.awayStats && <Kv k={`${(game.awayAbbr || "").slice(0, 6)} Opp PPG`} v={game.awayStats.oppPpg?.toFixed(1)} />}
-                    {game.homeStats && <Kv k={`${(game.homeAbbr || "").slice(0, 6)} adjEM`} v={game.pred.homeAdjEM > 0 ? `+${game.pred.homeAdjEM}` : game.pred.homeAdjEM} />}
-                    {game.awayStats && <Kv k={`${(game.awayAbbr || "").slice(0, 6)} adjEM`} v={game.pred.awayAdjEM > 0 ? `+${game.pred.awayAdjEM}` : game.pred.awayAdjEM} />}
-                    {game.homeStats && <Kv k={`${(game.homeAbbr || "").slice(0, 6)} TO Margin`} v={game.homeStats.toMargin > 0 ? `+${game.homeStats.toMargin?.toFixed(1)}` : game.homeStats.toMargin?.toFixed(1)} />}
-                    {game.awayStats && <Kv k={`${(game.awayAbbr || "").slice(0, 6)} TO Margin`} v={game.awayStats.toMargin > 0 ? `+${game.awayStats.toMargin?.toFixed(1)}` : game.awayStats.toMargin?.toFixed(1)} />}
-                    {game.homeStats?.conference && <Kv k="Home Conf" v={game.homeStats.conference} />}
-                    {game.awayStats?.conference && <Kv k="Away Conf" v={game.awayStats.conference} />}
-                    <Kv k="Confidence" v={`${game.pred.confidence} (${game.pred.confScore})`} />
-                    {game.week && <Kv k="CFB Week" v={game.week} />}
-                    {game.weather?.note && <Kv k="Weather" v={game.weather.note} />}
-                    {game.neutralSite && <Kv k="Site" v="Neutral" />}
-                  </div>
-
-                  {game.pred.factors?.length > 0 && (
-                    <div style={{ marginBottom: 10 }}>
-                      <div style={{ fontSize: 10, color: C.dim, letterSpacing: 2, marginBottom: 6 }}>KEY FACTORS</div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {game.pred.factors.map((f, i) => (
-                          <div key={i} style={{
-                            background: f.type === "home" ? "#001a0f" : f.type === "away" ? "#1a0008" : "#1a1200",
-                            border: `1px solid ${f.type === "home" ? "#003820" : f.type === "away" ? "#330011" : "#3a2a00"}`,
-                            borderRadius: 6, padding: "4px 10px", fontSize: 11,
-                            color: f.type === "home" ? C.green : f.type === "away" ? "#ff4466" : C.yellow,
-                          }}>
-                            {f.label}: {f.val}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <BetSignalsPanel
-                    signals={sigs} pred={game.pred} odds={game.odds} sport="ncaaf"
-                    homeName={(game.homeAbbr || "HOME").slice(0, 6)}
-                    awayName={(game.awayAbbr || "AWAY").slice(0, 6)} />
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {visible.map((g) => (
+          <GameCard key={g.id ?? g.gameId} g={g} open={expanded === (g.id ?? g.gameId)}
+            onToggle={() => setExpanded(expanded === (g.id ?? g.gameId) ? null : (g.id ?? g.gameId))} />
+        ))}
       </div>
+
+      {!loading && !error && games.length > 0 && visible.length === 0 && (
+        <div style={{ padding: "24px", textAlign: "center", fontSize: 11, color: C.dim }}>
+          {picksOnly
+            ? "No picks fired here. Uncheck picks only to see what the gate blocked and why."
+            : "No games in this week."}
+        </div>
+      )}
+
+      {!loading && !error && games.length > 0 && (
+        <div style={{ marginTop: 12, fontSize: 10, color: C.dim, lineHeight: 1.6 }}>
+          Blocked games stay on the board — the block distribution is the measurement, so hiding
+          non-picks would hide it. Tiers are avg_edge ≥ {EDGE_TIERS.join(" / ")}; consensus ≥ {VOTERS} is
+          unanimity across ml, indep, lasso and residual.
+        </div>
+      )}
     </div>
   );
 }
@@ -241,14 +381,14 @@ export function NCAAFCalendarTab({ calibrationFactor, onGamesLoaded }) {
 // ─────────────────────────────────────────────────────────────
 // NCAAF SECTION (tab wrapper)
 // ─────────────────────────────────────────────────────────────
-export function NCAAFSection({ ncaafGames, setNcaafGames, calibrationNCAAF, setCalibrationNCAAF, refreshKey, setRefreshKey }) {
-  const [tab, setTab]       = useState("calendar");
+export function NCAAFSection({ ncaafGames, setNcaafGames, refreshKey, setRefreshKey }) {
+  const [tab, setTab] = useState("calendar");
   const [syncMsg, setSyncMsg] = useState("");
 
   return (
     <div>
       <div style={{ display: "flex", gap: 4, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
-        {["calendar", "accuracy", "history", "parlay"].map(t => (
+        {["calendar", "accuracy", "history", "parlay"].map((t) => (
           <button key={t} onClick={() => setTab(t)} style={{
             padding: "6px 16px", borderRadius: 7,
             border: `1px solid ${tab === t ? "#30363d" : "transparent"}`,
@@ -261,10 +401,10 @@ export function NCAAFSection({ ncaafGames, setNcaafGames, calibrationNCAAF, setC
         ))}
         <div style={{ marginLeft: "auto" }}>
           <button onClick={async () => {
-            setSyncMsg("Syncing NCAAF…");
-            await ncaafAutoSync(m => setSyncMsg(m));
-            setRefreshKey(k => k + 1);
-            setTimeout(() => setSyncMsg(""), 4000);
+            setSyncMsg("Loading…");
+            try { await ncaafAutoSync((m) => setSyncMsg(m)); setRefreshKey((k) => k + 1); }
+            catch { /* message already set by ncaafAutoSync */ }
+            setTimeout(() => setSyncMsg(""), 6000);
           }} style={{ background: "#161b22", color: C.muted, border: `1px solid ${C.border}`, borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontSize: 10 }}>
             ⟳ Sync
           </button>
@@ -278,13 +418,13 @@ export function NCAAFSection({ ncaafGames, setNcaafGames, calibrationNCAAF, setC
       )}
 
       <div style={{ fontSize: 10, color: C.dim, marginBottom: 12, letterSpacing: 1 }}>
-        NCAAF · ESPN API (free) · ~130 FBS teams · Games Sat/Thu/Fri · SP+ proxy + weather + rankings
+        NCAAF · 10-model production stack · Supabase is the source of truth · nothing computed in-browser
       </div>
 
-      {tab === "calendar"  && <NCAAFCalendarTab calibrationFactor={calibrationNCAAF} onGamesLoaded={setNcaafGames} />}
-      {tab === "accuracy"  && <AccuracyDashboard table="ncaaf_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNCAAF} spreadLabel="Spread" />}
-      {tab === "history"   && <HistoryTab table="ncaaf_predictions" refreshKey={refreshKey} />}
-      {tab === "parlay"    && <ParlayBuilder mlbGames={[]} ncaaGames={ncaafGames} />}
+      {tab === "calendar" && <NCAAFCalendarTab onGamesLoaded={setNcaafGames} />}
+      {tab === "accuracy" && <AccuracyDashboard table="ncaaf_predictions" refreshKey={refreshKey} spreadLabel="Spread" />}
+      {tab === "history"  && <HistoryTab table="ncaaf_predictions" refreshKey={refreshKey} />}
+      {tab === "parlay"   && <ParlayBuilder mlbGames={[]} ncaaGames={ncaafGames} />}
     </div>
   );
 }
