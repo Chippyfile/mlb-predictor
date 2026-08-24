@@ -469,30 +469,19 @@ export async function ncaafFillFinalScores(pendingRows) {
           (r.home_team_id && r.home_team_id === g.homeTeamId && r.away_team_id === g.awayTeamId)
         );
         if (!row) continue;
-        const hW     = g.homeScore > g.awayScore;
-        const mH     = (row.win_pct_home ?? 0.5) >= 0.5;
-        const ml     = mH ? hW : !hW;
-        const margin = g.homeScore - g.awayScore;
-        const mktSpr = row.market_spread_home ?? null;
-        let rl = null;
-        if (mktSpr !== null) {
-          if (margin > mktSpr) rl = true;
-          else if (margin < mktSpr) rl = false;
-        } else {
-          const ps = row.spread_home || 0;
-          if (margin === 0) rl = null;
-          else rl = (margin > 0 && ps > 0) || (margin < 0 && ps < 0);
-        }
-        const total = g.homeScore + g.awayScore;
-        const ouL   = row.market_ou_total ?? row.ou_total ?? null;
-        const predT = (row.pred_home_score ?? 0) + (row.pred_away_score ?? 0);
-        let ou = null;
-        if (ouL !== null && total !== ouL) ou = ((total > ouL) === (predT > ouL)) ? "OVER" : "UNDER";
-        else if (ouL !== null && total === ouL) ou = "PUSH";
-
+        // ── GRADING REMOVED (Council V8/V9) ────────────────────────────
+        // ml_correct/rl_correct/ou_correct were derived from row.win_pct_home,
+        // a field NO writer produces. It read undefined -> ?? 0.5 -> >= 0.5
+        // -> true, grading every game as a HOME pick.
+        //
+        // result_entered is also removed: grade_ncaaf() selects on
+        // result_entered=eq.false, so setting it true here orphaned rows the
+        // backend had not graded yet.
+        //
+        // grade_ncaaf() in ncaaf_full_predict.py is the sole grader.
         const updateObj = {
-          actual_home_score: g.homeScore, actual_away_score: g.awayScore,
-          result_entered: true, ml_correct: ml, rl_correct: rl, ou_correct: ou,
+          actual_home_score: g.homeScore,
+          actual_away_score: g.awayScore,
         };
 
         // CLV: Capture closing lines and compute CLV
@@ -503,19 +492,12 @@ export async function ncaafFillFinalScores(pendingRows) {
             if (match.awayML) updateObj.closing_away_ml = match.awayML;
             if (match.marketSpreadHome != null) updateObj.closing_spread_home = match.marketSpreadHome;
             if (match.marketTotal != null) updateObj.closing_ou_total = match.marketTotal;
-            // CLV computation
-            const betSide = (row.win_pct_home ?? 0.5) >= 0.5 ? "home" : "away";
-            const betML = betSide === "home"
-              ? (row.opening_home_ml ?? null)
-              : (row.opening_away_ml ?? null);
-            const closeML = betSide === "home" ? match.homeML : match.awayML;
-            if (betML && closeML) {
-              const clvResult = calcCLV(betML, closeML);
-              if (clvResult) {
-                updateObj.bet_ml = betML;
-                updateObj.clv_pct = clvResult.clvPct;
-              }
-            }
+            // CLV derivation removed (V9): betSide came from win_pct_home and
+            // collapsed to "home" for every game, so every clv_pct written so
+            // far was measured against the wrong side. Bet side must be read
+            // from predicted_winner; that belongs backend-side next to
+            // grade_ncaaf(). Closing lines above are captured unconditionally
+            // because they are market facts, independent of pick side.
           }
         }
 
