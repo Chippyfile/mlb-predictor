@@ -70,6 +70,54 @@ function _daysAgo(n) {
   return d.toISOString().split("T")[0];
 }
 
+// ── PER-TABLE COLUMN MAPS ─────────────────────────────────────
+// Shared.jsx was written against the MLB/NBA/NCAAB vocabulary. Tables added
+// since then do not carry those names, and PostgREST 400s the WHOLE request on
+// one unknown column -- which reads as an empty tab, not as an error.
+//
+// `alias:real_column` returns the real column under the name computeAccuracy
+// and computeCalibration already expect, so those functions need no edit.
+//
+// Absent-column sets verified by query 2026-08-27. Tables not listed here keep
+// the original strings unchanged.
+//
+// NOT aliased on purpose:
+//   nfl market_spread_home -> spread_line   V23: spread_line is SIGN-INVERTED.
+//                                           Aliasing renders the wrong side of
+//                                           every game. Omitted so the ATS
+//                                           panel degrades to "—" instead.
+//   rl_correct                              neither sport has a run line
+//   confidence                              display-only, absent on both
+//
+// Residual: nfl ats_pick_side is lowercase ("home"); ncaaf ats_pick is
+// uppercase ("HOME"); this file tests `=== "HOME"`. NFL renders "—" in the ATS
+// column. Harmless while NFL ats_units is hard-zero under V5. Fix before NFL
+// ever stakes.
+const TABLE_COLS = {
+  ncaaf_predictions: {
+    resultFlag: "result_entered",
+    acc: "id,game_date,ml_correct,ou_correct,win_pct_home:win_probability," +
+         "market_spread_home,market_ou_total:market_total,result_entered," +
+         "actual_home_score,actual_away_score",
+    hist: "id,game_date,home_team,away_team,ou_total:pred_total," +
+          "win_pct_home:win_probability,result_entered,ml_correct,ats_correct," +
+          "ats_units,ats_side:ats_pick,ou_correct,actual_home_score," +
+          "actual_away_score,market_spread_home,market_ou_total:market_total," +
+          "pred_home_score,pred_away_score",
+  },
+  nfl_predictions: {
+    resultFlag: "graded",
+    acc: "id,game_date,ml_correct,ou_correct,win_pct_home:ml_win_prob_home," +
+         "market_ou_total:total_line,result_entered:graded," +
+         "actual_home_score,actual_away_score",
+    hist: "id,game_date,home_team,away_team,ou_total:pred_total," +
+          "win_pct_home:ml_win_prob_home,result_entered:graded,ml_correct," +
+          "ats_correct,ats_units,ats_side:ats_pick_side,ou_correct," +
+          "actual_home_score,actual_away_score,market_ou_total:total_line," +
+          "pred_home_score,pred_away_score",
+  },
+};
+
 // ── ACCURACY DASHBOARD ────────────────────────────────────────
 export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spreadLabel = "Run Line", isNCAA = false }) {
   const [records, setRecords] = useState([]);
@@ -83,11 +131,13 @@ export function AccuracyDashboard({ table, refreshKey, onCalibrationChange, spre
     (async () => {
       setLoading(true);
       const typeFilter = (table === "mlb_predictions" && gameTypeFilter !== "ALL") ? `&game_type=eq.${gameTypeFilter}` : "";
-      const accCols = "id,game_date,ml_correct,rl_correct,ou_correct,win_pct_home,confidence,spread_home,market_spread_home,market_ou_total,result_entered";
+      const _tc = TABLE_COLS[table];
+      const accCols = _tc?.acc ?? "id,game_date,ml_correct,rl_correct,ou_correct,win_pct_home,confidence,spread_home,market_spread_home,market_ou_total,result_entered";
+      const resultFlag = _tc?.resultFlag ?? "result_entered";
       const dateFilter = daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "";
       const cacheKey = `acc_${table}_${gameTypeFilter}_${daysBack}_${refreshKey}`;
       const data = await cachedQuery(cacheKey, () =>
-        supabaseQuery(`/${table}?result_entered=eq.true${typeFilter}&select=${accCols}${dateFilter}&order=game_date.asc&limit=5000`)
+        supabaseQuery(`/${table}?${resultFlag}=eq.true${typeFilter}&select=${accCols}${dateFilter}&order=game_date.asc&limit=5000`)
       );
       setRecords(data || []);
       setLoading(false);
@@ -361,7 +411,7 @@ export function HistoryTab({ table, refreshKey }) {
     setLoading(true);
     const histCols = isMLB
       ? "id,game_date,home_team,away_team,ou_total,win_pct_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs,ou_pick,ou_units,ou_pick_correct"
-      : "id,game_date,home_team,away_team,home_team_name,away_team_name,ou_total,win_pct_home,ml_win_prob_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,pred_home_score,pred_away_score";
+      : (TABLE_COLS[table]?.hist ?? "id,game_date,home_team,away_team,home_team_name,away_team_name,ou_total,win_pct_home,ml_win_prob_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,pred_home_score,pred_away_score");
     const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
     let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
