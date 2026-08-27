@@ -488,15 +488,34 @@ export async function ncaafFillFinalScores(pendingRows) {
         if (closingOdds?.length) {
           const match = closingOdds.find(o => matchNCAAFOddsToGame(o, g));
           if (match) {
-            // DISABLED A2/ledger 2026-08-27: these four columns are not on ncaaf_predictions
-            // (58 cols, pinned by query 2026-08-26). PostgREST 400s the whole PATCH
-            // on one unknown column, so actual_home_score/actual_away_score died with
-            // them on every same-day fill. line_snapshots/ captures this market data
-            // hourly instead. Restore verbatim once Council Q4 lands the columns.
+            // DISABLED A2 2026-08-27. Original reason: these four columns were not
+            // on ncaaf_predictions, and PostgREST 400s the whole PATCH on one
+            // unknown column, so actual_home_score/actual_away_score died with them
+            // on every same-day fill.
+            //
+            // STATUS 2026-08-27, Council V25: the columns now EXIST. Schema went
+            // 58 -> 63 (closing_spread_home, closing_total, closing_home_ml,
+            // closing_away_ml, clv_captured_at), each verified 200 through
+            // PostgREST. The original blocker is gone.
+            //
+            // DO NOT UNCOMMENT. V25 and V29 place closing-line capture and CLV
+            // BACKEND-side in grade_ncaaf(), with bet side read from
+            // predicted_winner (V9). This block is a record of what the frontend
+            // used to do, not pending work. Reviving it rebuilds the capture path
+            // the Council ruled against and double-writes columns the backend owns.
+            //
+            // Interim capture is already running: line_snapshots/ writes hourly
+            // (0 7-22 * * *), so the last snapshot before kickoff is that game's
+            // closing line.
+            //
+            // PROVENANCE: the fourth line below read `closing_ou_total` until
+            // 2026-08-27. The column landed as `closing_total` to match
+            // nfl_predictions. Renamed here so this block is not a trap if it is
+            // ever revived deliberately.
             // if (match.homeML) updateObj.closing_home_ml = match.homeML;
             // if (match.awayML) updateObj.closing_away_ml = match.awayML;
             // if (match.marketSpreadHome != null) updateObj.closing_spread_home = match.marketSpreadHome;
-            // if (match.marketTotal != null) updateObj.closing_ou_total = match.marketTotal;
+            // if (match.marketTotal != null) updateObj.closing_total = match.marketTotal;
             // CLV derivation removed (V9): betSide came from win_pct_home and
             // collapsed to "home" for every game, so every clv_pct written so
             // far was measured against the wrong side. Bet side must be read
