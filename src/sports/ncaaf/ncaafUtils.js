@@ -488,10 +488,15 @@ export async function ncaafFillFinalScores(pendingRows) {
         if (closingOdds?.length) {
           const match = closingOdds.find(o => matchNCAAFOddsToGame(o, g));
           if (match) {
-            if (match.homeML) updateObj.closing_home_ml = match.homeML;
-            if (match.awayML) updateObj.closing_away_ml = match.awayML;
-            if (match.marketSpreadHome != null) updateObj.closing_spread_home = match.marketSpreadHome;
-            if (match.marketTotal != null) updateObj.closing_ou_total = match.marketTotal;
+            // DISABLED A2/ledger 2026-08-27: these four columns are not on ncaaf_predictions
+            // (58 cols, pinned by query 2026-08-26). PostgREST 400s the whole PATCH
+            // on one unknown column, so actual_home_score/actual_away_score died with
+            // them on every same-day fill. line_snapshots/ captures this market data
+            // hourly instead. Restore verbatim once Council Q4 lands the columns.
+            // if (match.homeML) updateObj.closing_home_ml = match.homeML;
+            // if (match.awayML) updateObj.closing_away_ml = match.awayML;
+            // if (match.marketSpreadHome != null) updateObj.closing_spread_home = match.marketSpreadHome;
+            // if (match.marketTotal != null) updateObj.closing_ou_total = match.marketTotal;
             // CLV derivation removed (V9): betSide came from win_pct_home and
             // collapsed to "home" for every game, so every clv_pct written so
             // far was measured against the wrong side. Bet side must be read
