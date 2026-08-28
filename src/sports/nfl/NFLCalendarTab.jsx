@@ -1,15 +1,18 @@
-import { pstTodayStr } from "../../utils/dateUtils.js";
 // src/sports/nfl/NFLCalendarTab.jsx
 // v4: Stacked ATS zones (T3/Z2/Z1) + ML (ATS-validated) + O/U UNDER + Predicted Scoreboard
-import React, { useState, useEffect, useCallback } from "react";
-import { C, Kv, AccuracyDashboard, HistoryTab } from "../../components/Shared.jsx";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { C, Kv, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import { supabaseQuery } from "../../utils/supabase.js";
 
 // ── Zone colors & labels ──
 const ZONE_META = {
-  T3: { color: "#f5a623", label: "T3 · 77.5%", desc: "6/6 + spread 3-7 + flip", units: 3 },
-  Z2: { color: "#3fb950", label: "Z2 · 66.9%", desc: "≥5/6 + spread 3-7 + flip", units: 2 },
-  Z1: { color: "#58a6ff", label: "Z1 · 62.4%", desc: "≥5/6 + spread 0-3 + same", units: 2 },
+  // Council V21: accuracy literals removed. T3's 77.5% was killed on evidence
+  // (unreproducible in-sample, four losing seasons). Same defect class F16
+  // removed from backend bundle metadata. Do not re-add a percentage here
+  // unless it comes from a walk-forward that satisfies the ship rule.
+  T3: { color: "#f5a623", label: "T3", desc: "6/6 + spread 3-7 + flip", units: 3 },
+  Z2: { color: "#3fb950", label: "Z2", desc: "≥5/6 + spread 3-7 + flip", units: 2 },
+  Z1: { color: "#58a6ff", label: "Z1", desc: "≥5/6 + spread 0-3 + same", units: 2 },
 };
 
 const ML_COLOR = "#a78bfa";  // Purple for moneyline
@@ -23,6 +26,33 @@ const formatML = (ml) => {
   return v > 0 ? `+${v}` : `${v}`;
 };
 const formatPct = (p) => p ? `${(p * 100).toFixed(0)}%` : "—";
+
+// Kickoff times in nfl_schedules.csv are US/Eastern -- established by the
+// values themselves (13:00 / 16:25 / 20:20 / 20:15 are the canonical NFL
+// Eastern windows), not assumed. Stored rows keep Eastern; this converts at
+// display only.
+//
+// ET and PT both observe US DST, so the gap is a constant 3 hours year-round
+// and no timezone table is needed. Anchored in UTC so the viewer's own
+// timezone never enters the arithmetic, and the weekday is read back out
+// AFTER the shift so a wrap past midnight cannot mislabel the day.
+const PT_DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const ptLabel = (dateStr, timeStr) => {
+  if (!dateStr) return "";
+  const [Y, M, D] = String(dateStr).split("-").map(Number);
+  if (!Y || !M || !D) return "";
+  // No kickoff time: report the weekday of the Eastern date unshifted.
+  // Shifting midnight back three hours wraps into the previous day and would
+  // label a Sunday game "Sat".
+  if (!timeStr) return PT_DAYS[new Date(Date.UTC(Y, M - 1, D)).getUTCDay()];
+  const [h, m] = String(timeStr).split(":").map(Number);
+  const d = new Date(Date.UTC(Y, M - 1, D, (h || 0) - 3, m || 0));
+  const wd = PT_DAYS[d.getUTCDay()];
+  let hh = d.getUTCHours();
+  const ap = hh >= 12 ? "PM" : "AM";
+  hh = hh % 12 || 12;
+  return `${wd} ${hh}:${String(d.getUTCMinutes()).padStart(2, "0")} ${ap} PT`;
+};
 
 // ── Unit blocks ──
 const UnitBlocks = ({ count, max = 3, color }) => (
@@ -93,7 +123,8 @@ const NFLBetBanner = ({ ats, ml, ou, homeName, awayName }) => {
                     </span>
                   </div>
                   <span style={{ fontSize: 10, color: C.muted }}>
-                    {ml.consensus} · ATS validated
+                    {/* Council V21: was unconditional. Reads the stored flag now. */}
+                    {ml.consensus}{ml.atsValidated ? " · ATS validated" : ""}
                   </span>
                 </div>
               </div>
@@ -173,24 +204,42 @@ const PredictedScore = ({ away, home, awayScore, homeScore, winner }) => (
 // ═══════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════
-export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRefresh }) {
-  const todayStr = pstTodayStr();
-  const [dateStr, setDateStr] = useState(todayStr);
+// The NFL season spans the new year, so the calendar year is the wrong
+// default from January onward -- it would ask for season 2027 during the
+// 2026 playoffs and render an empty board. NCAAF ends early enough to get
+// away with getFullYear(); NFL does not.
+function currentNFLSeason(d = new Date()) {
+  return d.getMonth() < 2 ? d.getFullYear() - 1 : d.getFullYear();
+}
+
+export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
+  const seasonYear = season ?? currentNFLSeason();
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(null);
-  const [weekFilter, setWeekFilter] = useState(null);
+  const [week, setWeek] = useState("all");
 
-  const loadGames = useCallback(async (d) => {
+  // NFLSection passes these as inline arrows, so they change identity on
+  // every parent render. Holding them in refs keeps loadGames stable --
+  // without this, calling either one re-renders the parent, rebuilds
+  // loadGames, and re-fires the effect that called it. Empty tables hid it;
+  // 272 rows did not.
+  const onGamesLoadedRef = useRef(onGamesLoaded);
+  const onRefreshRef = useRef(onRefresh);
+  useEffect(() => { onGamesLoadedRef.current = onGamesLoaded; }, [onGamesLoaded]);
+  useEffect(() => { onRefreshRef.current = onRefresh; }, [onRefresh]);
+
+  const loadGames = useCallback(async () => {
     setLoading(true); setGames([]);
 
-    // Load from Supabase nfl_predictions
+    // One read per season, not one per day. Supabase remains the sole source
+    // of truth -- nothing below is computed in the browser that is not
+    // already a stored column.
     const stored = await supabaseQuery(
-      `/nfl_predictions?game_date=eq.${d}&select=*`
+      `/nfl_predictions?season=eq.${seasonYear}&select=*`
     ).catch(e => { console.warn("Failed to load NFL predictions:", e); return []; });
 
     if (!Array.isArray(stored) || stored.length === 0) {
-      // Try loading by week if no games on exact date
       setGames([]); setLoading(false);
       return;
     }
@@ -199,7 +248,10 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       const home = sp.home_team || "HOME";
       const away = sp.away_team || "AWAY";
       const spread = sp.spread_line ?? 0;
-      const totalLine = sp.total_line ?? 44;
+      // NOT `?? 44`. A substituted constant renders as "mkt: 44" and
+      // asserts a line no book posted; downstream O/U edges computed against
+      // it are indistinguishable from real ones. Same defect NCAAF removed.
+      const totalLine = sp.total_line ?? null;
 
       // ATS signal
       const ats = {
@@ -255,6 +307,12 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
         predHome, predAway,
         predMargin: sp.pred_margin ?? null,
         predTotal: sp.pred_total ?? null,
+        // Three display sites read the raw home win probability. The mapper
+        // previously nested it only as ml.winProb (pick-side), so every one
+        // of them resolved undefined and rendered a constant 50% behind a
+        // ?? 0.5 default. Exposed explicitly; null stays null so a missing
+        // value shows as "—" rather than as a coin flip.
+        mlWinProbHome: sp.ml_win_prob_home ?? null,
         consistency: sp.consistency || "—",
         // Display meta
         homeRecord: sp.home_record || null,
@@ -264,35 +322,54 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       };
     });
 
-    // Sort: upcoming first, finals last
+    // Sort: upcoming first, finals last, then chronological.
+    // game_date is required here. The old comparator used gameTime alone,
+    // which is correct within a single day's fetch and wrong across a whole
+    // season -- a week 14 1pm kickoff sorted above a week 1 4pm.
     enriched.sort((a, b) => {
       const af = a.status === "Final" ? 1 : 0;
       const bf = b.status === "Final" ? 1 : 0;
       if (af !== bf) return af - bf;
+      const d = (a.gameDate || "").localeCompare(b.gameDate || "");
+      if (d !== 0) return d;
       return (a.gameTime || "").localeCompare(b.gameTime || "");
     });
 
     setGames(enriched);
-    onGamesLoaded?.(enriched);
+    onGamesLoadedRef.current?.(enriched);
     setLoading(false);
-  }, [onGamesLoaded]);
+    onRefreshRef.current?.();
+  }, [seasonYear]);
 
-  useEffect(() => { loadGames(dateStr); }, [dateStr, loadGames]);
+  useEffect(() => { loadGames(); }, [loadGames]);
+
+  const weeks = useMemo(
+    () => [...new Set(games.map((g) => g.week).filter((w) => w != null))].sort((a, b) => a - b),
+    [games]
+  );
+
+  const visible = useMemo(
+    () => (week === "all" ? games : games.filter((g) => String(g.week) === String(week))),
+    [games, week]
+  );
 
   return (
     <div>
       {/* Controls */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-        <input
-          type="date" value={dateStr}
-          onChange={e => setDateStr(e.target.value)}
+        <select
+          value={week}
+          onChange={e => setWeek(e.target.value)}
           style={{
             background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`,
             borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "inherit",
           }}
-        />
+        >
+          <option value="all">All weeks</option>
+          {weeks.map(w => <option key={w} value={w}>Week {w}</option>)}
+        </select>
         <button
-          onClick={() => loadGames(dateStr)}
+          onClick={() => loadGames()}
           style={{
             background: "#161b22", color: C.blue, border: `1px solid ${C.border}`,
             borderRadius: 6, padding: "6px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700,
@@ -301,7 +378,7 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
         {loading && <span style={{ color: C.dim, fontSize: 11 }}>⏳ Loading…</span>}
         {!loading && games.length > 0 && (
           <span style={{ fontSize: 11, color: C.green }}>
-            {games.length} games · Week {games[0]?.week ?? "?"}
+            {visible.length} of {games.length} rows · season {seasonYear}
           </span>
         )}
       </div>
@@ -310,14 +387,17 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       {!loading && games.length === 0 && (
         <div style={{ color: C.dim, textAlign: "center", marginTop: 40, lineHeight: 1.8 }}>
           <div style={{ fontSize: 32, marginBottom: 8 }}>🏈</div>
-          <div>No NFL predictions for {dateStr}</div>
-          <div style={{ fontSize: 11 }}>Predictions generated by cron on game days</div>
+          <div>No rows in nfl_predictions for season {seasonYear}</div>
+          <div style={{ fontSize: 11 }}>
+            The backend writes this table. A read failure and an empty table look
+            identical here — check the browser console before assuming no data.
+          </div>
         </div>
       )}
 
       {/* Game cards */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {games.map(game => {
+        {visible.map(game => {
           const { ats, ml, ou, home, away } = game;
           const hasBet = (ats.units > 0) || (ml.units > 0) || (ou.units > 0);
           const isFinal = game.status === "Final";
@@ -341,7 +421,8 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
 
           // O/U result
           let ouResult = null;
-          if (isFinal && ou.units > 0 && game.actualTotal != null) {
+          if (isFinal && ou.units > 0 && game.actualTotal != null
+              && game.totalLine != null) {
             const wentUnder = game.actualTotal < game.totalLine;
             ouResult = (ou.side === "UNDER" && wentUnder) || (ou.side === "OVER" && !wentUnder) ? "✅" : "❌";
           }
@@ -371,7 +452,7 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <span style={{ fontSize: 11, fontWeight: 600, color: C.blue }}>
-                    {game.gameTime || `Week ${game.week}`}
+                    {ptLabel(game.gameDate, game.gameTime) || `Week ${game.week}`}
                   </span>
                   {game.division && <span style={{ fontSize: 9, color: C.yellow, fontWeight: 600 }}>DIV</span>}
                   {game.isPlayoff && <span style={{ fontSize: 9, color: "#f5a623", fontWeight: 600 }}>PLAYOFF</span>}
@@ -427,7 +508,7 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                   <div style={{ fontSize: 12, fontWeight: 600,
                     color: ml.units > 0 && ml.pickSide === "away" ? ML_COLOR : "#e2e8f0",
                   }}>
-                    {formatPct(1 - (game.ml_win_prob_home ?? 0.5))}
+                    {game.mlWinProbHome == null ? "—" : formatPct(1 - game.mlWinProbHome)}
                   </div>
                   <div style={{ fontSize: 12, color: game.awayML ? "#e2e8f0" : C.dim }}>
                     {formatML(game.awayML)}
@@ -458,7 +539,7 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                   <div style={{ fontSize: 12, fontWeight: 600,
                     color: ml.units > 0 && ml.pickSide === "home" ? ML_COLOR : "#e2e8f0",
                   }}>
-                    {formatPct(game.ml_win_prob_home ?? 0.5)}
+                    {game.mlWinProbHome == null ? "—" : formatPct(game.mlWinProbHome)}
                   </div>
                   <div style={{ fontSize: 12, color: game.homeML ? "#e2e8f0" : C.dim }}>
                     {formatML(game.homeML)}
@@ -474,13 +555,13 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                         background: `${OU_COLOR}15`, border: `1px solid ${OU_COLOR}40`,
                         borderRadius: 5, padding: "2px 6px",
                       }}>
-                        <span>{game.predTotal?.toFixed(0) ?? game.totalLine}</span>
+                        <span>{game.predTotal?.toFixed(0) ?? game.totalLine ?? "—"}</span>
                         <span style={{ fontSize: 8, fontWeight: 800, color: OU_COLOR }}>▼ UN</span>
                       </div>
                     ) : (
-                      game.predTotal?.toFixed(0) ?? game.totalLine
+                      game.predTotal?.toFixed(0) ?? game.totalLine ?? "—"
                     )}
-                    {game.totalLine && (
+                    {game.totalLine != null && (
                       <div style={{ fontSize: 10, color: C.yellow }}>mkt: {game.totalLine}</div>
                     )}
                   </div>
@@ -560,7 +641,7 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                   }}>
                     <Kv k="Pred Margin" v={game.predMargin != null ? `${game.predMargin > 0 ? home : away} by ${Math.abs(game.predMargin).toFixed(1)}` : "—"} />
                     <Kv k="Pred Total" v={game.predTotal?.toFixed(1) ?? "—"} />
-                    <Kv k="Home Win %" v={formatPct(game.ml_win_prob_home)} />
+                    <Kv k="Home Win %" v={formatPct(game.mlWinProbHome)} />
                     <Kv k="ATS Zone" v={ats.zone || "None"} />
                     <Kv k="ATS Consensus" v={ats.consensus} />
                     <Kv k="ATS Edge" v={ats.avgEdge?.toFixed?.(2) ?? "—"} />
@@ -571,7 +652,7 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
                     <Kv k="O/U Side" v={ou.side} />
                     <Kv k="Consistency" v={game.consistency} />
                     {game.spread && <Kv k="Spread" v={formatSpread(game.spread)} />}
-                    {game.totalLine && <Kv k="Total Line" v={game.totalLine} />}
+                    {game.totalLine != null && <Kv k="Total Line" v={game.totalLine} />}
                     {game.homeML && <Kv k="Home ML" v={formatML(game.homeML)} />}
                     {game.awayML && <Kv k="Away ML" v={formatML(game.awayML)} />}
                     {game.division && <Kv k="Divisional" v="Yes" />}
@@ -590,7 +671,7 @@ export default function NFLCalendarTab({ calibrationFactor, onGamesLoaded, onRef
 // ── NFL SECTION (tab wrapper) ────────────────────────────
 export function NFLSection({ nflGames, setNflGames, calibrationNFL, setCalibrationNFL, refreshKey, setRefreshKey }) {
   const [tab, setTab] = useState("calendar");
-  const TABS = ["calendar", "accuracy", "history"];
+  const TABS = ["calendar", "accuracy", "history", "parlay"];
   return (
     <div>
       <div style={{ display: "flex", gap: 4, marginBottom: 16, flexWrap: "wrap" }}>
@@ -603,13 +684,37 @@ export function NFLSection({ nflGames, setNflGames, calibrationNFL, setCalibrati
             cursor: "pointer", fontSize: 11, fontWeight: 700,
             letterSpacing: 1, textTransform: "uppercase",
           }}>
-            {t === "calendar" ? "🏈" : t === "accuracy" ? "📊" : "📋"} {t}
+            {t === "calendar" ? "🏈" : t === "accuracy" ? "📊" : t === "history" ? "📋" : "🎰"} {t}
           </button>
         ))}
       </div>
-      {tab === "calendar" && <NFLCalendarTab calibrationFactor={calibrationNFL} onGamesLoaded={g => { setNflGames(g); }} onRefresh={() => setRefreshKey(k => k + 1)} />}
+      {tab === "calendar" && <NFLCalendarTab onGamesLoaded={g => { setNflGames(g); }} onRefresh={() => setRefreshKey(k => k + 1)} />}
       {tab === "accuracy" && <AccuracyDashboard table="nfl_predictions" refreshKey={refreshKey} onCalibrationChange={setCalibrationNFL} spreadLabel="Spread" />}
       {tab === "history" && <HistoryTab table="nfl_predictions" refreshKey={refreshKey} />}
+      {tab === "parlay" && (
+        <div>
+          {/* Council V5 hard-zeros NFL stakes; V7 blocks sizing until forward
+              CLV resolves. This banner exists so an empty surface is
+              distinguishable from a broken one — they render identically
+              otherwise, and that ambiguity has cost diagnoses before. Remove
+              it only when a Council verdict says NFL may stake. */}
+          <div style={{
+            background: "#1a1408", border: "1px solid #5a4410", borderRadius: 8,
+            padding: "10px 14px", marginBottom: 14, fontSize: 11, color: "#d9a441",
+            lineHeight: 1.7,
+          }}>
+            <b>Shell only — no legs will build yet.</b>
+            <div style={{ color: C.dim, marginTop: 4 }}>
+              nfl_predictions holds schedule rows: <code>ml_pick_side</code>,{" "}
+              <code>ml_win_prob_home</code>, <code>ml_units</code> and both moneyline
+              columns are null, and no writer produces them — nfl_full_predict.py is
+              not built. Council V5 hard-zeros NFL stakes and V7 blocks sizing until
+              forward CLV resolves, so nothing here is bettable regardless of data.
+            </div>
+          </div>
+          <ParlayBuilder mlbGames={[]} ncaaGames={nflGames} />
+        </div>
+      )}
     </div>
   );
 }
