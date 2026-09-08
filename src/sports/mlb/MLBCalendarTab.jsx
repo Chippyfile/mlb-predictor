@@ -684,7 +684,11 @@ export default function MLBCalendarTab({ calibrationFactor, onGamesLoaded, onRef
       // ATS: v12 with pattern-tiered units (cutover from v9, May 19 2026)
       //   3/3 voters above gate (unanimous) → 3u  (n=660, ROI +15.98% across 11yr WF)
       //   2/3 voters above gate (1B pattern) → 1u  (n=2839, ROI +1.68%)
-      const mktSpread = mlResult.market_spread_home ?? game.odds?.homeSpread ?? null;
+      // A run line is always +/-1.5. Zero means "no line fetched", not "pick em" --
+      // mlb_full_predict.py:1426 seeds the payload with 0, so `??` alone lets that
+      // zero through and it overwrites the stored line. Treat 0 as absent.
+      const _rl = v => (v === 0 || v == null ? null : v);
+      const mktSpread = _rl(mlResult.market_spread_home) ?? _rl(game.odds?.homeSpread) ?? null;
       if (mktSpread !== null) {
         patch.market_spread_home = mktSpread;
       }
