@@ -247,7 +247,16 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
     const enriched = stored.map(sp => {
       const home = sp.home_team || "HOME";
       const away = sp.away_team || "AWAY";
-      const spread = sp.spread_line ?? 0;
+      // spread_line is nflverse convention: POSITIVE = home favored.
+      // Books show the favorite with a minus, so invert exactly ONCE
+      // here. Everything downstream -- both render cells,
+      // ats.pickSpread, and the cover residual on the card -- consumes
+      // book convention and must not re-invert. (V23 / V36)
+      //
+      // NOT `?? 0`. Zero is a real pick'em line, and the 256 future-week
+      // rows carry no line at all; collapsing null to 0 renders an
+      // unpriced game as a pick'em. Render sites test `!= null`.
+      const spread = sp.spread_line != null ? -sp.spread_line : null;
       // NOT `?? 44`. A substituted constant renders as "mkt: 44" and
       // asserts a line no book posted; downstream O/U edges computed against
       // it are indistinguishable from real ones. Same defect NCAAF removed.
@@ -319,6 +328,16 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
         awayRecord: sp.away_record || null,
         division: sp.div_game ?? false,
         isPlayoff: sp.is_playoff ?? false,
+        // 2026_01_SF_LA is a neutral site. "Home" there is a scheduling
+        // artifact -- HFA is zero and the label should say so.
+        neutral: sp.neutral ?? false,
+        // Vintage. model_name is the ONLY thing separating two bundles
+        // in one pred_residual column, and V36 changed the target sign
+        // convention, so rows from different bundles are not comparable.
+        // NULL means "schedule skeleton, no prediction written" -- not
+        // "predicted nothing".
+        modelName: sp.model_name || null,
+        hasPrediction: sp.model_name != null,
       };
     });
 
@@ -334,6 +353,26 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
       if (d !== 0) return d;
       return (a.gameTime || "").localeCompare(b.gameTime || "");
     });
+
+    // R1/R3 convention guard. Across a full NFL slate the mean book
+    // spread must be NEGATIVE (home teams are favored on average by
+    // roughly a field goal). A positive mean means spread_line flipped
+    // upstream and every side on this board is backwards. Magnitude
+    // checks cannot catch an inversion; this can. Fail loudly rather
+    // than draw the wrong side silently -- the April sign bug survived
+    // four months because nothing asserted anything.
+    const priced = enriched.filter(g => g.spread != null);
+    if (priced.length >= 8) {
+      const meanSpread = priced.reduce((s, g) => s + g.spread, 0) / priced.length;
+      if (meanSpread > 0) {
+        console.error(
+          `[NFL] SPREAD CONVENTION INVERTED: mean book spread ${meanSpread.toFixed(2)} ` +
+          `over ${priced.length} priced games, expected negative. ` +
+          `spread_line is no longer positive-means-home-favored. Blanking lines.`
+        );
+        enriched.forEach(g => { g.spread = null; });
+      }
+    }
 
     setGames(enriched);
     onGamesLoadedRef.current?.(enriched);
@@ -383,6 +422,33 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
         )}
       </div>
 
+      {/* Provenance. Stakes are hard zero at source (V5) and sizing is
+          blocked until forward CLV resolves (V7). This board reports a
+          residual and a market line; it does not tell anyone what to bet,
+          and it should be visibly incapable of doing so. */}
+      {!loading && games.length > 0 && (
+        <div style={{
+          background: "#0d1520", border: `1px solid ${C.border}`,
+          borderRadius: 8, padding: "8px 14px", marginBottom: 14,
+          fontSize: 11, color: C.muted, lineHeight: 1.6,
+        }}>
+          <b style={{ color: C.blue }}>Measurement only — no picks.</b>{" "}
+          Stakes are zero at source; nothing here is a recommendation.{" "}
+          {(() => {
+            const withPred = games.filter(g => g.hasPrediction);
+            const bundles = [...new Set(withPred.map(g => g.modelName))];
+            if (withPred.length === 0) return "No predictions written yet — schedule rows only.";
+            return (
+              `${withPred.length} of ${games.length} rows carry a prediction · ` +
+              `bundle${bundles.length > 1 ? "s" : ""}: ${bundles.join(", ")}` +
+              (bundles.length > 1
+                ? " — MIXED VINTAGE: pred_residual is not comparable across these."
+                : "")
+            );
+          })()}
+        </div>
+      )}
+
       {/* Empty state */}
       {!loading && games.length === 0 && (
         <div style={{ color: C.dim, textAlign: "center", marginTop: 40, lineHeight: 1.8 }}>
@@ -407,6 +473,12 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
           // ATS result (if final)
           let atsResult = null;
           if (isFinal && ats.units > 0 && game.actualMargin != null) {
+            // game.spread is book convention (negative = home favored),
+            // so margin + spread IS the cover residual: a home favorite
+            // laying 7 covers only when it wins by more than 7. This is
+            // the same quantity the trainer gets wrong at
+            // nfl_f1_train_production.py:246 -- correct here, and it stays
+            // correct only while the mapper above owns the inversion.
             const residual = game.actualMargin + game.spread;
             const covered = ats.pickSide === "home" ? residual > 0 : residual < 0;
             atsResult = covered ? "✅" : "❌";
@@ -456,6 +528,10 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
                   </span>
                   {game.division && <span style={{ fontSize: 9, color: C.yellow, fontWeight: 600 }}>DIV</span>}
                   {game.isPlayoff && <span style={{ fontSize: 9, color: "#f5a623", fontWeight: 600 }}>PLAYOFF</span>}
+                  {game.neutral && <span style={{ fontSize: 9, color: C.muted, fontWeight: 600 }}>NEUTRAL</span>}
+                  {!game.hasPrediction && (
+                    <span style={{ fontSize: 9, color: C.dim, fontWeight: 600 }}>NO PREDICTION</span>
+                  )}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {isFinal && (
@@ -503,7 +579,7 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
                     {game.predAway?.toFixed(0) ?? "—"}
                   </div>
                   <div style={{ fontSize: 12, color: "#e2e8f0" }}>
-                    {game.spread ? formatSpread(-game.spread) : "—"}
+                    {game.spread != null ? formatSpread(-game.spread) : "—"}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 600,
                     color: ml.units > 0 && ml.pickSide === "away" ? ML_COLOR : "#e2e8f0",
@@ -534,7 +610,7 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
                     {game.predHome?.toFixed(0) ?? "—"}
                   </div>
                   <div style={{ fontSize: 12, color: "#e2e8f0" }}>
-                    {game.spread ? formatSpread(game.spread) : "—"}
+                    {game.spread != null ? formatSpread(game.spread) : "—"}
                   </div>
                   <div style={{ fontSize: 12, fontWeight: 600,
                     color: ml.units > 0 && ml.pickSide === "home" ? ML_COLOR : "#e2e8f0",
@@ -651,7 +727,8 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
                     <Kv k="O/U Residual" v={ou.pred?.toFixed?.(2) ?? "—"} />
                     <Kv k="O/U Side" v={ou.side} />
                     <Kv k="Consistency" v={game.consistency} />
-                    {game.spread && <Kv k="Spread" v={formatSpread(game.spread)} />}
+                    {game.spread != null && <Kv k="Spread (home)" v={formatSpread(game.spread)} />}
+                    <Kv k="Model" v={game.modelName || "— no prediction written"} />
                     {game.totalLine != null && <Kv k="Total Line" v={game.totalLine} />}
                     {game.homeML && <Kv k="Home ML" v={formatML(game.homeML)} />}
                     {game.awayML && <Kv k="Away ML" v={formatML(game.awayML)} />}
