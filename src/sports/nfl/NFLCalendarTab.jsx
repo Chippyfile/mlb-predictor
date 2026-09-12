@@ -449,6 +449,60 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
         </div>
       )}
 
+      {/* Record over the CURRENT FILTER. Pick the week in the dropdown and
+          this is that week's record; leave it on All and it is the season.
+
+          These are PUBLISHED PICKS AT ZERO UNITS, not bets. The strip says
+          so on purpose: NCAAF's board shows 56-4 straight-up for a set of
+          games that returns -5.6% ROI at the prices those games were
+          actually offered at, because the wins are concentrated in 90%+
+          favourites laying -2800. A win-loss line with no price attached
+          is the single most misleading number this board could show. */}
+      {!loading && visible.length > 0 && (() => {
+        const finals = visible.filter(
+          g => g.status === "Final" && g.actualMargin != null
+        );
+        if (finals.length === 0) return null;
+        let aW = 0, aL = 0, mW = 0, mL = 0;
+        for (const g of finals) {
+          if (g.ats?.pickSide != null && g.spread != null) {
+            const residual = g.actualMargin + g.spread;
+            if (residual !== 0) {
+              const ok = g.ats.pickSide === "home" ? residual > 0 : residual < 0;
+              ok ? aW++ : aL++;
+            }
+          }
+          if (g.ml?.pickSide != null) {
+            const homeWon = g.actualMargin > 0;
+            ((g.ml.pickSide === "home") === homeWon) ? mW++ : mL++;
+          }
+        }
+        if (aW + aL + mW + mL === 0) return null;
+        const pct = (w, l) => (w + l ? `${((w / (w + l)) * 100).toFixed(0)}%` : "—");
+        return (
+          <div style={{
+            background: "#0d1520", border: `1px solid ${C.border}`,
+            borderRadius: 8, padding: "8px 14px", marginBottom: 14,
+            fontSize: 11, color: C.muted, display: "flex",
+            alignItems: "center", gap: 18, flexWrap: "wrap",
+          }}>
+            <span style={{ color: C.blue, fontWeight: 700 }}>
+              {week === "all" ? "Season" : `Week ${week}`} · {finals.length} final
+            </span>
+            {(aW + aL > 0) && (
+              <span>ATS <b style={{ color: "#e2e8f0" }}>{aW}-{aL}</b> ({pct(aW, aL)})</span>
+            )}
+            {(mW + mL > 0) && (
+              <span>ML <b style={{ color: "#e2e8f0" }}>{mW}-{mL}</b> ({pct(mW, mL)})</span>
+            )}
+            <span style={{ color: C.dim }}>
+              Published picks at zero units — not a betting record. No price is
+              reflected in these numbers.
+            </span>
+          </div>
+        );
+      })()}
+
       {/* Empty state */}
       {!loading && games.length === 0 && (
         <div style={{ color: C.dim, textAlign: "center", marginTop: 40, lineHeight: 1.8 }}>
@@ -472,7 +526,10 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
 
           // ATS result (if final)
           let atsResult = null;
-          if (isFinal && ats.units > 0 && game.actualMargin != null) {
+          // The gate is 'did we publish a pick', NOT 'did we bet it'.
+          // ats_units is hard zero at source (V5) and always will be, so
+          // gating on units meant this never rendered once.
+          if (isFinal && ats.pickSide != null && game.actualMargin != null) {
             // game.spread is book convention (negative = home favored),
             // so margin + spread IS the cover residual: a home favorite
             // laying 7 covers only when it wins by more than 7. This is
@@ -486,7 +543,8 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
 
           // ML result (if final)
           let mlResult = null;
-          if (isFinal && ml.units > 0 && game.actualMargin != null) {
+          // Same as ATS above: ml_units is hard zero (V5).
+          if (isFinal && ml.pickSide != null && game.actualMargin != null) {
             const homeWon = game.actualMargin > 0;
             mlResult = (ml.pickSide === "home") === homeWon ? "✅" : "❌";
           }
@@ -530,7 +588,9 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <span style={{ fontSize: 11, fontWeight: 600, color: C.blue }}>
-                    {ptLabel(game.gameDate, game.gameTime) || `Week ${game.week}`}
+                    {game.week != null ? `Week ${game.week}` : ""}
+                    {game.week != null && ptLabel(game.gameDate, game.gameTime) ? " · " : ""}
+                    {ptLabel(game.gameDate, game.gameTime) || ""}
                   </span>
                   {game.division && <span style={{ fontSize: 9, color: C.yellow, fontWeight: 600 }}>DIV</span>}
                   {game.isPlayoff && <span style={{ fontSize: 9, color: "#f5a623", fontWeight: 600 }}>PLAYOFF</span>}
