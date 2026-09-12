@@ -499,7 +499,13 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
             ouResult = (ou.side === "UNDER" && wentUnder) || (ou.side === "OVER" && !wentUnder) ? "✅" : "❌";
           }
 
-          const predWinner = game.predHome > game.predAway ? "home" : "away";
+          // predHome / predAway read pred_home_score / pred_away_score,
+          // which are NULL on every row -- the writer has never emitted
+          // them, and they would be the MARKET total split by the model
+          // margin anyway. predMargin is what the model produces.
+          const predWinner = game.predMargin == null
+            ? null
+            : (game.predMargin > 0 ? "home" : "away");
 
           return (
             <div
@@ -557,6 +563,10 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
                   textTransform: "uppercase", letterSpacing: "0.5px",
                 }}>
                   <div></div>
+                  {/* The model's margin, rendered as a spread so it sits
+                      beside the market's line and is directly comparable.
+                      predMargin is home-minus-away; the home cell shows
+                      -predMargin, matching the Spread column's convention. */}
                   <div>Pred</div>
                   <div>Spread</div>
                   <div>ML</div>
@@ -576,7 +586,8 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
                     {game.awayRecord && <div style={{ fontSize: 10, color: C.muted }}>{game.awayRecord}</div>}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: predWinner === "away" ? "#e2e8f0" : C.dim }}>
-                    {game.predAway?.toFixed(0) ?? "—"}
+                    {game.predMargin != null
+                      ? formatSpread(game.predMargin) : "—"}
                   </div>
                   <div style={{ fontSize: 12, color: "#e2e8f0" }}>
                     {game.spread != null ? formatSpread(-game.spread) : "—"}
@@ -607,7 +618,8 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
                     {game.homeRecord && <div style={{ fontSize: 10, color: C.muted }}>{game.homeRecord}</div>}
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: predWinner === "home" ? "#e2e8f0" : C.dim }}>
-                    {game.predHome?.toFixed(0) ?? "—"}
+                    {game.predMargin != null
+                      ? formatSpread(-game.predMargin) : "—"}
                   </div>
                   <div style={{ fontSize: 12, color: "#e2e8f0" }}>
                     {game.spread != null ? formatSpread(game.spread) : "—"}
