@@ -99,7 +99,7 @@ const TABLE_COLS = {
     acc: "id,game_date,ml_correct,ou_correct,win_pct_home:win_probability," +
          "market_spread_home,market_ou_total:market_total,result_entered," +
          "actual_home_score,actual_away_score",
-    hist: "id,game_date,home_team,away_team,ou_total:pred_total," +
+    hist: "id,game_date,week,home_team,away_team,ou_total:pred_total," +
           "win_pct_home:win_probability,result_entered,ml_correct,ats_correct," +
           "ats_units,ats_side:ats_pick,ou_correct,actual_home_score," +
           "actual_away_score,market_spread_home,market_ou_total:market_total," +
@@ -110,7 +110,7 @@ const TABLE_COLS = {
     acc: "id,game_date,ml_correct,ou_correct,win_pct_home:ml_win_prob_home," +
          "market_ou_total:total_line,result_entered:graded," +
          "actual_home_score,actual_away_score",
-    hist: "id,game_date,home_team,away_team,ou_total:pred_total," +
+    hist: "id,game_date,week,home_team,away_team,ou_total:pred_total," +
           "win_pct_home:ml_win_prob_home,result_entered:graded,ml_correct," +
           "ats_correct,ats_units,ats_side:ats_pick_side,ou_correct," +
           "actual_home_score,actual_away_score,market_ou_total:total_line," +
@@ -429,9 +429,17 @@ export function HistoryTab({ table, refreshKey }) {
     load();
   };
 
+  // Group by week where the sport has one, by date where it does not.
+  // This keys off the DATA, not off a prop: MLB and NBA rows carry no
+  // week column, so they fall through to date grouping without anyone
+  // having to remember to pass a flag. A week spans four or five dates
+  // -- NFL Week 1 2026 runs 09-09 to 09-14 -- so date headers scatter a
+  // single week across the page with nothing tying them together.
+  const hasWeeks = records.some(r => r.week != null);
   const grouped = records.reduce((acc, r) => {
-    if (!acc[r.game_date]) acc[r.game_date] = [];
-    acc[r.game_date].push(r);
+    const key = hasWeeks && r.week != null ? `Week ${r.week}` : r.game_date;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(r);
     return acc;
   }, {});
 
@@ -466,8 +474,13 @@ export function HistoryTab({ table, refreshKey }) {
         const graded = recs.filter(r => r.result_entered);
         const mlW = graded.filter(r => r.ml_correct === true).length;
         const mlL = graded.filter(r => r.ml_correct === false).length;
-        const atsW = graded.filter(r => r.ats_units > 0 && r.ats_correct === true).length;
-        const atsL = graded.filter(r => r.ats_units > 0 && r.ats_correct === false).length;
+        // NOT `ats_units > 0`. Units are hard zero at source for NFL and
+        // NCAAF (V5, serve only) and always will be, so that gate meant
+        // this column has never shown a number for either sport. The
+        // backend writes ats_correct only when a pick existed and the
+        // game did not push, so a non-null value IS the gate.
+        const atsW = graded.filter(r => r.ats_correct === true).length;
+        const atsL = graded.filter(r => r.ats_correct === false).length;
         let ouW = 0, ouL = 0;
         graded.forEach(r => {
           // Prefer the backend-graded boolean (authoritative, push-aware). Fall
@@ -491,7 +504,7 @@ export function HistoryTab({ table, refreshKey }) {
         const summaryColor = (w, t) => t === 0 ? C.dim : (w / t >= 0.55 ? C.green : w / t >= 0.5 ? C.yellow : C.red);
         return (
         <div key={date} style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.yellow, marginBottom: 6, borderBottom: `1px solid #161b22`, paddingBottom: 5, letterSpacing: 2 }}>📅 {date}</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.yellow, marginBottom: 6, borderBottom: `1px solid #161b22`, paddingBottom: 5, letterSpacing: 2 }}>{hasWeeks ? "🏈" : "📅"} {date}</div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
