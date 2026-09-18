@@ -150,7 +150,7 @@ function mapNCAAFPrediction(r) {
 // ═══════════════════════════════════════════════════════════
 
 export async function refreshNCAAFWeek(season, week) {
-  const res = await fetch(`${RAILWAY_API}/predict/ncaaf`, {
+  const res = await fetch(`${RAILWAY_API}/predict/ncaaf/full`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ season, week }),
