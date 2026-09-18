@@ -403,6 +403,14 @@ export function HistoryTab({ table, refreshKey }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filterDate, setFilterDate] = useState("");
+  // Week filter. "all" or a week number as a string. Filtered SERVER-side,
+  // and it drops the date window -- picking Week 1 under a 10-day window
+  // would otherwise return nothing, since week 1 is outside it.
+  const [weekFilter, setWeekFilter] = useState("all");
+  // Options come from their own query, NOT from `records`: once a week is
+  // selected, records hold only that week and the list would collapse to
+  // the current selection. Empty for MLB and NBA, whose rows have no week.
+  const [weekOptions, setWeekOptions] = useState([]);
   const [gameTypeFilter, setGameTypeFilter] = useState("ALL");
   const [daysBack, setDaysBack] = useState(10);
   const isMLB = table === "mlb_predictions";
@@ -412,14 +420,36 @@ export function HistoryTab({ table, refreshKey }) {
     const histCols = isMLB
       ? "id,game_date,home_team,away_team,ou_total,win_pct_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,actual_home_runs,actual_away_runs,market_spread_home,market_ou_total,game_type,pred_home_runs,pred_away_runs,ou_pick,ou_units,ou_pick_correct"
       : (TABLE_COLS[table]?.hist ?? "id,game_date,home_team,away_team,home_team_name,away_team_name,ou_total,win_pct_home,ml_win_prob_home,result_entered,ml_correct,ats_correct,ats_units,ats_side,ou_correct,actual_home_score,actual_away_score,market_spread_home,market_ou_total,pred_home_score,pred_away_score");
-    const dateFilter = filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : "");
-    let path = `/${table}?select=${histCols}${dateFilter}&order=game_date.desc&limit=200`;
+    // A chosen week overrides the date window entirely. These are
+    // alternative questions, not filters that compose.
+    const weekSel = weekFilter !== "all" ? `&week=eq.${weekFilter}` : "";
+    const dateFilter = weekSel
+      ? ""
+      : (filterDate ? `&game_date=eq.${filterDate}` : (daysBack < 999 ? `&game_date=gte.${_daysAgo(daysBack)}` : ""));
+    let path = `/${table}?select=${histCols}${dateFilter}${weekSel}&order=game_date.desc&limit=2000`;
     if (isMLB && gameTypeFilter !== "ALL") path += `&game_type=eq.${gameTypeFilter}`;
-    const cacheKey = `hist_${table}_${filterDate}_${gameTypeFilter}_${daysBack}_${refreshKey}`;
+    const cacheKey = `hist_${table}_${filterDate}_${weekFilter}_${gameTypeFilter}_${daysBack}_${refreshKey}`;
     const data = await cachedQuery(cacheKey, () => supabaseQuery(path));
     setRecords(data || []);
+
+    // Cheap, unfiltered, one column. Independent of the date window and
+    // of the current week so the dropdown never shrinks to its own
+    // selection. Fails soft: no weeks, no dropdown.
+    try {
+      const wk = await cachedQuery(
+        `hist_weeks_${table}_${refreshKey}`,
+        () => supabaseQuery(`/${table}?select=week&order=week.desc&limit=2000`)
+      );
+      const uniq = [...new Set((wk || [])
+        .map(r => r.week)
+        .filter(w => w !== null && w !== undefined))]
+        .sort((a, b) => b - a);
+      setWeekOptions(uniq);
+    } catch {
+      setWeekOptions([]);
+    }
     setLoading(false);
-  }, [filterDate, gameTypeFilter, table, daysBack, refreshKey]);
+  }, [filterDate, weekFilter, gameTypeFilter, table, daysBack, refreshKey]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
@@ -450,12 +480,26 @@ export function HistoryTab({ table, refreshKey }) {
     <div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         <h2 style={{ margin: 0, fontSize: 14, color: C.blue, letterSpacing: 2, textTransform: "uppercase" }}>📋 History</h2>
-        <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "inherit" }} />
+        <input type="date" value={filterDate} onChange={e => { setFilterDate(e.target.value); setWeekFilter("all"); }} style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "inherit" }} />
         {filterDate && <button onClick={() => setFilterDate("")} style={{ background: C.card, color: C.muted, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11 }}>Clear</button>}
+        {/* Only for sports that have weeks. MLB and NBA return no week
+            column, so weekOptions is empty and this does not render. */}
+        {weekOptions.length > 0 && (
+          <select
+            value={weekFilter}
+            onChange={e => { setWeekFilter(e.target.value); setFilterDate(""); }}
+            style={{ background: C.card, color: "#e2e8f0", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "inherit", cursor: "pointer" }}
+          >
+            <option value="all">All weeks</option>
+            {weekOptions.map(w => (
+              <option key={w} value={String(w)}>Week {w}</option>
+            ))}
+          </select>
+        )}
         <button onClick={load} style={{ background: C.card, color: C.blue, border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 10px", cursor: "pointer", fontSize: 11 }}>↻</button>
         <div style={{ display: "flex", gap: 3, background: C.card, border: `1px solid ${C.border}`, borderRadius: 6, padding: 3 }}>
           {[[10,"10d"],[30,"30d"],[90,"90d"],[999,"All"]].map(([v,l]) => (
-            <button key={v} onClick={() => { setDaysBack(v); setFilterDate(""); }} style={{ padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 9, fontWeight: 700, background: daysBack === v && !filterDate ? C.green : "transparent", color: daysBack === v && !filterDate ? C.bg : C.dim }}>{l}</button>
+            <button key={v} onClick={() => { setDaysBack(v); setFilterDate(""); setWeekFilter("all"); }} style={{ padding: "3px 8px", borderRadius: 4, border: "none", cursor: "pointer", fontSize: 9, fontWeight: 700, background: daysBack === v && !filterDate && weekFilter === "all" ? C.green : "transparent", color: daysBack === v && !filterDate && weekFilter === "all" ? C.bg : C.dim }}>{l}</button>
           ))}
         </div>
         {isMLB && (
