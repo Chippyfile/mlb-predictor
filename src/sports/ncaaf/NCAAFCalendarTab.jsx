@@ -166,7 +166,7 @@ function Diagnostics({ games }) {
 // GAME CARD
 // ─────────────────────────────────────────────────────────────
 function GameCard({ g, open, onToggle }) {
-  const fired = g.atsUnits > 0 && !g.atsGateBlock;
+  const fired = !!g.atsPick && !g.atsGateBlock;   // V5: units are 0
   const stored = g.atsGateBlock || null;
   const mismatch = stored !== deriveBlock(g);
   const aCol = teamColor(g.awayTeam);
@@ -240,7 +240,7 @@ function GameCard({ g, open, onToggle }) {
             {g.featureCoverage != null && <Kv k="Feature coverage" v={n1(g.featureCoverage, 2)} />}
             {g.conferenceGame && <Kv k="Conference" v="yes" />}
             {g.resultEntered && <Kv k="ML" v={g.mlCorrect ? "✅" : "❌"} />}
-            {g.resultEntered && g.atsUnits > 0 && (
+            {g.resultEntered && g.atsPick && (
               <Kv k="ATS" v={g.atsCorrect === true ? "✅" : g.atsCorrect === false ? "❌" : "—"} />
             )}
           </div>
@@ -290,7 +290,13 @@ export function NCAAFCalendarTab({ season = new Date().getFullYear(), onGamesLoa
     () => (week === "all" ? games : games.filter((g) => String(g.week) === String(week))),
     [games, week]
   );
-  const visible = picksOnly ? scoped.filter((g) => g.atsUnits > 0) : scoped;
+  // NOT atsUnits > 0. Units are hard zero at source (V5) and always
+  // will be, so that filter could never return anything -- while the
+  // gate-outcome counter at the top uses `!block && g.atsPick` and
+  // reports 4. Two definitions of "pick"; this one is unreachable.
+  const visible = picksOnly
+    ? scoped.filter((g) => g.atsPick && !g.atsGateBlock)
+    : scoped;
 
   const doRefresh = async () => {
     if (week === "all") return load();
