@@ -6,6 +6,7 @@
 // results all come from Supabase. Anything on screen that isn't in a row
 // isn't on screen.
 
+import LogBetForm from "../../components/LogBetForm";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { C, Pill, Kv, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import { NFL_TEAMS } from "../nfl/nflUtils.js";
@@ -247,6 +248,10 @@ function GameCard({ g, open, onToggle }) {
           <div style={{ marginTop: 10, fontSize: 10, color: C.dim }}>
             Every value above is a stored column. Nothing on this card is computed in the browser.
           </div>
+          <LogBetForm sport="ncaaf" season={g.season} week={g.week} gameId={g.gameId}
+            homeTeam={g.homeTeam} awayTeam={g.awayTeam}
+            homeSpread={g.spread} total={g.total} homeMl={g.marketHomeMl} awayMl={g.marketAwayMl}
+            modelAts={g.atsPick} modelOu={g.ouPick} modelMl={g.predictedWinner} />
         </div>
       )}
     </div>

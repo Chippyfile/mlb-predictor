@@ -84,6 +84,8 @@ function mapNCAAFPrediction(r) {
     // Market
     spread: r.market_spread_home,
     total: r.market_total,
+    marketHomeMl: r.market_home_ml ?? null,
+    marketAwayMl: r.market_away_ml ?? null,
     numProviders: r.num_providers,
 
     // Projection

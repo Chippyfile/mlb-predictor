@@ -1,5 +1,6 @@
 // src/sports/nfl/NFLCalendarTab.jsx
 // v4: Stacked ATS zones (T3/Z2/Z1) + ML (ATS-validated) + O/U UNDER + Predicted Scoreboard
+import LogBetForm from "../../components/LogBetForm";
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { C, Kv, AccuracyDashboard, HistoryTab, ParlayBuilder } from "../../components/Shared.jsx";
 import { supabaseQuery } from "../../utils/supabase.js";
@@ -300,6 +301,7 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
       return {
         id: sp.id || sp.game_id,
         gameId: sp.game_id,
+        season: sp.season ?? null,
         week: sp.week,
         gameDate: sp.game_date,
         gameTime: sp.game_time || null,
@@ -751,6 +753,12 @@ export default function NFLCalendarTab({ season, onGamesLoaded, onRefresh }) {
               )}
 
               {/* Expanded detail view */}
+              {expanded === game.gameId && (
+                <LogBetForm sport="nfl" season={game.season ?? currentNFLSeason()} week={game.week} gameId={game.gameId}
+                  homeTeam={game.home} awayTeam={game.away}
+                  homeSpread={game.spread} total={game.totalLine} homeMl={game.homeML} awayMl={game.awayML}
+                  modelAts={game.ats?.pickSide} modelOu={null} modelMl={game.ml?.pickSide} />
+              )}
               {expanded === game.gameId && (
                 <div
                   onClick={e => e.stopPropagation()}
