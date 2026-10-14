@@ -397,6 +397,19 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     ouSignal?.verdict === "GO"   || ouSignal?.verdict === "LEAN" ||
     spreadSignal?.verdict === "GO" || spreadSignal?.verdict === "LEAN";
 
+  // ── NBA STAKE GATE (frontend) — mirrors backend _NBA_STAKE_UNITS = 0 ──
+  // Picks and edges stay visible as information; nothing renders as a bet.
+  // Remove only alongside the backend constant, after a Council ruling.
+  if (sport === "nba") {
+    const _nbaGate = (s, what) =>
+      s && (s.verdict === "GO" || s.verdict === "LEAN")
+        ? { ...s, verdict: "SKIP", units: 0, reason: `NBA stakes gated — paper ${what} only (${s.reason ?? ""})` }
+        : s;
+    return {
+      ml: _nbaGate(mlSignal, "ML"), ou: _nbaGate(ouSignal, "O/U"), spread: _nbaGate(spreadSignal, "ATS"),
+      conf: confSignal, dec: decSignal, anyEdge: false, betSizing: null,
+    };
+  }
   return { ml: mlSignal, ou: ouSignal, spread: spreadSignal, conf: confSignal, dec: decSignal, anyEdge, betSizing };
 }
 
