@@ -344,19 +344,19 @@ export default function NCAACalendarTab({ calibrationFactor, onGamesLoaded, onRe
       };
       // ATS: prefer backend-computed values (server-side CatBoost), fall back to local
       if (mlResult.ats_units != null) {
-        patch.ats_units = mlResult.ats_units || 0;
+        patch.ats_units = 0;  // NCAA STAKE GATE — was mlResult.ats_units || 0
         patch.ats_side = mlResult.ats_side || null;
         patch.ats_disagree = mlResult.ats_disagree ?? refreshAts.disagree;
         patch.ats_pick_spread = mlResult.ats_pick_spread ?? refreshAts.pickSpread;
       } else if (mktSpread != null) {
         patch.ats_disagree = refreshAts.disagree;
-        patch.ats_units = refreshAts.units ?? 0;
+        patch.ats_units = 0;  // NCAA STAKE GATE — was refreshAts.units ?? 0
         patch.ats_side = refreshAts.side ?? null;
         patch.ats_pick_spread = refreshAts.pickSpread ?? null;
       }
       // O/U from backend
       if (mlResult.ou_pick != null) patch.ou_pick = mlResult.ou_pick;
-      if (mlResult.ou_tier != null) patch.ou_tier = mlResult.ou_tier;
+      if (mlResult.ou_tier != null) patch.ou_tier = 0;  // NCAA STAKE GATE — was mlResult.ou_tier
       if (mlResult.ou_predicted_total != null) patch.ou_predicted_total = parseFloat(mlResult.ou_predicted_total.toFixed(1));
       if (mlResult.ou_edge != null) patch.ou_edge = parseFloat(mlResult.ou_edge.toFixed(1));
       if (mlResult.ou_res_avg != null) patch.ou_res_avg = parseFloat(mlResult.ou_res_avg.toFixed(3));

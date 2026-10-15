@@ -303,16 +303,16 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
         1: { label: "BET (1u)", units: 1, color: "muted", verdict: "LEAN", acc: "~61%", roi: "+17%" },
       };
     } else if (isNCAA) {
-      // NCAA ATS: validated on 41,831 walk-forward games (ncaa_final_retrain.py, Apr 2026)
-      //   4+ pts: 73.6% ATS (1u)  |  7+ pts: 90.1% ATS (2u)  |  10+ pts: 96.5% ATS (3u)
+      // NCAA ATS tiers INVALIDATED 2026-10-14 (espn_spread artifact; vs DK close ~53%, no slope).
+      // NCAA STAKE GATE at the end of this function forces SKIP; tier math kept for information.
       if (disagree >= 10) edgeTier = 3;
       else if (disagree >= 7) edgeTier = 2;
       else if (disagree >= 4) edgeTier = 1;
       // No tier below 4 — noise zone
       tierLabels = {
-        3: { label: "MAX (3u)", units: 3, color: "green", verdict: "GO", acc: "~97%", roi: "+84%" },
-        2: { label: "STRONG (2u)", units: 2, color: "yellow", verdict: "GO", acc: "~90%", roi: "+72%" },
-        1: { label: "BET (1u)", units: 1, color: "muted", verdict: "GO", acc: "~74%", roi: "+40%" },
+        3: { label: "MAX (3u)", units: 3, color: "green", verdict: "GO", acc: "invalid", roi: "n/a" },
+        2: { label: "STRONG (2u)", units: 2, color: "yellow", verdict: "GO", acc: "invalid", roi: "n/a" },
+        1: { label: "BET (1u)", units: 1, color: "muted", verdict: "GO", acc: "invalid", roi: "n/a" },
       };
     } else {
       // NBA: current thresholds
@@ -397,6 +397,20 @@ export function getBetSignals({ pred, odds, sport = "ncaa", homeName = "Home", a
     ouSignal?.verdict === "GO"   || ouSignal?.verdict === "LEAN" ||
     spreadSignal?.verdict === "GO" || spreadSignal?.verdict === "LEAN";
 
+  // ── NCAA STAKE GATE (frontend) — mirrors backend _NCAA_STAKE_UNITS = 0 ──
+  // NCAAB ATS tiers invalidated 2026-10-14 (espn_spread artifact); O/U tiers never validated.
+  // Picks and edges stay visible as information; nothing renders as a bet.
+  // Remove only alongside the backend constant, after a Council ruling.
+  if (sport === "ncaa") {
+    const _ncaaGate = (s, what) =>
+      s && (s.verdict === "GO" || s.verdict === "LEAN")
+        ? { ...s, verdict: "SKIP", units: 0, reason: `NCAAB stakes gated — paper ${what} only (${s.reason ?? ""})` }
+        : s;
+    return {
+      ml: _ncaaGate(mlSignal, "ML"), ou: _ncaaGate(ouSignal, "O/U"), spread: _ncaaGate(spreadSignal, "ATS"),
+      conf: confSignal, dec: decSignal, anyEdge: false, betSizing: null,
+    };
+  }
   // ── NBA STAKE GATE (frontend) — mirrors backend _NBA_STAKE_UNITS = 0 ──
   // Picks and edges stay visible as information; nothing renders as a bet.
   // Remove only alongside the backend constant, after a Council ruling.

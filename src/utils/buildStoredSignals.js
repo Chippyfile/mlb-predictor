@@ -184,6 +184,20 @@ export function buildStoredSignals({ pred, odds, sport = "nba", homeName = "Home
     ouSignal?.verdict === "GO" || ouSignal?.verdict === "LEAN" ||
     spreadSignal?.verdict === "GO" || spreadSignal?.verdict === "LEAN";
 
+  // ── NCAA STAKE GATE (frontend) — mirrors backend _NCAA_STAKE_UNITS = 0 ──
+  // NCAAB ATS tiers invalidated 2026-10-14 (espn_spread artifact); O/U tiers never validated.
+  // Picks and edges stay visible as information; nothing renders as a bet.
+  // Remove only alongside the backend constant, after a Council ruling.
+  if (sport === "ncaa") {
+    const _ncaaGate = (s, what) =>
+      s && (s.verdict === "GO" || s.verdict === "LEAN")
+        ? { ...s, verdict: "SKIP", units: 0, reason: `NCAAB stakes gated — paper ${what} only (${s.reason ?? ""})` }
+        : s;
+    return {
+      ml: _ncaaGate(mlSignal, "ML"), ou: _ncaaGate(ouSignal, "O/U"), spread: _ncaaGate(spreadSignal, "ATS"),
+      conf: confSignal, dec: decSignal, anyEdge: false, betSizing: null,
+    };
+  }
   // ── NBA STAKE GATE (frontend) — mirrors backend _NBA_STAKE_UNITS = 0 ──
   // Picks and edges stay visible as information; nothing renders as a bet.
   // Remove only alongside the backend constant, after a Council ruling.

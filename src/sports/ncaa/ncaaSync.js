@@ -266,7 +266,7 @@ async function ncaaBuildPredictionRow(game, dateStr) {
       // v29: Capture O/U v5 fields from ML response
       if (mlResult.ou_predicted_total != null) row.ou_predicted_total = parseFloat(mlResult.ou_predicted_total.toFixed(1));
       if (mlResult.ou_pick != null) row.ou_pick = mlResult.ou_pick;           // "OVER" | "UNDER" | null
-      if (mlResult.ou_tier != null) row.ou_tier = mlResult.ou_tier;           // 1, 2, 3
+      if (mlResult.ou_tier != null) row.ou_tier = 0;  // NCAA STAKE GATE (10-14): O/U tiers never validated; was mlResult.ou_tier
       if (mlResult.ou_res_avg != null) row.ou_res_avg = parseFloat(mlResult.ou_res_avg.toFixed(2));
       if (mlResult.ou_cls_avg != null) row.ou_cls_avg = parseFloat(mlResult.ou_cls_avg.toFixed(4));
       if (mlResult.ou_edge != null) row.ou_edge = parseFloat(mlResult.ou_edge.toFixed(1));
@@ -280,8 +280,9 @@ async function ncaaBuildPredictionRow(game, dateStr) {
   }
 
   // ═══ v29: ATS PICK — computed from spread disagreement at prediction time ═══
-  // Validated on 41,831 walk-forward games (ncaa_final_retrain.py):
-  //   4-7 pts: 73.6% ATS (1u)  |  7-10 pts: 90.1% ATS (2u)  |  10+ pts: 96.5% ATS (3u)
+  // INVALIDATED 2026-10-14: the 73.6/90.1/96.5% tiers came from bad rows in espn_spread
+  // (sign-flipped / mismatched lines). Vs DK close, same 2026 games: 53.0% overall, no slope.
+  // NCAA STAKE GATE: ats_units is hard zero; side and disagreement kept as paper information.
   if (row.spread_home != null && row.market_spread_home != null) {
     const modelMargin = row.spread_home;           // positive = home wins by X
     const mktImplied = -row.market_spread_home;    // market implied home margin
@@ -293,7 +294,7 @@ async function ncaaBuildPredictionRow(game, dateStr) {
       const side = modelMargin > mktImplied ? "HOME" : "AWAY";
       row.ats_side = side;
       row.ats_pick_spread = row.market_spread_home; // the spread we're betting against
-      row.ats_units = disagree >= 10 ? 3 : disagree >= 7 ? 2 : 1;
+      row.ats_units = 0;  // NCAA STAKE GATE — was 3/2/1 at disagree 10/7/4
     } else {
       row.ats_side = null;
       row.ats_units = 0;
